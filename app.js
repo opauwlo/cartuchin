@@ -153,7 +153,7 @@
     for (const c of u8) s += c < 128 ? String.fromCharCode(c) : CP437_HI[c - 128];
     return s;
   }
-  async function unzipRom(u8) {
+  async function unzipRom(u8, wanted = /\.(gba|gbc|gb)$/i) {
     const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
     let eocd = -1;
     for (let i = u8.length - 22; i >= Math.max(0, u8.length - 65557); i--) if (dv.getUint32(i, true) === 101010256) {
@@ -170,7 +170,7 @@
       const flags = dv.getUint16(p + 8, true);
       const name = flags & 2048 ? new TextDecoder().decode(u8.subarray(p + 46, p + 46 + fnl)) : cp437(u8.subarray(p + 46, p + 46 + fnl));
       p += 46 + fnl + exl + cml;
-      if (!/\.(gba|gbc|gb)$/i.test(name)) continue;
+      if (!wanted.test(name)) continue;
       const start = lho + 30 + dv.getUint16(lho + 26, true) + dv.getUint16(lho + 28, true);
       const comp = u8.subarray(start, start + csize);
       if (method === 0) return { name, bytes: comp.slice() };
