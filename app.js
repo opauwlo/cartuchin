@@ -1903,7 +1903,14 @@ function watchCast(pc, sender, dc, emu) {
     let tx = null;
     try { (await pc.getStats()).forEach((x) => { if (x.type === "outbound-rtp" && (x.kind || x.mediaType) === "video") tx = x; }); } catch (e) {}
     const tr = sender.track;
-    const st = { sent: tx ? tx.framesSent || 0 : 0, w: (tx && tx.frameWidth) || 0, h: (tx && tx.frameHeight) || 0, lim: (tx && tx.qualityLimitationReason) || "",
+    let br = -1;
+    if (tr && window.ImageCapture) {
+      try {
+        const bmp = await Promise.race([new ImageCapture(tr).grabFrame(), sleep(600).then(() => null)]);
+        if (bmp) { br = brightness(bmp); bmp.close && bmp.close(); }
+      } catch (e) {}
+    }
+    const st = { br, sent: tx ? tx.framesSent || 0 : 0, w: (tx && tx.frameWidth) || 0, h: (tx && tx.frameHeight) || 0, lim: (tx && tx.qualityLimitationReason) || "",
       cw: emu.canvas ? emu.canvas.width : 0, ch: emu.canvas ? emu.canvas.height : 0, track: tr ? tr.readyState + (tr.muted ? " (sem quadros)" : "") : "sem trilha" };
     if (dc.readyState === "open") { try { dc.send(JSON.stringify({ st })); } catch (e) {} }
     if (emu.paused) { still = 0; last = st.sent; return; }
@@ -2212,6 +2219,16 @@ async function startScreen() {
   };
   requestAnimationFrame(tick);
 }
+/* average brightness (0-255) of a picture, through a tiny canvas; -1 if it can't be read */
+function brightness(src) {
+  try {
+    const c = brightness.c || (brightness.c = document.createElement("canvas")); c.width = 24; c.height = 16;
+    const g = c.getContext("2d"); g.drawImage(src, 0, 0, 24, 16);
+    const d = g.getImageData(0, 0, 24, 16).data; let sum = 0;
+    for (let i = 0; i < d.length; i += 4) sum += d[i] + d[i + 1] + d[i + 2];
+    return Math.round(sum / (d.length / 4) / 3);
+  } catch (e) { return -1; }
+}
 function playScreenVideo() {
   const v = $("#scrVideo");
   const p = v.play();
@@ -2247,6 +2264,8 @@ function watchScreen(pc) {
     const dec = rx ? rx.framesDecoded || 0 : 0;
     still = dec === lastDec ? still + 1 : 0; lastDec = dec;
     const shown = v.getVideoPlaybackQuality ? v.getVideoPlaybackQuality().totalVideoFrames : "?";
+    const bright = v.readyState >= 2 ? brightness(v) : -1;
+    const box = v.getBoundingClientRect();
     if (v.paused && dec > 0) playScreenVideo();
     let problem = "";
     if (still >= 2) problem = dec === 0 ? "A imagem não está chegando do celular." : "A imagem parou de chegar do celular.";
@@ -2257,10 +2276,10 @@ function watchScreen(pc) {
     const lines = [
       problem || (warnNet ? `Wi-Fi instável: ${net.warnPct}% dos pacotes se perdem. Dica: ligue o roteador do celular e conecte a TV nele.` : "Conectado. Se a imagem não aparecer, mande uma foto desta tela."),
       `Rede: ${path}${rtt != null ? ` · ida e volta ${rtt} ms` : ""} · perda ${lossPct}%${rx && rx.jitter ? ` · variação ${Math.round(rx.jitter * 1000)} ms` : ""}`,
-      ph ? `Celular: enviou ${ph.sent} quadros${ph.w ? ` (${ph.w}x${ph.h})` : ""}${ph.lim && ph.lim !== "none" ? `, limitado por ${ph.lim}` : ""}${ph.cw ? ` · jogo ${ph.cw}x${ph.ch}` : ""}${ph.track && ph.track !== "live" ? ` · captura ${ph.track}` : ""}`
+      ph ? `Celular: enviou ${ph.sent} quadros${ph.w ? ` (${ph.w}x${ph.h})` : ""}${ph.lim && ph.lim !== "none" ? `, limitado por ${ph.lim}` : ""}${ph.cw ? ` · jogo ${ph.cw}x${ph.ch}` : ""}${ph.track && ph.track !== "live" ? ` · captura ${ph.track}` : ""}${ph.br != null && ph.br >= 0 ? ` · brilho ${ph.br}` : ""}`
          : "Celular: sem relatório ainda",
       `TV: recebeu ${rx ? rx.framesReceived || 0 : 0}, decodificou ${dec}${codec ? ` · ${codec}` : ""}${rx && rx.frameWidth ? ` · ${rx.frameWidth}x${rx.frameHeight}` : ""}`,
-      `Vídeo: ${v.paused ? "parado" : "tocando"} · ${v.videoWidth}x${v.videoHeight} · estado ${v.readyState} · exibidos ${shown}`,
+      `Vídeo: ${v.paused ? "parado" : "tocando"} · ${v.videoWidth}x${v.videoHeight} · estado ${v.readyState} · exibidos ${shown} · brilho ${bright} · na tela ${Math.round(box.width)}x${Math.round(box.height)} de ${innerWidth}x${innerHeight}`,
     ];
     info.textContent = lines.join("\n");
     info.hidden = !(problem || warnNet || performance.now() - t0 < 12000);
