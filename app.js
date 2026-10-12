@@ -1828,11 +1828,27 @@ function stopCast(msg) {
   if (window.__castCap) { window.__castCap = 0; window.dispatchEvent(new Event("resize")); }
   if (msg) toast(msg, 3500);
 }
-async function castTo(code) {
+/* Video formats, from the best to the most compatible. TV browsers are old and each
+   brand has its quirks: if the TV gets nothing it can show after a few seconds, the
+   phone reconnects with the next format, and remembers the one that worked. */
+const CAST_MODES = [
+  { name: "VP8", red: true },
+  { name: "VP8 simples", plain: true },             // like the very first version: browser defaults, few RTP extensions
+  { name: "H.264", plain: true, codecs: [/h264/i, /vp9/i] }, // TVs decode H.264 in hardware
+];
+const chromeVer = () => { const ua = navigator.userAgent; const c = ua.match(/Chrom(?:e|ium)\/(\d+)/), t = ua.match(/Tizen (\d+(?:\.\d+)?)/), w = ua.match(/Web0S|webOS/); return (c ? "Chrome " + c[1] : "navegador ?") + (t ? ` (Tizen ${t[1]})` : w ? " (webOS)" : ""); };
+async function castTo(code, attempt = 0) {
   const emu = player.emu;
   if (!emu || !emu.started || !emu.canvas) { cast.pending = code; return; }
   stopCast();
   setCastUi("wait");
+  if (attempt === 0) {
+    const saved = Number(ls.get("cartucho.castMode")) || 0;
+    cast.order = [saved, ...CAST_MODES.map((m, i) => i).filter((i) => i !== saved)];
+  }
+  cast.code = code; cast.attempt = attempt; cast.tvStats = null;
+  const level = cast.order[attempt] || 0, mode = CAST_MODES[level];
+  cast.mode = level;
   try {
     const sig = await signal(code);
     const pc = new RTCPeerConnection(RTC_CONFIG); cast.pc = pc;
@@ -1844,7 +1860,7 @@ async function castTo(code) {
     const vtrack = stream.getVideoTracks()[0];
     try { vtrack.contentHint = "motion"; } catch (e) {}
     // tuned for a so-so Wi-Fi (see test/net.js, which measures them under loss and jitter)
-    const opt = { red: true, kbps: 2500, layers: "", ...(window.__castOpts || {}) };
+    const opt = { red: !!mode.red, kbps: 2500, layers: "", ...(window.__castOpts || {}) };
     let vt = null;
     if (opt.layers) { try { vt = pc.addTransceiver(vtrack, { direction: "sendonly", streams: [stream], sendEncodings: [{ scalabilityMode: opt.layers }] }); } catch (e) {} }
     if (!vt) vt = pc.addTransceiver(vtrack, { direction: "sendonly", streams: [stream] });
@@ -1856,22 +1872,38 @@ async function castTo(code) {
         tr.setCodecPreferences([...head, ...caps.codecs.filter((c) => !head.includes(c))]);
       } catch (e) {}
     };
-    prefer(vt, "video", [/vp8/i]);
+    // fewer RTP header extensions: an old receiver that can't parse one drops the whole packet
+    const trimExt = (tr) => {
+      try {
+        if (!tr.getHeaderExtensionsToNegotiate) return;
+        const keep = /sdes:mid|transport-wide-cc|abs-send-time/;
+        tr.setHeaderExtensionsToNegotiate(tr.getHeaderExtensionsToNegotiate().map((x) => ({ uri: x.uri, direction: keep.test(x.uri) ? x.direction : "stopped" })));
+      } catch (e) {}
+    };
+    if (mode.codecs) prefer(vt, "video", mode.codecs);
+    else if (!mode.plain) prefer(vt, "video", [/vp8/i]);
+    if (mode.plain) trimExt(vt);
     const tap = (window.__audioTaps || [])[0];
     if (tap && tap.out) {
       const at = tap.out.stream.getAudioTracks()[0];
       // RED: every audio packet also carries the previous one, so a lost packet is
       // rebuilt from the next instead of becoming a crackle (what Google Meet does)
-      if (at) prefer(pc.addTransceiver(at, { direction: "sendonly", streams: [stream] }), "audio", opt.red ? [/audio\/red/i, /opus/i] : [/opus/i]);
+      if (at && mode.plain) pc.addTrack(at, stream);
+      else if (at) prefer(pc.addTransceiver(at, { direction: "sendonly", streams: [stream] }), "audio", opt.red ? [/audio\/red/i, /opus/i] : [/opus/i]);
     }
     const dc = pc.createDataChannel("controle", { ordered: false, maxRetransmits: 0 }); cast.dc = dc;
-    dc.onmessage = (e) => { const m = Number(e.data); if (!Number.isNaN(m)) applyRemote(m); };
+    dc.onmessage = (e) => {
+      const d = String(e.data);
+      // the TV also reports what it receives and decodes (JSON); everything else is the pad
+      if (d[0] === "{") { try { const j = JSON.parse(d); if (j.tv) cast.tvStats = j.tv; } catch (x) {} return; }
+      const m = Number(d); if (!Number.isNaN(m)) applyRemote(m);
+    };
     pc.onconnectionstatechange = () => {
       if (pc !== cast.pc) return;
       if (pc.connectionState === "connected") {
         setCastUi("on"); keepAwake(); showPad(true); wakeAudio();
         for (const t of window.__audioTaps || []) t.local.gain.value = 0;
-        toast("Jogando na TV. Este celular agora é o controle.", 3500);
+        if (attempt === 0) toast("Jogando na TV. Este celular agora é o controle.", 3500);
         const send = vt.sender, p = send.getParameters();
         p.encodings = (p.encodings && p.encodings.length ? p.encodings : [{}]).map((e) => ({ ...e, maxBitrate: opt.kbps * 1000, maxFramerate: 60, scaleResolutionDownBy: 1, priority: "high", networkPriority: "high" }));
         p.degradationPreference = "maintain-framerate";
@@ -1896,12 +1928,16 @@ async function castTo(code) {
    numbers), and if no new frame has left for a while although the game is running,
    restarts the canvas capture once, then warns. */
 function watchCast(pc, sender, dc, emu) {
-  let last = -1, still = 0, recaptured = false;
+  let last = -1, still = 0, recaptured = false, checks = 0, worked = false;
   clearInterval(cast.watch);
   cast.watch = setInterval(async () => {
     if (pc !== cast.pc || pc.connectionState !== "connected") { clearInterval(cast.watch); return; }
-    let tx = null;
-    try { (await pc.getStats()).forEach((x) => { if (x.type === "outbound-rtp" && (x.kind || x.mediaType) === "video") tx = x; }); } catch (e) {}
+    let tx = null, codec = "";
+    try {
+      const stats = await pc.getStats(), all = new Map();
+      stats.forEach((x) => { all.set(x.id, x); if (x.type === "outbound-rtp" && (x.kind || x.mediaType) === "video") tx = x; });
+      if (tx && all.get(tx.codecId)) codec = (all.get(tx.codecId).mimeType || "").replace("video/", "");
+    } catch (e) {}
     const tr = sender.track;
     let br = -1;
     if (tr && window.ImageCapture) {
@@ -1910,9 +1946,23 @@ function watchCast(pc, sender, dc, emu) {
         if (bmp) { br = brightness(bmp); bmp.close && bmp.close(); }
       } catch (e) {}
     }
-    const st = { br, sent: tx ? tx.framesSent || 0 : 0, w: (tx && tx.frameWidth) || 0, h: (tx && tx.frameHeight) || 0, lim: (tx && tx.qualityLimitationReason) || "",
+    const st = { br, ua: chromeVer(), mode: `${CAST_MODES[cast.mode].name}${codec ? ` = ${codec}` : ""} (${cast.attempt + 1}/${CAST_MODES.length})`,
+      enc: (tx && tx.encoderImplementation) || "", keys: tx ? tx.keyFramesEncoded || 0 : 0, pli: tx ? tx.pliCount || 0 : 0, pk: tx ? tx.packetsSent || 0 : 0, sent: tx ? tx.framesSent || 0 : 0, w: (tx && tx.frameWidth) || 0, h: (tx && tx.frameHeight) || 0, lim: (tx && tx.qualityLimitationReason) || "",
       cw: emu.canvas ? emu.canvas.width : 0, ch: emu.canvas ? emu.canvas.height : 0, track: tr ? tr.readyState + (tr.muted ? " (sem quadros)" : "") : "sem trilha" };
     if (dc.readyState === "open") { try { dc.send(JSON.stringify({ st })); } catch (e) {} }
+    // the TV says how many frames it decoded: none after ~8 s while this phone is
+    // sending means the TV can't take this format, so try the next one
+    checks++;
+    const tv = cast.tvStats;
+    if (tv && tv.dec > 0 && !worked) { worked = true; ls.set("cartucho.castMode", String(cast.mode)); }
+    if (!worked && tv && checks >= 4 && st.sent > 60 && tv.dec === 0) {
+      clearInterval(cast.watch);
+      if (cast.attempt + 1 < CAST_MODES.length) {
+        toast(`A TV não está recebendo a imagem. Tentando outro formato (${cast.attempt + 2}/${CAST_MODES.length})…`, 4000);
+        castTo(cast.code, cast.attempt + 1);
+      } else toast("A TV não conseguiu receber a imagem em nenhum formato. Mande uma foto do diagnóstico que aparece na TV.", 8000);
+      return;
+    }
     if (emu.paused) { still = 0; last = st.sent; return; }
     still = st.sent === last ? still + 1 : 0; last = st.sent;
     if (still === 2 && !recaptured) {
@@ -2245,10 +2295,15 @@ function watchScreen(pc) {
   clearInterval(tvScreen.watch);
   const check = async () => {
     if (pc !== tvScreen.pc || pc.connectionState !== "connected" || !tvScreen.active) { clearInterval(tvScreen.watch); info.hidden = true; return; }
-    let rx = null, codec = "", pair = null, all = new Map();
+    let rx = null, arx = null, codec = "", pair = null, all = new Map();
     try {
       const stats = await pc.getStats();
-      stats.forEach((x) => { all.set(x.id, x); if (x.type === "inbound-rtp" && (x.kind || x.mediaType) === "video") rx = x; if (x.type === "candidate-pair" && x.nominated && x.state === "succeeded") pair = x; });
+      stats.forEach((x) => {
+        all.set(x.id, x);
+        if (x.type === "inbound-rtp" && (x.kind || x.mediaType) === "video") rx = x;
+        if (x.type === "inbound-rtp" && (x.kind || x.mediaType) === "audio") arx = x;
+        if (x.type === "candidate-pair" && x.nominated && x.state === "succeeded") pair = x;
+      });
       if (rx && rx.codecId && all.get(rx.codecId)) codec = (all.get(rx.codecId).mimeType || "").replace("video/", "");
     } catch (e) {}
     // network: packets lost since the last check, round trip, and which path the pair took
@@ -2263,6 +2318,7 @@ function watchScreen(pc) {
     if (net.bad === 2 && !net.warned) { net.warned = true; net.warnPct = lossPct; net.warnUntil = performance.now() + 9000; }
     const dec = rx ? rx.framesDecoded || 0 : 0;
     still = dec === lastDec ? still + 1 : 0; lastDec = dec;
+    if (tvScreen.dc && tvScreen.dc.readyState === "open") { try { tvScreen.dc.send(JSON.stringify({ tv: { dec, pk: got, apk: arx ? arx.packetsReceived || 0 : 0 } })); } catch (e) {} }
     const shown = v.getVideoPlaybackQuality ? v.getVideoPlaybackQuality().totalVideoFrames : "?";
     const bright = v.readyState >= 2 ? brightness(v) : -1;
     const box = v.getBoundingClientRect();
@@ -2276,9 +2332,9 @@ function watchScreen(pc) {
     const lines = [
       problem || (warnNet ? `Wi-Fi instável: ${net.warnPct}% dos pacotes se perdem. Dica: ligue o roteador do celular e conecte a TV nele.` : "Conectado. Se a imagem não aparecer, mande uma foto desta tela."),
       `Rede: ${path}${rtt != null ? ` · ida e volta ${rtt} ms` : ""} · perda ${lossPct}%${rx && rx.jitter ? ` · variação ${Math.round(rx.jitter * 1000)} ms` : ""}`,
-      ph ? `Celular: enviou ${ph.sent} quadros${ph.w ? ` (${ph.w}x${ph.h})` : ""}${ph.lim && ph.lim !== "none" ? `, limitado por ${ph.lim}` : ""}${ph.cw ? ` · jogo ${ph.cw}x${ph.ch}` : ""}${ph.track && ph.track !== "live" ? ` · captura ${ph.track}` : ""}${ph.br != null && ph.br >= 0 ? ` · brilho ${ph.br}` : ""}`
+      ph ? `Celular: ${ph.ua || ""} · formato ${ph.mode || "?"} · enviou ${ph.sent} quadros, ${ph.pk || 0} pacotes${ph.w ? ` (${ph.w}x${ph.h})` : ""} · chaves ${ph.keys || 0} · PLI ${ph.pli || 0}${ph.enc ? ` · ${ph.enc}` : ""}${ph.lim && ph.lim !== "none" ? ` · limitado por ${ph.lim}` : ""}${ph.track && ph.track !== "live" ? ` · captura ${ph.track}` : ""}${ph.br != null && ph.br >= 0 ? ` · brilho ${ph.br}` : ""}`
          : "Celular: sem relatório ainda",
-      `TV: recebeu ${rx ? rx.framesReceived || 0 : 0}, decodificou ${dec}${codec ? ` · ${codec}` : ""}${rx && rx.frameWidth ? ` · ${rx.frameWidth}x${rx.frameHeight}` : ""}`,
+      `TV: ${chromeVer()} · pacotes de vídeo ${got}, de áudio ${arx ? arx.packetsReceived || 0 : 0} · recebeu ${rx ? rx.framesReceived || 0 : 0}, decodificou ${dec}${codec ? ` · ${codec}` : ""}${rx && rx.frameWidth ? ` · ${rx.frameWidth}x${rx.frameHeight}` : ""} · chaves ${rx ? rx.keyFramesDecoded || 0 : 0} · PLI ${rx ? rx.pliCount || 0 : 0}${rx && rx.decoderImplementation ? ` · ${rx.decoderImplementation}` : ""}`,
       `Vídeo: ${v.paused ? "parado" : "tocando"} · ${v.videoWidth}x${v.videoHeight} · estado ${v.readyState} · exibidos ${shown} · brilho ${bright} · na tela ${Math.round(box.width)}x${Math.round(box.height)} de ${innerWidth}x${innerHeight}`,
     ];
     info.textContent = lines.join("\n");
