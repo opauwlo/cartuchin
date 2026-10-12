@@ -1766,8 +1766,9 @@ async function runDiagnostic() {
   };
   diag.bases = [await measure()];
   diag.results = [{ id: "base", label: "Só o emulador", fps: diag.bases[0] }];
-  for (const [i, step] of DIAG_STEPS.entries()) {
-    diagShow(`<p class="diag-now">Medindo ${i + 1} de ${DIAG_STEPS.length}: <b>${step.label}</b></p>${diagTable()}`);
+  const steps = diag.only ? DIAG_STEPS.filter((st) => diag.only.includes(st.id)) : DIAG_STEPS;
+  for (const [i, step] of steps.entries()) {
+    diagShow(`<p class="diag-now">Medindo ${i + 1} de ${steps.length}: <b>${step.label}</b></p>${diagTable()}`);
     const undo = [];
     if (step.pad) {
       padState.forceOrient = step.pad; $("#pad").classList.toggle("rich", !!step.rich); showPad(true);
@@ -1868,7 +1869,10 @@ if (ls.get("cartucho.reset.v1") !== "done") { resetEmulatorSettings(); ls.set("c
 $("#connectBtn").addEventListener("click", () => { showConnect(); $("#connect").scrollIntoView({ behavior: "smooth" }); });
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
 handleScreenLink();
-if (location.hash === "#diagnostico") { try { history.replaceState(null, "", location.pathname); } catch (e) {} setTimeout(runDiagnostic, 300); }
+{ // #diagnostico runs the whole speed test; #diagnostico:touch,cast only those steps (used by the automated test to re-check)
+  const m = location.hash.match(/^#diagnostico(?::([a-z,]+))?$/);
+  if (m) { diag.only = m[1] ? m[1].split(",") : null; try { history.replaceState(null, "", location.pathname); } catch (e) {} setTimeout(runDiagnostic, 300); }
+}
 (async () => {
   await loadRoms();
   await connect();
