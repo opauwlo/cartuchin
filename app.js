@@ -1438,19 +1438,28 @@ function layoutPad() {
   const pad = $("#pad"); if (pad.hidden) return;
   padState.geo = null;
   if (padState.mode === "local") {
+    /* Nothing may cover the game. A layer on top of the picture, even a transparent
+       one, makes the phone blend the two on every frame instead of sending the
+       picture straight to the screen, and that alone can halve the speed. So the
+       game box shrinks to exactly the 3:2 picture, sits above the controller, and
+       the controls only live in the space around it. */
     padState.rot = 0;
     pad.classList.remove("rot", "wide");
     pad.style.width = pad.style.height = pad.style.transform = "";
-    const g = $("#game").getBoundingClientRect();
-    const upright = g.height > g.width;
-    pad.classList.toggle("port", upright); pad.classList.toggle("land", !upright);
-    pad.style.setProperty("--pad-top", g.top + "px");
-    pad.style.setProperty("--game-h", Math.round(Math.min(g.width / 1.5, g.height)) + "px");
-    pad.style.setProperty("--game-w", Math.round(Math.min(g.height * 1.5, g.width * 0.62)) + "px");
+    const pl = $("#player"), bar = $(".pbar").getBoundingClientRect();
+    const availH = innerHeight - bar.bottom, availW = innerWidth;
+    const upright = availH > availW;
+    let gw, gh;
+    if (upright) { gw = availW; gh = Math.min(availW / 1.5, availH * 0.55); gw = gh * 1.5; }
+    else { gh = availH; gw = Math.min(availH * 1.5, availW * 0.62); gh = gw / 1.5; }
+    for (const n of [pad, pl]) { n.classList.toggle("port", upright); n.classList.toggle("land", !upright); }
+    pl.style.setProperty("--game-w", Math.floor(gw) + "px");
+    pl.style.setProperty("--game-h", Math.floor(gh) + "px");
+    pad.style.setProperty("--pad-top", bar.bottom + "px");
     requestAnimationFrame(() => { padState.geo = null; });
     return;
   }
-  pad.classList.remove("port", "land");
+  for (const n of [pad, $("#player")]) n.classList.remove("port", "land");
   const pref = padState.forceOrient || ls.get("cartucho.pad.orient") || "h";      // h = landscape, hr = landscape the other way, v = portrait
   const portrait = innerHeight > innerWidth;
   padState.rot = pref === "v" || !portrait ? 0 : pref === "hr" ? -90 : 90;
@@ -1512,7 +1521,7 @@ function showPad(on) {
   const pad = $("#pad");
   padTouches.clear(); cast.localMask = 0; applyInput();
   if (on) padState.mode = "cast";
-  else padState.mode = player.key && touchDevice() ? "local" : "off";
+  else padState.mode = (player.key || padState.forceLocal) && touchDevice() ? "local" : "off";
   pad.hidden = padState.mode === "off";
   pad.classList.toggle("local", padState.mode === "local");
   $("#player").classList.toggle("touch-pad", padState.mode === "local");
@@ -1677,6 +1686,7 @@ const DIAG_STEPS = [
   { id: "padv", label: "Controle na tela, vertical", pad: "v" },
   { id: "padrich", label: "Controle com sombras suaves (visual anterior)", pad: "h", rich: true },
   { id: "touch", label: "Controle + dedos se mexendo", pad: "h", touch: true },
+  { id: "local", label: "Jogando no próprio celular, com o controle na tela", local: true, touch: true },
   { id: "cast", label: "Transmissão de vídeo e som (sem rede)", cast: true },
   { id: "all", label: "Tudo junto", pad: "h", touch: true, cast: true },
   { id: "recast", label: "Depois de ligar e desligar a transmissão 3 vezes", recast: 3 },
@@ -1773,6 +1783,10 @@ async function runDiagnostic() {
     if (step.pad) {
       padState.forceOrient = step.pad; $("#pad").classList.toggle("rich", !!step.rich); showPad(true);
       undo.push(() => { showPad(false); $("#pad").classList.remove("rich"); padState.forceOrient = null; });
+    }
+    if (step.local) {
+      padState.forceLocal = true; showPad(false);
+      undo.push(() => { padState.forceLocal = false; showPad(false); });
     }
     if (step.touch) { await sleep(100); undo.push(diagTouches()); }
     if (step.cast) { try { undo.push(await diagLoopback(emu)); } catch (e) {} }

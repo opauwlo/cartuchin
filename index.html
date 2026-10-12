@@ -139,7 +139,10 @@ button { cursor: pointer; }
 .pad-game { grid-area: game; }
 #pad:not(.local) .pad-game { display: none; }
 /* playing on the phone itself: transparent, below the browser bar, around the picture */
-#pad.local { inset: var(--pad-top, 0px) 0 0 0; background: transparent; padding-top: 0; }
+#pad.local { inset: var(--pad-top, 0px) 0 0 0; padding-top: 0; z-index: 1; }
+/* the game box above the controller, exactly the size of the picture */
+#player.touch-pad #game { position: relative; z-index: 2; flex: none; width: var(--game-w); height: var(--game-h); padding-bottom: 0; }
+#player.touch-pad #game { align-self: center; }
 #pad.local .pad-top { display: none; }
 #pad.local.port { grid-template-columns: 1fr 1fr; grid-template-rows: var(--game-h) auto 1fr auto; grid-template-areas: "game game" "l r" "dpad ab" "meta meta"; }
 #pad.local.land { grid-template-columns: 1fr var(--game-w) 1fr; grid-template-rows: auto 1fr auto; grid-template-areas: "l game r" "dpad game ab" "sel game start"; padding: 6px 10px calc(8px + env(safe-area-inset-bottom, 0px)); gap: 6px 10px; }
