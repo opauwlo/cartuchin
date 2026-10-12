@@ -716,14 +716,15 @@ if (!ls.get(PERF_KEY + ".mode") && guessDevice() === "TV") perf.learned = true;
 const perfLight = () => perf.mode === "light" || (perf.mode === "auto" && perf.learned);
 /* The settings both modes share are the cheapest ones that don't change the game:
    no colour filters, no frame blending, the default idle-loop handling, and the
-   picture drawn at most 2x the GBA's size and enlarged by the browser without
-   smoothing. A GBA game is 240x160 pixels: drawing it at the phone's full
-   resolution looks exactly the same and costs many times more.
+   picture drawn at the GBA's own 240x160 and enlarged by the browser without
+   smoothing. Drawing it bigger looks exactly the same and costs much more: on some
+   phones the browser draws WebGL without the graphics chip, and then the size of
+   that picture is what decides the speed.
    - auto (default): skips drawing a frame only when sound is about to run dry
-   - light: draws at the GBA's own 240x160, skips earlier, longest audio buffer */
+   - light: skips earlier and gives sound the longest buffer */
 const perfProfile = () => perfLight() ? "light" : "auto";
 const PROFILES = {
-  auto: { frameskip: "auto", threshold: "33", latency: 128, gameMax: 480 },
+  auto: { frameskip: "auto", threshold: "33", latency: 128, gameMax: 240 },
   light: { frameskip: "auto", threshold: "50", latency: 160, gameMax: 240 },
 };
 function coreOptions() {
@@ -1471,6 +1472,8 @@ function layoutPad() {
   requestAnimationFrame(() => { padState.geo = null; });
 }
 window.addEventListener("resize", layoutPad);
+// the browser bar on phones grows and shrinks without always firing "resize"
+if (window.ResizeObserver) new ResizeObserver(() => { if (padState.mode === "local") layoutPad(); }).observe(document.documentElement);
 (() => {
   const pad = $("#pad");
   const isUi = (e) => e.target.closest(".pad-top");
@@ -1524,6 +1527,9 @@ function showPad(on) {
   else padState.mode = (player.key || padState.forceLocal) && touchDevice() ? "local" : "off";
   pad.hidden = padState.mode === "off";
   pad.classList.toggle("local", padState.mode === "local");
+  // while the phone is a controller the game is under an opaque pad: hiding it saves the
+  // browser from compositing a picture nobody sees (the stream still captures every frame)
+  $("#player").classList.toggle("casting", padState.mode === "cast");
   $("#player").classList.toggle("touch-pad", padState.mode === "local");
   layoutPad();
 }
@@ -1881,7 +1887,7 @@ if (ls.get("cartucho.reset.v1") !== "done") { resetEmulatorSettings(); ls.set("c
 
 /* ---------------- boot ---------------- */
 $("#connectBtn").addEventListener("click", () => { showConnect(); $("#connect").scrollIntoView({ behavior: "smooth" }); });
-if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js", { updateViaCache: "none" }).then((r) => r.update()).catch(() => {});
 handleScreenLink();
 { // #diagnostico runs the whole speed test; #diagnostico:touch,cast only those steps (used by the automated test to re-check)
   const m = location.hash.match(/^#diagnostico(?::([a-z,]+))?$/);

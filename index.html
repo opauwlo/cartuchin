@@ -140,9 +140,6 @@ button { cursor: pointer; }
 #pad:not(.local) .pad-game { display: none; }
 /* playing on the phone itself: transparent, below the browser bar, around the picture */
 #pad.local { inset: var(--pad-top, 0px) 0 0 0; padding-top: 0; z-index: 1; }
-/* the game box above the controller, exactly the size of the picture */
-#player.touch-pad #game { position: relative; z-index: 2; flex: none; width: var(--game-w); height: var(--game-h); padding-bottom: 0; }
-#player.touch-pad #game { align-self: center; }
 #pad.local .pad-top { display: none; }
 #pad.local.port { grid-template-columns: 1fr 1fr; grid-template-rows: var(--game-h) auto 1fr auto; grid-template-areas: "game game" "l r" "dpad ab" "meta meta"; }
 #pad.local.land { grid-template-columns: 1fr var(--game-w) 1fr; grid-template-rows: auto 1fr auto; grid-template-areas: "l game r" "dpad game ab" "sel game start"; padding: 6px 10px calc(8px + env(safe-area-inset-bottom, 0px)); gap: 6px 10px; }
@@ -152,6 +149,10 @@ button { cursor: pointer; }
 #pad.local.land .pad-dpad { width: min(100%, 190px); }
 #pad.local.land .pad-ab { width: min(100%, 180px); }
 #pad.local.land .pad-sh { width: min(100%, 170px); height: 40px; }
+/* the game box above the controller, exactly the size of the picture
+   (the fallbacks keep it right even before the script has measured the screen) */
+#player.touch-pad #game { position: relative; z-index: 2; flex: none; width: var(--game-w, 100vw); height: var(--game-h, 66.667vw); padding-bottom: 0; align-self: center; }
+#player.casting #game { visibility: hidden; }
 #player.touch-pad .ejs_virtualGamepad_parent, #player.touch-pad .ejs_virtualGamepad_open, #player.touch-pad .ejs_menu_bar { display: none !important; }
 @media (max-width: 480px) {
   .pbar { gap: 6px; padding-inline: 8px; }
@@ -400,8 +401,8 @@ body { margin: 0; }
 
 <div id="dialogRoot"></div>
 
-<script src="vendor/lang-pt-BR.js"></script>
+<script src="vendor/lang-pt-BR.js?v=20261012020354"></script>
 <script src="vendor/qrcode.js"></script>
-<script src="app.js"></script>
+<script src="app.js?v=20261012020354"></script>
 </body>
 </html>
