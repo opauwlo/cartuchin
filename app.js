@@ -794,7 +794,7 @@ function writeSav(gm, sav) {
 
 async function flush() {
   const emu = player.emu;
-  if (!emu || !emu.started || !emu.gameManager) return;
+  if (!emu || !emu.started || !emu.gameManager || !player.key) return;
   if (player.busy) { player.again = true; return; }
   player.busy = true;
   try {
@@ -937,6 +937,20 @@ function patchEmulator() {
   };
 }
 
+async function createEmulator(file, gameName, options) {
+  try { await loadEmulator(); } catch (e) { return null; }
+  patchEmulator();
+  return new window.EmulatorJS("#game", {
+    gameUrl: file, dataPath: "ejs/", system: "mgba", gameName,
+    color: getComputedStyle(document.documentElement).getPropertyValue("--accent").trim() || "#3b4bd8",
+    startOnLoad: true, threads: false, forceLegacyCores: true, cacheLimit: 0,
+    language: "pt-BR", langJson: window.__CARTUCHO_LANG || undefined,
+    backgroundColor: "#000000", noAutoFocus: false,
+    buttonOpts: { netplay: false, saveSavFiles: false, loadSavFiles: false, cacheManager: false, exitEmulation: false, contextMenu: false },
+    defaultOptions: options,
+  });
+}
+
 async function play(key) {
   let rom = roms.get(key);
   if (!rom) rom = await fetchRom(key);
@@ -950,19 +964,10 @@ async function play(key) {
   setChip(start.sav ? (start.upload ? "pending" : (cloud.db ? "ok" : "local")) : "none", start.at);
   try { document.title = rom.title + " · Cartuchin"; } catch (e) {}
 
-  try { await loadEmulator(); } catch (e) { toast("Não deu para carregar o emulador. Confira a internet."); $("#player").hidden = true; $("#library").hidden = false; return; }
-  patchEmulator();
   const romBytes = fixSaveChip(new Uint8Array(await rom.blob.arrayBuffer()));
   const file = new File([romBytes], rom.code ? rom.code + "." + rom.ext : "jogo." + rom.ext);
-  const emu = new window.EmulatorJS("#game", {
-    gameUrl: file, dataPath: "ejs/", system: "mgba", gameName: key,
-    color: getComputedStyle(document.documentElement).getPropertyValue("--accent").trim() || "#3b4bd8",
-    startOnLoad: true, threads: false, forceLegacyCores: true, cacheLimit: 0,
-    language: "pt-BR", langJson: window.__CARTUCHO_LANG || undefined,
-    backgroundColor: "#000000", noAutoFocus: false,
-    buttonOpts: { netplay: false, saveSavFiles: false, loadSavFiles: false, cacheManager: false, exitEmulation: false, contextMenu: false },
-    defaultOptions: coreOptions(perfLight()),
-  });
+  const emu = await createEmulator(file, key, coreOptions(perfLight()));
+  if (!emu) { toast("Não deu para carregar o emulador. Confira a internet."); $("#player").hidden = true; $("#library").hidden = false; return; }
   player.emu = emu;
   emu.on("start", async () => {
     const gm = emu.gameManager;
@@ -1120,6 +1125,9 @@ function setCastUi(state) {
 }
 function stopCast(msg) {
   try { cast.pc && cast.pc.close(); } catch (e) {}
+  // closing the connection does not stop the canvas capture: left running, every old
+  // capture keeps copying each frame of the game, and they pile up on every reconnect
+  if (cast.stream) { for (const t of cast.stream.getVideoTracks()) t.stop(); cast.stream = null; }
   cast.pc = null; cast.dc = null;
   cast.localMask = 0; applyRemote(0);
   for (const t of window.__audioTaps || []) t.local.gain.value = 1;
@@ -1140,6 +1148,7 @@ async function castTo(code) {
     await sleep(150);
     // capture the emulator's own canvas: no copy, no readback from the GPU
     const stream = emu.canvas.captureStream(60);
+    cast.stream = stream;
     const vtrack = stream.getVideoTracks()[0];
     try { vtrack.contentHint = "motion"; } catch (e) {}
     const vt = pc.addTransceiver(vtrack, { direction: "sendonly", streams: [stream] });
@@ -1189,22 +1198,35 @@ async function castTo(code) {
 const PAD_VIB = { press: 18, tick: 7, dir: 9 };
 let lastVib = 0;
 function vib(ms) {
-  if (!navigator.vibrate) return;
+  if (!navigator.vibrate || (window.__diag && window.__diag.silentVib)) return;
   const now = performance.now(); if (now - lastVib < 25 && ms < 15) return;
   lastVib = now; try { navigator.vibrate(ms); } catch (e) {}
 }
 const padTouches = new Map();
-const padState = { rot: 0 };
+const padState = { rot: 0, geo: null, shownMask: -1, shownOver: "", shownDir: "" };
+/* Hit-testing uses rectangles measured once per layout. The pad only ever turns by
+   90 degrees, so every control's bounding box is still its exact outline on screen. */
+function padGeometry() {
+  if (padState.geo) return padState.geo;
+  const geo = [];
+  for (const n of document.querySelectorAll("#pad [data-btn], #pad .pad-dpad")) {
+    const r = n.getBoundingClientRect();
+    geo.push({ id: n.classList.contains("pad-dpad") ? "dpad" : n.dataset.btn, round: n.classList.contains("pad-face"),
+      l: r.left, t: r.top, r: r.right, b: r.bottom, cx: (r.left + r.right) / 2, cy: (r.top + r.bottom) / 2, rad: Math.min(r.width, r.height) / 2 });
+  }
+  return (padState.geo = geo);
+}
 function controlAt(x, y) {
-  const t = document.elementFromPoint(x, y);
-  if (!t || !t.closest("#pad")) return null;
-  if (t.closest(".pad-dpad")) return "dpad";
-  const b = t.closest("[data-btn]");
-  return b ? b.dataset.btn : null;
+  for (const g of padGeometry()) {
+    if (x < g.l || x > g.r || y < g.t || y > g.b) continue;
+    if (g.round && Math.hypot(x - g.cx, y - g.cy) > g.rad) continue;
+    return g.id;
+  }
+  return null;
 }
 function dpadMask(x, y) {
-  const d = $("#pad .pad-dpad").getBoundingClientRect();
-  let dx = (x - (d.left + d.width / 2)) / (d.width / 2), dy = (y - (d.top + d.height / 2)) / (d.height / 2);
+  const d = padGeometry().find((g) => g.id === "dpad"); if (!d) return 0;
+  let dx = (x - d.cx) / ((d.r - d.l) / 2), dy = (y - d.cy) / ((d.b - d.t) / 2);
   if (padState.rot === 90) [dx, dy] = [dy, -dx];
   else if (padState.rot === -90) [dx, dy] = [-dy, dx];
   if (Math.hypot(dx, dy) < 0.2) return 0;
@@ -1223,23 +1245,28 @@ function touchMask(p) {
 }
 function padUpdate() {
   let m = 0;
-  const over = new Set();
+  const over = [];
   for (const p of padTouches.values()) {
     const pm = touchMask(p);
     if (p.anchor === "dpad" && pm !== p.mask && pm) vib(p.mask ? PAD_VIB.dir : PAD_VIB.press);
     else if (pm && !p.mask) vib(PAD_VIB.press);
     p.mask = pm; m |= pm;
-    if (p.over && p.over !== "dpad" && !(pm & (1 << PAD_BITS.indexOf(p.over)))) over.add(p.over);
+    if (p.over && p.over !== "dpad" && !(pm & (1 << PAD_BITS.indexOf(p.over)))) over.push(p.over);
   }
   cast.localMask = m;
-  for (const b of document.querySelectorAll("#pad [data-btn]")) {
-    const bit = 1 << PAD_BITS.indexOf(b.dataset.btn);
-    b.classList.toggle("on", !!(m & bit));
-    b.classList.toggle("over", over.has(b.dataset.btn));
-  }
-  const dirs = ["UP", "DOWN", "LEFT", "RIGHT"].filter((k) => m & (1 << PAD_BITS.indexOf(k)));
-  $("#pad .pad-dpad").dataset.dir = dirs.join(" ");
   applyInput();
+  // touch the DOM only when something visible changed
+  const overKey = over.sort().join(" ");
+  if (m !== padState.shownMask || overKey !== padState.shownOver) {
+    padState.shownMask = m; padState.shownOver = overKey;
+    for (const b of document.querySelectorAll("#pad [data-btn]")) {
+      const bit = 1 << PAD_BITS.indexOf(b.dataset.btn);
+      b.classList.toggle("on", !!(m & bit));
+      b.classList.toggle("over", over.includes(b.dataset.btn));
+    }
+    const dirs = ["UP", "DOWN", "LEFT", "RIGHT"].filter((k) => m & (1 << PAD_BITS.indexOf(k))).join(" ");
+    if (dirs !== padState.shownDir) { padState.shownDir = dirs; $("#pad .pad-dpad").dataset.dir = dirs; }
+  }
 }
 function padMsg(text) {
   const n = $("#padMsg"); n.textContent = text; n.classList.add("show");
@@ -1247,7 +1274,8 @@ function padMsg(text) {
 }
 function layoutPad() {
   const pad = $("#pad"); if (pad.hidden) return;
-  const pref = ls.get("cartucho.pad.orient") || "h";      // h = landscape, hr = landscape the other way, v = portrait
+  padState.geo = null;
+  const pref = padState.forceOrient || ls.get("cartucho.pad.orient") || "h";      // h = landscape, hr = landscape the other way, v = portrait
   const portrait = innerHeight > innerWidth;
   padState.rot = pref === "v" || !portrait ? 0 : pref === "hr" ? -90 : 90;
   pad.classList.toggle("rot", padState.rot !== 0);
@@ -1255,6 +1283,7 @@ function layoutPad() {
   if (padState.rot === 0) { pad.style.width = pad.style.height = pad.style.transform = ""; return; }
   pad.style.width = innerHeight + "px"; pad.style.height = innerWidth + "px";
   pad.style.transform = padState.rot === 90 ? `translateX(${innerWidth}px) rotate(90deg)` : `translateY(${innerHeight}px) rotate(-90deg)`;
+  requestAnimationFrame(() => { padState.geo = null; });
 }
 window.addEventListener("resize", layoutPad);
 (() => {
@@ -1262,6 +1291,7 @@ window.addEventListener("resize", layoutPad);
   const isUi = (e) => e.target.closest(".pad-top");
   const down = (e) => {
     if (isUi(e)) return;
+    if (!padTouches.size) padState.geo = null;
     e.preventDefault(); try { pad.setPointerCapture(e.pointerId); } catch (x) {}
     const c = controlAt(e.clientX, e.clientY);
     padTouches.set(e.pointerId, { x: e.clientX, y: e.clientY, anchor: c, over: c, mask: 0 });
@@ -1429,6 +1459,147 @@ window.addEventListener("keyup", (e) => {
   if (k) keysDown.delete(k);
 });
 
+/* ---------------- speed diagnostic ----------------
+   Runs bench.gba (a GBA program that never sleeps) in fast-forward with no speed
+   limit, so the number is how much emulation this device can do, not just whether
+   it reaches 100%. Then it turns on, one at a time, each thing the console mode adds
+   on top (the controller, fingers moving, vibration, the video stream) and measures
+   again. Whatever makes the number drop is what is slowing this device down. */
+const DIAG_STEPS = [
+  { id: "base", label: "Só o emulador" },
+  { id: "pad", label: "Controle na tela, horizontal", pad: "h" },
+  { id: "padv", label: "Controle na tela, vertical", pad: "v" },
+  { id: "padrich", label: "Controle com sombras suaves (visual anterior)", pad: "h", rich: true },
+  { id: "touch", label: "Controle + dedos se mexendo", pad: "h", touch: true },
+  { id: "vib", label: "Controle + dedos + vibração", pad: "h", touch: true, vib: true },
+  { id: "cast", label: "Transmissão de vídeo e som (sem rede)", cast: true },
+  { id: "all", label: "Tudo junto", pad: "h", touch: true, vib: true, cast: true },
+  { id: "recast", label: "Depois de ligar e desligar a transmissão 3 vezes", recast: 3 },
+  { id: "base2", label: "Só o emulador, de novo (confere a medida)" },
+];
+const diag = window.__diag = { running: false, done: false, results: [], silentVib: false };
+const GBA_FPS = 59.7275;
+
+function diagShow(html) { $("#diagBody").innerHTML = html; }
+function diagRow(r, base) {
+  const pct = Math.round((r.fps / GBA_FPS) * 100);
+  const rel = base ? Math.round((r.fps / base) * 100) : 100;
+  const cls = !base ? "" : rel >= 92 ? "ok" : rel >= 80 ? "warn" : "bad";
+  return `<tr><td>${r.label}</td><td class="num">${pct}%</td><td class="num ${cls}">${base ? (rel >= 100 ? "sem perda" : "−" + (100 - rel) + "%") : "referência"}</td></tr>`;
+}
+function diagBase() {
+  const b = diag.results.filter((r) => r.id === "base" || r.id === "base2");
+  return b.length ? b.reduce((a, r) => a + r.fps, 0) / b.length : 0;
+}
+function diagTable() {
+  const base = diagBase();
+  return `<table class="diag-table"><thead><tr><th>Situação</th><th class="num">Capacidade</th><th class="num">Custo</th></tr></thead><tbody>${
+    diag.results.map((r) => diagRow(r, r.id.startsWith("base") ? 0 : base)).join("")}</tbody></table>`;
+}
+function diagReport() {
+  const base = diagBase();
+  const lines = diag.results.map((r) => `${r.label}: ${Math.round((r.fps / GBA_FPS) * 100)}%${!r.id.startsWith("base") && base ? ` (${Math.round((r.fps / base) * 100)}% do normal)` : ""}`);
+  return ["Cartuchin, teste de velocidade", new Date().toLocaleString("pt-BR"),
+    `Aparelho: ${device.name} · ${navigator.userAgent}`,
+    `Núcleos: ${navigator.hardwareConcurrency || "?"} · Tela: ${screen.width}x${screen.height} @${window.devicePixelRatio || 1}x`,
+    `Desempenho: ${perf.mode}${perf.learned ? " (aprendeu modo leve)" : ""} · Controle: ${ls.get("cartucho.pad.orient") || "h"}`,
+    "", ...lines].join("\n");
+}
+
+function diagTouches(withVib) {
+  diag.silentVib = !withVib;
+  let t = 0, down = false;
+  const fire = (type, x, y, id) => $("#pad").dispatchEvent(new PointerEvent(type, { pointerId: id, clientX: x, clientY: y, bubbles: true, cancelable: true, isPrimary: id === 31 }));
+  const timer = setInterval(() => {
+    const geo = padGeometry(), d = geo.find((g) => g.id === "dpad"), a = geo.find((g) => g.id === "A");
+    if (!d || !a) return;
+    const r = (d.r - d.l) * 0.35, x = d.cx + Math.cos(t / 6) * r, y = d.cy + Math.sin(t / 6) * r;
+    if (!down) { fire("pointerdown", x, y, 31); down = true; } else fire("pointermove", x, y, 31);
+    if (t % 12 === 0) fire("pointerdown", a.cx, a.cy, 32);
+    if (t % 12 === 6) fire("pointerup", a.cx, a.cy, 32);
+    t++;
+  }, 8);   // 125 events a second, like a fast touchscreen
+  return () => { clearInterval(timer); if (down) fire("pointerup", 0, 0, 31); fire("pointerup", 0, 0, 32); diag.silentVib = false; };
+}
+async function diagLoopback(emu) {
+  window.__castCap = 1; window.dispatchEvent(new Event("resize"));
+  await sleep(200);
+  const a = new RTCPeerConnection(), b = new RTCPeerConnection();
+  a.onicecandidate = (e) => e.candidate && b.addIceCandidate(e.candidate).catch(() => {});
+  b.onicecandidate = (e) => e.candidate && a.addIceCandidate(e.candidate).catch(() => {});
+  const stream = emu.canvas.captureStream(60);
+  a.addTrack(stream.getVideoTracks()[0], stream);
+  const tap = (window.__audioTaps || [])[0];
+  if (tap && tap.out) { const at = tap.out.stream.getAudioTracks()[0]; if (at) a.addTrack(at, stream); }
+  const v = document.createElement("video"); v.muted = true; v.playsInline = true;
+  b.ontrack = (e) => { v.srcObject = e.streams[0]; v.play().catch(() => {}); };
+  await a.setLocalDescription(await a.createOffer()); await b.setRemoteDescription(a.localDescription);
+  await b.setLocalDescription(await b.createAnswer()); await a.setRemoteDescription(b.localDescription);
+  return () => { try { a.close(); b.close(); } catch (e) {} for (const t of stream.getVideoTracks()) t.stop(); v.srcObject = null; window.__castCap = 0; window.dispatchEvent(new Event("resize")); };
+}
+async function runDiagnostic() {
+  if (diag.running) return;
+  diag.running = true; diag.done = false; diag.results = [];
+  $("#library").hidden = true; $("#player").hidden = false; $("#diag").hidden = false;
+  $("#pName").textContent = "Teste de velocidade";
+  diagShow("<p>Carregando o emulador…</p>");
+  keepAwake();
+  let bytes;
+  try { bytes = new Uint8Array(await (await fetch("bench.gba")).arrayBuffer()); } catch (e) { diagShow("<p>Não deu para baixar o programa de teste. Confira a internet.</p>"); diag.running = false; return; }
+  const emu = await createEmulator(new File([bytes], "bench.gba"), "cartuchin-bench", coreOptions(false));
+  if (!emu) { diagShow("<p>Não deu para carregar o emulador.</p>"); diag.running = false; return; }
+  player.emu = emu;
+  await new Promise((res) => emu.on("start", res));
+  await sleep(1500);
+  const gm = emu.gameManager;
+  try { gm.setFastForwardRatio(0); gm.toggleFastForward(1); } catch (e) {}
+  diagShow("<p>Aquecendo o emulador…</p>");
+  await sleep(5000);   // the browser optimises the emulator's code during the first seconds
+  for (const [i, step] of DIAG_STEPS.entries()) {
+    diagShow(`<p class="diag-now">Medindo ${i + 1} de ${DIAG_STEPS.length}: <b>${step.label}</b></p>${diag.results.length ? diagTable() : ""}`);
+    const undo = [];
+    if (step.pad) {
+      padState.forceOrient = step.pad; $("#pad").classList.toggle("rich", !!step.rich); showPad(true);
+      undo.push(() => { showPad(false); $("#pad").classList.remove("rich"); padState.forceOrient = null; });
+    }
+    if (step.touch) { await sleep(100); undo.push(diagTouches(!!step.vib)); }
+    if (step.cast) { try { undo.push(await diagLoopback(emu)); } catch (e) {} }
+    for (let k = 0; k < (step.recast || 0); k++) {
+      try { const stop = await diagLoopback(emu); await sleep(700); stop(); await sleep(200); } catch (e) {}
+    }
+    await sleep(1200);
+    const windows = [];
+    for (let w = 0; w < 3; w++) {
+      const f0 = Number(gm.getFrameNum()), t0 = performance.now();
+      await sleep(1500);
+      windows.push((Number(gm.getFrameNum()) - f0) / ((performance.now() - t0) / 1000));
+    }
+    const fps = windows.sort((x, y) => x - y)[1];   // median of three
+    diag.results.push({ id: step.id, label: step.label, fps });
+    for (const u of undo.reverse()) try { u(); } catch (e) {}
+    await sleep(300);
+  }
+  try { gm.toggleFastForward(0); } catch (e) {}
+  diag.running = false; diag.done = true;
+  const base = diagBase();
+  const worst = diag.results.filter((r) => !r.id.startsWith("base")).reduce((w, r) => (r.fps < w.fps ? r : w), { fps: Infinity });
+  const verdict = Math.round((base / GBA_FPS) * 100) < 100
+    ? `Este aparelho emula no máximo ${Math.round((base / GBA_FPS) * 100)}% da velocidade de um GBA no pior caso, então jogos pesados vão ficar lentos aqui mesmo sem nada a mais.`
+    : worst.fps / base < 0.85
+      ? `O que mais pesa neste aparelho: <b>${worst.label}</b>.`
+      : "Nenhum recurso extra pesa de forma relevante neste aparelho.";
+  diagShow(`<p class="diag-now">${verdict}</p>${diagTable()}<p class="diag-note">Capacidade é a velocidade máxima que o aparelho consegue com um programa que nunca descansa (100% = um GBA de verdade). Jogos reais pesam menos que isso.</p>
+    <div class="diag-actions"><button class="btn primary" id="diagCopy" type="button">Copiar resultado</button><button class="btn" id="diagClose" type="button">Fechar</button></div>
+    <pre class="diag-pre" id="diagText"></pre>`);
+  $("#diagText").textContent = diagReport();
+  $("#diagCopy").addEventListener("click", async () => {
+    try { await navigator.clipboard.writeText(diagReport()); toast("Resultado copiado"); }
+    catch (e) { const r = document.createRange(); r.selectNodeContents($("#diagText")); const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r); toast("Selecionei o texto: copie com o menu do navegador"); }
+  });
+  $("#diagClose").addEventListener("click", () => location.reload());
+}
+$("#diagBtn").addEventListener("click", runDiagnostic);
+
 /* ---------------- controller in the library (TV) ----------------
    D-pad or left stick moves between buttons, A presses, B cancels a dialog. */
 (() => {
@@ -1467,6 +1638,7 @@ window.addEventListener("keyup", (e) => {
 $("#connectBtn").addEventListener("click", () => { showConnect(); $("#connect").scrollIntoView({ behavior: "smooth" }); });
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
 handleScreenLink();
+if (location.hash === "#diagnostico") { try { history.replaceState(null, "", location.pathname); } catch (e) {} setTimeout(runDiagnostic, 300); }
 (async () => {
   await loadRoms();
   await connect();

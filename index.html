@@ -126,7 +126,7 @@ button { cursor: pointer; }
    a lit top edge and a dark lip so it reads as a raised key; pressing sinks it. */
 #pad { --shell: #1b1e2b; --key: #2c3146; --key-hi: #3a405a; --key-lo: #12141d; --face: #3b4bd8; --face-hi: #5a68f0; --ink: #e9ebf2; --glow: #7c8bff;
   position: fixed; inset: 0; z-index: 100000; color: var(--ink); box-sizing: border-box;
-  background: radial-gradient(120% 90% at 50% 40%, #232738 0%, var(--shell) 60%, #141621 100%);
+  background: var(--shell); contain: layout paint;
   display: grid; padding: 12px 18px; padding-top: calc(10px + env(safe-area-inset-top, 0px)); padding-bottom: calc(14px + env(safe-area-inset-bottom, 0px));
   grid-template-columns: 1fr auto 1fr; grid-template-rows: auto auto 1fr auto; gap: 10px 14px;
   grid-template-areas: "top top top" "l . r" "dpad . ab" "meta meta meta";
@@ -141,11 +141,11 @@ button { cursor: pointer; }
 .pad-tools { display: flex; gap: 6px; margin-left: auto; }
 .pad-tool { font-family: var(--font-body) !important; font-size: 0.78rem; font-weight: 600; padding: 7px 11px; border-radius: 9px; border: 1px solid #3a3f55; background: #20243300; }
 #padSave { border-color: #4a57d8; color: #c9cfff !important; }
-.pad-sh { height: 48px; border: 0; font-size: 1rem; background: linear-gradient(180deg, var(--key-hi), var(--key)); box-shadow: inset 0 1px 0 rgba(255,255,255,0.12), 0 4px 0 var(--key-lo), 0 6px 12px rgba(0,0,0,0.35); }
+.pad-sh { height: 48px; border: 0; font-size: 1rem; background: linear-gradient(180deg, var(--key-hi), var(--key)); box-shadow: inset 0 1px 0 rgba(255,255,255,0.12), 0 4px 0 var(--key-lo); }
 .pad-sh.l { grid-area: l; width: min(100%, 210px); justify-self: start; border-radius: 18px 10px 10px 10px; }
 .pad-sh.r { grid-area: r; width: min(100%, 210px); justify-self: end; border-radius: 10px 18px 10px 10px; }
 .pad-dpad { grid-area: dpad; position: relative; width: min(100%, 230px); aspect-ratio: 1; align-self: center; justify-self: center; max-height: 100%; }
-.pad-dpad .cross { position: absolute; background: linear-gradient(180deg, var(--key-hi), var(--key)); box-shadow: inset 0 1px 0 rgba(255,255,255,0.12), 0 5px 0 var(--key-lo), 0 8px 14px rgba(0,0,0,0.4); border-radius: 12px; }
+.pad-dpad .cross { position: absolute; background: linear-gradient(180deg, var(--key-hi), var(--key)); box-shadow: inset 0 1px 0 rgba(255,255,255,0.12), 0 5px 0 var(--key-lo); border-radius: 12px; }
 .pad-dpad .cross.v { left: 33%; width: 34%; top: 0; height: 100%; }
 .pad-dpad .cross.h { top: 33%; height: 34%; left: 0; width: 100%; }
 .pad-dpad .hub { position: absolute; left: 40%; top: 40%; width: 20%; height: 20%; border-radius: 50%; background: radial-gradient(circle at 50% 40%, var(--key-lo), #1d2130); box-shadow: inset 0 2px 4px rgba(0,0,0,0.6); }
@@ -157,20 +157,38 @@ button { cursor: pointer; }
 .pad-dpad[data-dir~="UP"] .arr.up, .pad-dpad[data-dir~="DOWN"] .arr.down, .pad-dpad[data-dir~="LEFT"] .arr.left, .pad-dpad[data-dir~="RIGHT"] .arr.right { opacity: 1; border-color: transparent; }
 .pad-dpad[data-dir~="UP"] .arr.up { border-bottom-color: var(--glow); } .pad-dpad[data-dir~="DOWN"] .arr.down { border-top-color: var(--glow); }
 .pad-dpad[data-dir~="LEFT"] .arr.left { border-right-color: var(--glow); } .pad-dpad[data-dir~="RIGHT"] .arr.right { border-left-color: var(--glow); }
-.pad-dpad[data-dir]:not([data-dir=""]) .cross { transform: translateY(2px); box-shadow: inset 0 1px 0 rgba(255,255,255,0.08), 0 3px 0 var(--key-lo), 0 4px 8px rgba(0,0,0,0.35); }
+.pad-dpad[data-dir]:not([data-dir=""]) .cross { transform: translateY(2px); box-shadow: inset 0 1px 0 rgba(255,255,255,0.08), 0 3px 0 var(--key-lo); }
 .pad-ab { grid-area: ab; position: relative; width: min(100%, 220px); aspect-ratio: 1; align-self: center; justify-self: center; max-height: 100%; }
 .pad-face { position: absolute; width: 44%; aspect-ratio: 1; border-radius: 50%; border: 0; font-size: 1.25rem;
   background: radial-gradient(circle at 50% 32%, var(--face-hi), var(--face) 62%, #2d3bb0 100%);
-  box-shadow: inset 0 2px 0 rgba(255,255,255,0.25), 0 6px 0 #1d2785, 0 9px 16px rgba(0,0,0,0.45); }
+  box-shadow: inset 0 2px 0 rgba(255,255,255,0.25), 0 6px 0 #1d2785; }
 .pad-face.a { right: 0; top: 6%; } .pad-face.b { left: 0; bottom: 6%; }
 .pad-meta { grid-area: meta; display: flex; justify-content: center; align-items: center; gap: 22px; }
 #pad.wide .pad-meta { flex-direction: row; align-self: end; padding-bottom: 6px; }
 .pad-pill { padding: 10px 16px; border-radius: 999px; border: 0; font-size: 0.68rem; letter-spacing: 0.08em; min-width: 86px;
-  background: linear-gradient(180deg, var(--key-hi), var(--key)); box-shadow: inset 0 1px 0 rgba(255,255,255,0.12), 0 3px 0 var(--key-lo), 0 5px 10px rgba(0,0,0,0.35); }
-#pad [data-btn] { transition: transform 0.04s, box-shadow 0.04s, filter 0.08s; }
+  background: linear-gradient(180deg, var(--key-hi), var(--key)); box-shadow: inset 0 1px 0 rgba(255,255,255,0.12), 0 3px 0 var(--key-lo); }
+#pad [data-btn] { transition: transform 0.04s; }
 #pad [data-btn].over { box-shadow: 0 0 0 2px rgba(124,139,255,0.55), inset 0 1px 0 rgba(255,255,255,0.12), 0 4px 0 var(--key-lo); }
-#pad [data-btn].on { transform: translateY(4px); filter: brightness(1.25); box-shadow: inset 0 2px 6px rgba(0,0,0,0.35), 0 1px 0 var(--key-lo); }
-#pad .pad-face.on { box-shadow: inset 0 3px 8px rgba(0,0,0,0.35), 0 2px 0 #1d2785; }
+#pad [data-btn].on { transform: translateY(4px); background: var(--key-hi); box-shadow: inset 0 2px 0 rgba(0,0,0,0.3), 0 1px 0 var(--key-lo); }
+#pad .pad-face.on { background: var(--face-hi); box-shadow: inset 0 3px 0 rgba(0,0,0,0.25), 0 2px 0 #1d2785; }
+/* the earlier, heavier look: kept only so the speed test can compare */
+#pad.rich { background: radial-gradient(120% 90% at 50% 40%, #232738 0%, var(--shell) 60%, #141621 100%); }
+#pad.rich .pad-sh, #pad.rich .pad-pill, #pad.rich .cross { box-shadow: inset 0 1px 0 rgba(255,255,255,0.12), 0 4px 0 var(--key-lo), 0 7px 14px rgba(0,0,0,0.4); }
+#pad.rich .pad-face { box-shadow: inset 0 2px 0 rgba(255,255,255,0.25), 0 6px 0 #1d2785, 0 9px 16px rgba(0,0,0,0.45); }
+#pad.rich [data-btn] { transition: transform 0.04s, box-shadow 0.04s, filter 0.08s; }
+#pad.rich [data-btn].on { filter: brightness(1.25); }
+/* ---------- speed test ---------- */
+#diag { position: fixed; inset: 0; z-index: 200000; pointer-events: none; display: grid; align-items: start; justify-items: center; padding: 12px 16px; }
+.diag-card { pointer-events: auto; background: var(--surface); color: var(--ink); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; width: min(560px, 100%); max-height: calc(100vh - 24px); overflow: auto; display: grid; gap: 10px; box-shadow: 0 10px 30px rgba(0,0,0,0.35); }
+.diag-card h2 { font-family: var(--font-display); font-size: 1.15rem; margin: 0; }
+.diag-now { margin: 0; }
+.diag-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+.diag-table th, .diag-table td { text-align: left; padding: 5px 4px; border-bottom: 1px solid var(--line); }
+.diag-table .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.diag-table .ok { color: var(--ok); } .diag-table .warn { color: var(--warn); } .diag-table .bad { color: var(--bad); }
+.diag-note { margin: 0; font-size: 0.82rem; color: var(--muted); }
+.diag-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.diag-pre { margin: 0; font-size: 0.75rem; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--muted); max-height: 140px; overflow: auto; }
 #screen { position: fixed; inset: 0; background: #000; z-index: 15; display: grid; place-items: center; }
 #scrVideo { position: absolute; width: 2px; height: 2px; opacity: 0; pointer-events: none; }
 #scrCanvas { width: min(100vw, 150vh); height: auto; aspect-ratio: 3 / 2; image-rendering: pixelated; image-rendering: crisp-edges; background: #000; }
@@ -269,6 +287,7 @@ body { margin: 0; }
       </div>
       <span id="perfHint"></span>
     </div>
+    <div><button class="btn small" id="diagBtn" type="button">Testar velocidade deste aparelho</button></div>
     <label for="deviceName">Este aparelho se chama <input id="deviceName" type="text" maxlength="40" autocomplete="off"></label>
     <span>Save states do menu do emulador ficam só neste aparelho. O que sincroniza é o save feito dentro do jogo.</span>
     <span>Feito com <a href="https://github.com/EmulatorJS/EmulatorJS" target="_blank" rel="noopener">EmulatorJS</a> e <a href="https://mgba.io" target="_blank" rel="noopener">mGBA</a>.</span>
@@ -312,6 +331,13 @@ body { margin: 0; }
       <button type="button" data-btn="B" class="pad-face b">B</button>
       <button type="button" data-btn="A" class="pad-face a">A</button>
     </div>
+  </div>
+</section>
+
+<section id="diag" hidden>
+  <div class="diag-card">
+    <h2>Teste de velocidade</h2>
+    <div id="diagBody"></div>
   </div>
 </section>
 
