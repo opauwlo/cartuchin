@@ -853,6 +853,33 @@ function loadEmulator() {
   return emuLoading;
 }
 
+/* The emulator sizes its WebGL canvas from a ResizeObserver, so on a TV it draws a
+   1080p (or 4K) surface for a 240x160 picture, which weak TV GPUs struggle with.
+   In light mode the observer reports a smaller size: the emulator renders at most
+   CANVAS_CAP pixels wide and the browser stretches the result, pixel-perfect. */
+const CANVAS_CAP = 960;
+(() => {
+  const RO = window.ResizeObserver;
+  if (!RO || RO.__cartucho) return;
+  const factorFor = (w, h) => { if (!perfLight()) return 1; const big = Math.max(w, h); return big > CANVAS_CAP ? CANVAS_CAP / big : 1; };
+  const scaleEntry = (e) => {
+    if (!(e.target instanceof HTMLCanvasElement)) return e;
+    const dpr = window.devicePixelRatio || 1;
+    const pw = e.devicePixelContentBoxSize ? e.devicePixelContentBoxSize[0].inlineSize : e.contentRect.width * dpr;
+    const ph = e.devicePixelContentBoxSize ? e.devicePixelContentBoxSize[0].blockSize : e.contentRect.height * dpr;
+    const f = factorFor(pw, ph);
+    if (f === 1) return e;
+    const w = Math.round(pw * f), h = Math.round(ph * f);
+    return { target: e.target, contentRect: { width: w / dpr, height: h / dpr, x: 0, y: 0, top: 0, left: 0 },
+      devicePixelContentBoxSize: [{ inlineSize: w, blockSize: h }], contentBoxSize: [{ inlineSize: w / dpr, blockSize: h / dpr }], borderBoxSize: e.borderBoxSize };
+  };
+  class CappedResizeObserver extends RO {
+    constructor(cb) { super((entries, obs) => cb(entries.map(scaleEntry), obs)); }
+  }
+  CappedResizeObserver.__cartucho = true;
+  window.ResizeObserver = CappedResizeObserver;
+})();
+
 function patchEmulator() {
   const EJS = window.EmulatorJS;
   if (!EJS || EJS.__cartucho) return;
