@@ -1325,17 +1325,8 @@ async function castTo(code) {
 /* ---------- the phone as a controller ----------
    A touchscreen can't tell a resting finger from a pressing one, so the rule is
    the one a real pad follows: a button is pressed only by the finger that landed
-   on it. A finger that slides across other buttons just "feels" them: a short
-   tick on every edge it crosses, and a firmer pulse when something is pressed.
-   The D-pad keeps the finger that started on it, even if it drifts a little off,
-   and ticks on every change of direction, like the ridges of a real cross. */
-const PAD_VIB = { press: 18, tick: 7, dir: 9 };
-let lastVib = 0;
-function vib(ms) {
-  if (!navigator.vibrate || (window.__diag && window.__diag.silentVib)) return;
-  const now = performance.now(); if (now - lastVib < 25 && ms < 15) return;
-  lastVib = now; try { navigator.vibrate(ms); } catch (e) {}
-}
+   on it. A finger that slides across other buttons only highlights them.
+   The D-pad keeps the finger that started on it, even if it drifts a little off. */
 const padTouches = new Map();
 const padState = { rot: 0, geo: null, shownMask: -1, shownOver: "", shownDir: "" };
 /* Hit-testing uses rectangles measured once per layout. The pad only ever turns by
@@ -1382,8 +1373,6 @@ function padUpdate() {
   const over = [];
   for (const p of padTouches.values()) {
     const pm = touchMask(p);
-    if (p.anchor === "dpad" && pm !== p.mask && pm) vib(p.mask ? PAD_VIB.dir : PAD_VIB.press);
-    else if (pm && !p.mask) vib(PAD_VIB.press);
     p.mask = pm; m |= pm;
     if (p.over && p.over !== "dpad" && !(pm & (1 << PAD_BITS.indexOf(p.over)))) over.push(p.over);
   }
@@ -1429,18 +1418,13 @@ window.addEventListener("resize", layoutPad);
     e.preventDefault(); try { pad.setPointerCapture(e.pointerId); } catch (x) {}
     const c = controlAt(e.clientX, e.clientY);
     padTouches.set(e.pointerId, { x: e.clientX, y: e.clientY, anchor: c, over: c, mask: 0 });
-    if (!c) vib(PAD_VIB.tick);
     padUpdate();
   };
   const move = (e) => {
     const p = padTouches.get(e.pointerId); if (!p) return;
     e.preventDefault(); p.x = e.clientX; p.y = e.clientY;
     const c = controlAt(p.x, p.y);
-    if (c !== p.over) {
-      // crossing an edge: tick, unless this is the D-pad finger (it ticks on direction instead)
-      if (p.anchor !== "dpad" && (c || p.over)) vib(PAD_VIB.tick);
-      p.over = c;
-    }
+    p.over = c;
     padUpdate();
   };
   const up = (e) => { if (!padTouches.delete(e.pointerId)) return; padUpdate(); };
@@ -1451,11 +1435,10 @@ window.addEventListener("resize", layoutPad);
   pad.addEventListener("contextmenu", (e) => e.preventDefault());
   $("#padStop").addEventListener("click", () => stopCast("Transmissão encerrada."));
   $("#padSave").addEventListener("click", async () => {
-    vib(PAD_VIB.press);
     padMsg("Enviando o save…");
     await flush();
     const okState = await uploadState({ force: true });
-    if (player.state === "ok" || okState) { padMsg(cloud.db ? "Progresso salvo: continua daqui em qualquer aparelho" : "Progresso salvo neste celular"); try { navigator.vibrate && navigator.vibrate([12, 70, 12]); } catch (e) {} }
+    if (player.state === "ok" || okState) { padMsg(cloud.db ? "Progresso salvo: continua daqui em qualquer aparelho" : "Progresso salvo neste celular"); }
     else if (player.state === "none") padMsg("Ainda não há save. Salve dentro do jogo primeiro.");
     else if (player.state === "local") padMsg("Save guardado neste celular (sem GitHub conectado)");
     else padMsg("Save guardado aqui. Ele sobe quando a internet voltar.");
@@ -1617,51 +1600,47 @@ window.addEventListener("keyup", (e) => {
    Runs bench.gba (a GBA program that never sleeps) in fast-forward with no speed
    limit, so the number is how much emulation this device can do, not just whether
    it reaches 100%. Then it turns on, one at a time, each thing the console mode adds
-   on top (the controller, fingers moving, vibration, the video stream) and measures
-   again. Whatever makes the number drop is what is slowing this device down. */
+   on top (the controller, fingers moving, the video stream) and measures again.
+   Each feature is measured between two plain runs and compared with their average,
+   so a device that speeds up or slows down along the way (warming up, heating up)
+   doesn't blame the wrong feature. Whatever makes the number drop is what is
+   slowing this device down. */
 const DIAG_STEPS = [
-  { id: "base", label: "Só o emulador" },
   { id: "pad", label: "Controle na tela, horizontal", pad: "h" },
   { id: "padv", label: "Controle na tela, vertical", pad: "v" },
   { id: "padrich", label: "Controle com sombras suaves (visual anterior)", pad: "h", rich: true },
   { id: "touch", label: "Controle + dedos se mexendo", pad: "h", touch: true },
-  { id: "vib", label: "Controle + dedos + vibração", pad: "h", touch: true, vib: true },
   { id: "cast", label: "Transmissão de vídeo e som (sem rede)", cast: true },
-  { id: "all", label: "Tudo junto", pad: "h", touch: true, vib: true, cast: true },
+  { id: "all", label: "Tudo junto", pad: "h", touch: true, cast: true },
   { id: "recast", label: "Depois de ligar e desligar a transmissão 3 vezes", recast: 3 },
-  { id: "base2", label: "Só o emulador, de novo (confere a medida)" },
 ];
-const diag = window.__diag = { running: false, done: false, results: [], silentVib: false };
+const diag = window.__diag = { running: false, done: false, results: [], bases: [] };
 const GBA_FPS = 59.7275;
 
 function diagShow(html) { $("#diagBody").innerHTML = html; }
-function diagRow(r, base) {
+const median = (xs) => { const v = [...xs].sort((a, b) => a - b); return v.length ? v[Math.floor(v.length / 2)] : 0; };
+function diagRow(r) {
   const pct = Math.round((r.fps / GBA_FPS) * 100);
-  const rel = base ? Math.round((r.fps / base) * 100) : 100;
-  const cls = !base ? "" : rel >= 92 ? "ok" : rel >= 80 ? "warn" : "bad";
-  return `<tr><td>${r.label}</td><td class="num">${pct}%</td><td class="num ${cls}">${base ? (rel >= 100 ? "sem perda" : "−" + (100 - rel) + "%") : "referência"}</td></tr>`;
-}
-function diagBase() {
-  const b = diag.results.filter((r) => r.id === "base" || r.id === "base2");
-  return b.length ? b.reduce((a, r) => a + r.fps, 0) / b.length : 0;
+  if (r.rel == null) return `<tr><td>${r.label}</td><td class="num">${pct}%</td><td class="num">referência</td></tr>`;
+  const rel = Math.round(r.rel * 100);
+  const cls = rel >= 92 ? "ok" : rel >= 80 ? "warn" : "bad";
+  return `<tr><td>${r.label}</td><td class="num">${pct}%</td><td class="num ${cls}">${rel >= 100 ? "sem perda" : "−" + (100 - rel) + "%"}</td></tr>`;
 }
 function diagTable() {
-  const base = diagBase();
   return `<table class="diag-table"><thead><tr><th>Situação</th><th class="num">Capacidade</th><th class="num">Custo</th></tr></thead><tbody>${
-    diag.results.map((r) => diagRow(r, r.id.startsWith("base") ? 0 : base)).join("")}</tbody></table>`;
+    diag.results.map(diagRow).join("")}</tbody></table>`;
 }
 function diagReport() {
-  const base = diagBase();
-  const lines = diag.results.map((r) => `${r.label}: ${Math.round((r.fps / GBA_FPS) * 100)}%${!r.id.startsWith("base") && base ? ` (${Math.round((r.fps / base) * 100)}% do normal)` : ""}`);
+  const lines = diag.results.map((r) => `${r.label}: ${Math.round((r.fps / GBA_FPS) * 100)}%${r.rel != null ? ` (${Math.round(r.rel * 100)}% do normal)` : ""}`);
   return ["Cartuchin, teste de velocidade", new Date().toLocaleString("pt-BR"),
     `Aparelho: ${device.name} · ${navigator.userAgent}`,
     `Núcleos: ${navigator.hardwareConcurrency || "?"} · Tela: ${screen.width}x${screen.height} @${window.devicePixelRatio || 1}x`,
     `Desempenho: ${perf.mode}${perf.learned ? " (aprendeu modo leve)" : ""} · Controle: ${ls.get("cartucho.pad.orient") || "h"}`,
+    `Medidas do emulador sozinho, em ordem: ${diag.bases.map((b) => Math.round((b / GBA_FPS) * 100) + "%").join(", ")}`,
     "", ...lines].join("\n");
 }
 
-function diagTouches(withVib) {
-  diag.silentVib = !withVib;
+function diagTouches() {
   let t = 0, down = false;
   const fire = (type, x, y, id) => $("#pad").dispatchEvent(new PointerEvent(type, { pointerId: id, clientX: x, clientY: y, bubbles: true, cancelable: true, isPrimary: id === 31 }));
   const timer = setInterval(() => {
@@ -1673,7 +1652,7 @@ function diagTouches(withVib) {
     if (t % 12 === 6) fire("pointerup", a.cx, a.cy, 32);
     t++;
   }, 8);   // 125 events a second, like a fast touchscreen
-  return () => { clearInterval(timer); if (down) fire("pointerup", 0, 0, 31); fire("pointerup", 0, 0, 32); diag.silentVib = false; };
+  return () => { clearInterval(timer); if (down) fire("pointerup", 0, 0, 31); fire("pointerup", 0, 0, 32); };
 }
 async function diagLoopback(emu) {
   window.__castCap = 1; window.dispatchEvent(new Event("resize"));
@@ -1709,37 +1688,46 @@ async function runDiagnostic() {
   try { gm.setFastForwardRatio(0); gm.toggleFastForward(1); } catch (e) {}
   diagShow("<p>Aquecendo o emulador…</p>");
   await sleep(5000);   // the browser optimises the emulator's code during the first seconds
+  const measure = async () => {
+    const windows = [];
+    for (let w = 0; w < 3; w++) {
+      const f0 = Number(gm.getFrameNum()), t0 = performance.now();
+      await sleep(1300);
+      windows.push((Number(gm.getFrameNum()) - f0) / ((performance.now() - t0) / 1000));
+    }
+    return median(windows);
+  };
+  diag.bases = [await measure()];
+  diag.results = [{ id: "base", label: "Só o emulador", fps: diag.bases[0] }];
   for (const [i, step] of DIAG_STEPS.entries()) {
-    diagShow(`<p class="diag-now">Medindo ${i + 1} de ${DIAG_STEPS.length}: <b>${step.label}</b></p>${diag.results.length ? diagTable() : ""}`);
+    diagShow(`<p class="diag-now">Medindo ${i + 1} de ${DIAG_STEPS.length}: <b>${step.label}</b></p>${diagTable()}`);
     const undo = [];
     if (step.pad) {
       padState.forceOrient = step.pad; $("#pad").classList.toggle("rich", !!step.rich); showPad(true);
       undo.push(() => { showPad(false); $("#pad").classList.remove("rich"); padState.forceOrient = null; });
     }
-    if (step.touch) { await sleep(100); undo.push(diagTouches(!!step.vib)); }
+    if (step.touch) { await sleep(100); undo.push(diagTouches()); }
     if (step.cast) { try { undo.push(await diagLoopback(emu)); } catch (e) {} }
     for (let k = 0; k < (step.recast || 0); k++) {
       try { const stop = await diagLoopback(emu); await sleep(700); stop(); await sleep(200); } catch (e) {}
     }
-    await sleep(1200);
-    const windows = [];
-    for (let w = 0; w < 3; w++) {
-      const f0 = Number(gm.getFrameNum()), t0 = performance.now();
-      await sleep(1500);
-      windows.push((Number(gm.getFrameNum()) - f0) / ((performance.now() - t0) / 1000));
-    }
-    const fps = windows.sort((x, y) => x - y)[1];   // median of three
-    diag.results.push({ id: step.id, label: step.label, fps });
+    await sleep(1000);
+    const fps = await measure();
     for (const u of undo.reverse()) try { u(); } catch (e) {}
-    await sleep(300);
+    await sleep(500);
+    const after = await measure();
+    const before = diag.bases[diag.bases.length - 1];
+    diag.bases.push(after);
+    diag.results.push({ id: step.id, label: step.label, fps, rel: fps / ((before + after) / 2) });
+    diag.results[0].fps = median(diag.bases);
   }
   try { gm.toggleFastForward(0); } catch (e) {}
   diag.running = false; diag.done = true;
-  const base = diagBase();
-  const worst = diag.results.filter((r) => !r.id.startsWith("base")).reduce((w, r) => (r.fps < w.fps ? r : w), { fps: Infinity });
+  const base = diag.results[0].fps;
+  const worst = diag.results.filter((r) => r.rel != null).reduce((w, r) => (r.rel < w.rel ? r : w), { rel: Infinity });
   const verdict = Math.round((base / GBA_FPS) * 100) < 100
     ? `Este aparelho emula no máximo ${Math.round((base / GBA_FPS) * 100)}% da velocidade de um GBA no pior caso, então jogos pesados vão ficar lentos aqui mesmo sem nada a mais.`
-    : worst.fps / base < 0.85
+    : worst.rel < 0.85
       ? `O que mais pesa neste aparelho: <b>${worst.label}</b>.`
       : "Nenhum recurso extra pesa de forma relevante neste aparelho.";
   diagShow(`<p class="diag-now">${verdict}</p>${diagTable()}<p class="diag-note">Capacidade é a velocidade máxima que o aparelho consegue com um programa que nunca descansa (100% = um GBA de verdade). Jogos reais pesam menos que isso.</p>

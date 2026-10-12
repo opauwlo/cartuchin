@@ -50,25 +50,26 @@ const cdp = await ctx.newCDPSession(page);
 await cdp.send("Emulation.setCPUThrottlingRate", { rate: slowdown });
 await page.waitForFunction(() => window.__diag.done, null, { timeout: 240000, polling: 1000 });
 const results = await page.evaluate(() => window.__diag.results);
+const basesFromPage = await page.evaluate(() => window.__diag.bases);
 await browser.close();
 server.close();
 
-const plain = results.filter((r) => r.id.startsWith("base"));
-const base = plain.reduce((a, r) => a + r.fps, 0) / plain.length;
-const rows = results.map((r) => ({ ...r, pct: (r.fps / 59.7275) * 100, rel: r.fps / base, ok: r.id.startsWith("base") || r.fps / base >= 1 - maxCost }));
+const bases = basesFromPage;
+const rows = results.map((r) => ({ ...r, pct: (r.fps / 59.7275) * 100, ok: r.rel == null || r.rel >= 1 - maxCost }));
+// a feature that leaves something running shows up as the plain runs getting slower over time
+const firstHalf = bases.slice(0, Math.ceil(bases.length / 2)), lastTwo = bases.slice(-2);
+const avg = (xs) => xs.reduce((a, x) => a + x, 0) / xs.length;
+if (avg(lastTwo) < avg(firstHalf) * (1 - maxCost)) {
+  rows.push({ label: "O app ficou mais lento com o tempo (o emulador sozinho caiu ao longo do teste)", ok: false, pct: (avg(lastTwo) / 59.7275) * 100, rel: avg(lastTwo) / avg(firstHalf) });
+}
 const table = [
   `| Situação | Capacidade | Relativo ao normal | |`,
   `|---|---:|---:|---|`,
-  ...rows.map((r) => `| ${r.label} | ${r.pct.toFixed(0)}% | ${(r.rel * 100).toFixed(0)}% | ${r.ok ? "ok" : "**lento demais**"} |`),
+  ...rows.map((r) => `| ${r.label} | ${r.pct.toFixed(0)}% | ${r.rel == null ? "referência" : (r.rel * 100).toFixed(0) + "%"} | ${r.ok ? "ok" : "**lento demais**"} |`),
 ].join("\n");
-const summary = `## Teste de velocidade (CPU ${slowdown}x mais lenta, custo máximo ${Math.round(maxCost * 100)}%)\n\n${table}\n`;
+const summary = `## Teste de velocidade (CPU ${slowdown}x mais lenta, custo máximo ${Math.round(maxCost * 100)}%)\n\n${table}\n\nEmulador sozinho ao longo do teste: ${bases.map((b) => ((b / 59.7275) * 100).toFixed(0) + "%").join(" → ")}\n`;
 console.log(summary);
 if (process.env.GITHUB_STEP_SUMMARY) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary);
-const b1 = results.find((r) => r.id === "base"), b2 = results.find((r) => r.id === "base2");
-if (b1 && b2 && b2.fps < b1.fps * (1 - maxCost)) {
-  rows.push({ label: "O app ficou mais lento com o tempo (2ª medida do emulador sozinho caiu)", ok: false });
-  console.error(`A segunda medida do emulador sozinho caiu de ${b1.fps.toFixed(1)} para ${b2.fps.toFixed(1)} quadros/s.`);
-}
 const failed = rows.filter((r) => !r.ok);
 if (failed.length) {
   console.error(`Falhou: ${failed.map((r) => r.label).join(", ")} custa(m) mais de ${Math.round(maxCost * 100)}% da velocidade.`);
