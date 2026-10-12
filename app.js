@@ -903,6 +903,7 @@ function patchEmulator() {
     GM.prototype.getRetroArchCfg = function () {
       let cfg = orig.call(this);
       cfg = cfg.replace(/audio_latency = \d+/, "audio_latency = " + (perfLight() ? 128 : 80));
+      cfg = cfg.replace(/autosave_interval = \d+/, "autosave_interval = 0");  // the page saves on its own schedule
       return cfg + "audio_rate_control = true\naudio_rate_control_delta = 0.010\nvideo_threaded = false\n";
     };
   }
@@ -970,7 +971,7 @@ async function play(key) {
     }
     await sleep(1500);
     if (start.upload) flush();
-    player.timer = setInterval(flush, 15000);
+    player.timer = setInterval(flush, 60000);
     startSpeedMeter();
     if (cast.pending) { const c = cast.pending; cast.pending = null; setTimeout(() => castTo(c), 500); }
   });
@@ -1179,56 +1180,132 @@ async function castTo(code) {
   } catch (e) { stopCast("Não deu para começar a transmissão."); }
 }
 /* ---------- the phone as a controller ----------
-   Every finger is tracked; what is under it decides which buttons are held, so you
-   can slide from B to A or roll around the D-pad without lifting. */
+   A touchscreen can't tell a resting finger from a pressing one, so the rule is
+   the one a real pad follows: a button is pressed only by the finger that landed
+   on it. A finger that slides across other buttons just "feels" them: a short
+   tick on every edge it crosses, and a firmer pulse when something is pressed.
+   The D-pad keeps the finger that started on it, even if it drifts a little off,
+   and ticks on every change of direction, like the ridges of a real cross. */
+const PAD_VIB = { press: 18, tick: 7, dir: 9 };
+let lastVib = 0;
+function vib(ms) {
+  if (!navigator.vibrate) return;
+  const now = performance.now(); if (now - lastVib < 25 && ms < 15) return;
+  lastVib = now; try { navigator.vibrate(ms); } catch (e) {}
+}
 const padTouches = new Map();
-function padMaskAt(x, y) {
-  const target = document.elementFromPoint(x, y);
-  if (!target) return 0;
-  const dpad = target.closest(".pad-dpad");
-  if (dpad) {
-    const r = dpad.getBoundingClientRect();
-    const dx = (x - (r.left + r.width / 2)) / (r.width / 2), dy = (y - (r.top + r.height / 2)) / (r.height / 2);
-    if (Math.hypot(dx, dy) < 0.22) return 0;
-    const a = Math.atan2(dy, dx) * 180 / Math.PI;   // 0 = right, 90 = down
-    let m = 0;
-    if (a > -67.5 && a < 67.5) m |= 1 << PAD_BITS.indexOf("RIGHT");
-    if (a > 22.5 && a < 157.5) m |= 1 << PAD_BITS.indexOf("DOWN");
-    if (a > 112.5 || a < -112.5) m |= 1 << PAD_BITS.indexOf("LEFT");
-    if (a > -157.5 && a < -22.5) m |= 1 << PAD_BITS.indexOf("UP");
-    return m;
-  }
-  const btn = target.closest("[data-btn]");
-  return btn ? 1 << PAD_BITS.indexOf(btn.dataset.btn) : 0;
+const padState = { rot: 0 };
+function controlAt(x, y) {
+  const t = document.elementFromPoint(x, y);
+  if (!t || !t.closest("#pad")) return null;
+  if (t.closest(".pad-dpad")) return "dpad";
+  const b = t.closest("[data-btn]");
+  return b ? b.dataset.btn : null;
+}
+function dpadMask(x, y) {
+  const d = $("#pad .pad-dpad").getBoundingClientRect();
+  let dx = (x - (d.left + d.width / 2)) / (d.width / 2), dy = (y - (d.top + d.height / 2)) / (d.height / 2);
+  if (padState.rot === 90) [dx, dy] = [dy, -dx];
+  else if (padState.rot === -90) [dx, dy] = [-dy, dx];
+  if (Math.hypot(dx, dy) < 0.2) return 0;
+  const a = Math.atan2(dy, dx) * 180 / Math.PI;   // 0 = right, 90 = down
+  let m = 0;
+  if (a > -67.5 && a < 67.5) m |= 1 << PAD_BITS.indexOf("RIGHT");
+  if (a > 22.5 && a < 157.5) m |= 1 << PAD_BITS.indexOf("DOWN");
+  if (a > 112.5 || a < -112.5) m |= 1 << PAD_BITS.indexOf("LEFT");
+  if (a > -157.5 && a < -22.5) m |= 1 << PAD_BITS.indexOf("UP");
+  return m;
+}
+function touchMask(p) {
+  if (p.anchor === "dpad") return dpadMask(p.x, p.y);
+  if (p.anchor && p.over === p.anchor) return 1 << PAD_BITS.indexOf(p.anchor);
+  return 0;
 }
 function padUpdate() {
   let m = 0;
-  for (const p of padTouches.values()) m |= padMaskAt(p.x, p.y);
-  const pressed = m & ~cast.localMask;
-  if (pressed && navigator.vibrate) try { navigator.vibrate(12); } catch (e) {}
+  const over = new Set();
+  for (const p of padTouches.values()) {
+    const pm = touchMask(p);
+    if (p.anchor === "dpad" && pm !== p.mask && pm) vib(p.mask ? PAD_VIB.dir : PAD_VIB.press);
+    else if (pm && !p.mask) vib(PAD_VIB.press);
+    p.mask = pm; m |= pm;
+    if (p.over && p.over !== "dpad" && !(pm & (1 << PAD_BITS.indexOf(p.over)))) over.add(p.over);
+  }
   cast.localMask = m;
-  for (const b of document.querySelectorAll("#pad [data-btn]")) b.classList.toggle("on", !!(m & (1 << PAD_BITS.indexOf(b.dataset.btn))));
+  for (const b of document.querySelectorAll("#pad [data-btn]")) {
+    const bit = 1 << PAD_BITS.indexOf(b.dataset.btn);
+    b.classList.toggle("on", !!(m & bit));
+    b.classList.toggle("over", over.has(b.dataset.btn));
+  }
   const dirs = ["UP", "DOWN", "LEFT", "RIGHT"].filter((k) => m & (1 << PAD_BITS.indexOf(k)));
   $("#pad .pad-dpad").dataset.dir = dirs.join(" ");
   applyInput();
 }
+function padMsg(text) {
+  const n = $("#padMsg"); n.textContent = text; n.classList.add("show");
+  clearTimeout(padMsg.t); padMsg.t = setTimeout(() => n.classList.remove("show"), 2600);
+}
+function layoutPad() {
+  const pad = $("#pad"); if (pad.hidden) return;
+  const pref = ls.get("cartucho.pad.orient") || "h";      // h = landscape, hr = landscape the other way, v = portrait
+  const portrait = innerHeight > innerWidth;
+  padState.rot = pref === "v" || !portrait ? 0 : pref === "hr" ? -90 : 90;
+  pad.classList.toggle("rot", padState.rot !== 0);
+  pad.classList.toggle("wide", padState.rot !== 0 || !portrait);
+  if (padState.rot === 0) { pad.style.width = pad.style.height = pad.style.transform = ""; return; }
+  pad.style.width = innerHeight + "px"; pad.style.height = innerWidth + "px";
+  pad.style.transform = padState.rot === 90 ? `translateX(${innerWidth}px) rotate(90deg)` : `translateY(${innerHeight}px) rotate(-90deg)`;
+}
+window.addEventListener("resize", layoutPad);
 (() => {
   const pad = $("#pad");
-  const down = (e) => { e.preventDefault(); try { pad.setPointerCapture(e.pointerId); } catch (x) {} padTouches.set(e.pointerId, { x: e.clientX, y: e.clientY }); padUpdate(); };
-  const move = (e) => { if (!padTouches.has(e.pointerId)) return; e.preventDefault(); padTouches.set(e.pointerId, { x: e.clientX, y: e.clientY }); padUpdate(); };
+  const isUi = (e) => e.target.closest(".pad-top");
+  const down = (e) => {
+    if (isUi(e)) return;
+    e.preventDefault(); try { pad.setPointerCapture(e.pointerId); } catch (x) {}
+    const c = controlAt(e.clientX, e.clientY);
+    padTouches.set(e.pointerId, { x: e.clientX, y: e.clientY, anchor: c, over: c, mask: 0 });
+    if (!c) vib(PAD_VIB.tick);
+    padUpdate();
+  };
+  const move = (e) => {
+    const p = padTouches.get(e.pointerId); if (!p) return;
+    e.preventDefault(); p.x = e.clientX; p.y = e.clientY;
+    const c = controlAt(p.x, p.y);
+    if (c !== p.over) {
+      // crossing an edge: tick, unless this is the D-pad finger (it ticks on direction instead)
+      if (p.anchor !== "dpad" && (c || p.over)) vib(PAD_VIB.tick);
+      p.over = c;
+    }
+    padUpdate();
+  };
   const up = (e) => { if (!padTouches.delete(e.pointerId)) return; padUpdate(); };
   pad.addEventListener("pointerdown", down);
   pad.addEventListener("pointermove", move);
   pad.addEventListener("pointerup", up);
   pad.addEventListener("pointercancel", up);
   pad.addEventListener("contextmenu", (e) => e.preventDefault());
-  $("#padStop").addEventListener("pointerdown", (e) => e.stopPropagation());
   $("#padStop").addEventListener("click", () => stopCast("Transmissão encerrada."));
+  $("#padSave").addEventListener("click", async () => {
+    vib(PAD_VIB.press);
+    padMsg("Enviando o save…");
+    const before = player.lastSha; await flush();
+    if (player.state === "ok") { padMsg(player.lastSha === before ? "O save já estava na nuvem" : "Save enviado"); try { navigator.vibrate && navigator.vibrate([12, 70, 12]); } catch (e) {} }
+    else if (player.state === "none") padMsg("Ainda não há save. Salve dentro do jogo primeiro.");
+    else if (player.state === "local") padMsg("Save guardado neste celular (sem GitHub conectado)");
+    else padMsg("Save guardado aqui. Ele sobe quando a internet voltar.");
+  });
+  $("#padRotate").addEventListener("click", () => {
+    const order = ["h", "hr", "v"], cur = ls.get("cartucho.pad.orient") || "h";
+    const next = order[(order.indexOf(cur) + 1) % order.length];
+    ls.set("cartucho.pad.orient", next); layoutPad();
+    padMsg(next === "v" ? "Controle na vertical" : "Controle na horizontal");
+  });
 })();
 function showPad(on) {
   $("#pad").hidden = !on;
   if (!on) { padTouches.clear(); cast.localMask = 0; }
-  if (on) { try { screen.orientation && screen.orientation.lock && screen.orientation.lock("landscape").catch(() => {}); } catch (e) {} }
+  else layoutPad();
 }
 
 function askCastCode() {
@@ -1279,7 +1356,7 @@ async function startScreen() {
     pc.ontrack = (e) => {
       const v = $("#scrVideo");
       if (v.srcObject !== e.streams[0]) v.srcObject = e.streams[0];
-      try { e.receiver.jitterBufferTarget = 0; } catch (x) {}
+      try { e.receiver.jitterBufferTarget = 30; } catch (x) {}
       try { e.receiver.playoutDelayHint = 0; } catch (x) {}
       v.play().catch(() => { $("#scrTap").hidden = false; });
     };
