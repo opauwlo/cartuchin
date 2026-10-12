@@ -714,15 +714,29 @@ const perf = {
 };
 if (!ls.get(PERF_KEY + ".mode") && guessDevice() === "TV") perf.learned = true;
 const perfLight = () => perf.mode === "light" || (perf.mode === "auto" && perf.learned);
-function coreOptions(light) {
+/* The settings every mode shares are the cheapest ones that don't change the game:
+   no colour filters, no frame blending, the default idle-loop handling. What the
+   modes change is how much headroom the device gets:
+   - quality: draws every frame at the screen's full resolution, short audio buffer
+   - auto (default): skips drawing a frame only when sound is about to run dry, and
+     draws the picture at most 2x the GBA's size (the browser enlarges it, pixel-perfect)
+   - light: skips more eagerly, draws at the GBA's own 240x160, longest audio buffer */
+const perfProfile = () => perf.mode === "quality" ? "quality" : perfLight() ? "light" : "auto";
+const PROFILES = {
+  quality: { frameskip: "disabled", threshold: "33", latency: 80, gameMax: 0 },
+  auto: { frameskip: "auto", threshold: "33", latency: 128, gameMax: 480 },
+  light: { frameskip: "auto", threshold: "50", latency: 160, gameMax: 240 },
+};
+function coreOptions() {
+  const pr = PROFILES[perfProfile()];
   return {
     "save-save-interval": "0",
-    mgba_idle_optimization: "Detect and Remove",
+    mgba_idle_optimization: "Remove Known",
     mgba_audio_low_pass_filter: "disabled",
     mgba_color_correction: "OFF",
     mgba_interframe_blending: "OFF",
-    mgba_frameskip: light ? "auto" : "disabled",
-    mgba_frameskip_threshold: "33",
+    mgba_frameskip: pr.frameskip,
+    mgba_frameskip_threshold: pr.threshold,
   };
 }
 function renderPerf() {
@@ -731,8 +745,8 @@ function renderPerf() {
     b.classList.toggle("primary", on); b.setAttribute("aria-pressed", on ? "true" : "false");
   }
   $("#perfHint").textContent = perf.mode === "auto"
-    ? (perf.learned ? "Este aparelho já está no modo leve." : "Começa em qualidade máxima e passa para o leve se o jogo ficar lento.")
-    : perf.mode === "light" ? "Pula quadros quando precisa para o jogo e o som não ficarem lentos." : "Nunca pula quadros. Use em aparelhos rápidos.";
+    ? (perf.learned ? "Este aparelho está no modo leve: imagem no tamanho do GBA e mais folga para o som." : "Desenha a imagem em 2x e só pula um quadro quando o som ia falhar. Se o jogo ficar lento, passa sozinho para o leve.")
+    : perf.mode === "light" ? "Imagem no tamanho do GBA (ampliada sem borrar), pula quadros mais cedo e dá mais folga ao som. Para aparelhos lentos e TVs." : "Todos os quadros na resolução máxima da tela. Só para aparelhos rápidos."
 }
 $("#perfModes").addEventListener("click", (e) => {
   const b = e.target.closest("button[data-mode]"); if (!b) return;
@@ -763,7 +777,8 @@ function startSpeedMeter() {
         $("#padSpeed").textContent = "· " + tag.textContent; $("#padSpeed").className = tag.className;
         if (perf.mode === "auto" && !perf.learned && now - speed.since > 8000 && speed.samples.length >= 3 && avg < 0.92) {
           perf.learned = true; ls.set(PERF_KEY + ".learned", "light");
-          try { gm.setVariable("mgba_frameskip", "auto"); gm.setVariable("mgba_frameskip_threshold", "33"); } catch (e) {}
+          try { gm.setVariable("mgba_frameskip", "auto"); gm.setVariable("mgba_frameskip_threshold", PROFILES.light.threshold); } catch (e) {}
+          window.dispatchEvent(new Event("resize"));   // redraw at the light profile's smaller size
           toast("O jogo estava lento aqui, então liguei o modo leve neste aparelho.", 4500);
           renderPerf();
         }
@@ -838,11 +853,10 @@ async function flush(opts = {}) {
 
 /* ---------------- continue where you left off ----------------
    Besides the game's own save, the app keeps a snapshot of the whole console
-   (a save state) in states/<game>.json. It is taken when you leave the game, when
-   you tap save, and every two minutes. Opening the game on any device then picks
+   (a save state) in states/<game>.json, taken only when you tap Salvar. Opening the
+   game on any device then picks
    up at that exact moment, as long as the snapshot belongs to the same in-game
    save that is being loaded (otherwise the two would disagree). */
-const STATE_EVERY = 120000;
 const stateShas = new Map();
 const isBlankSave = (u8) => { const f = u8[0]; if (f !== 0xff && f !== 0) return false; for (let i = 0; i < u8.length; i++) if (u8[i] !== f) return false; return true; };
 async function getStateDoc(key) {
@@ -926,17 +940,18 @@ function loadEmulator() {
 
 /* The emulator sizes its WebGL canvas from a ResizeObserver, so on a TV it draws a
    1080p (or 4K) surface for a 240x160 picture, which weak TV GPUs struggle with.
-   In light mode the observer reports a smaller size: the emulator renders at most
-   CANVAS_CAP pixels wide and the browser stretches the result, pixel-perfect. */
-const CANVAS_CAP = 960;
+   The observer reports a smaller size instead (see PROFILES.gameMax): the emulator
+   draws a small picture and the browser stretches it, pixel-perfect. */
+
 const STREAM_W = 240, STREAM_H = 160; // the GBA's own resolution: tiny to encode, the TV scales it up pixel-perfect
 (() => {
   const RO = window.ResizeObserver;
   if (!RO || RO.__cartucho) return;
   const factorFor = (w, h) => {
-    const cap = perfLight() ? CANVAS_CAP : 0;
-    if (!cap) return 1;
-    const big = Math.max(w, h); return big > cap ? cap / big : 1;
+    const max = PROFILES[perfProfile()].gameMax;
+    if (!max) return 1;
+    const gameW = w / h > 1.5 ? h * 1.5 : w;     // width of the 3:2 picture inside the canvas
+    return gameW > max ? max / gameW : 1;
   };
   const scaleEntry = (e) => {
     if (!(e.target instanceof HTMLCanvasElement)) return e;
@@ -972,7 +987,7 @@ function patchEmulator() {
     const orig = GM.prototype.getRetroArchCfg;
     GM.prototype.getRetroArchCfg = function () {
       let cfg = orig.call(this);
-      cfg = cfg.replace(/audio_latency = \d+/, "audio_latency = " + (perfLight() ? 128 : 80));
+      cfg = cfg.replace(/audio_latency = \d+/, "audio_latency = " + PROFILES[perfProfile()].latency);
       cfg = cfg.replace(/autosave_interval = \d+/, "autosave_interval = 0");  // the page saves on its own schedule
       return cfg + "audio_rate_control = true\naudio_rate_control_delta = 0.010\nvideo_threaded = false\n";
     };
@@ -1037,7 +1052,7 @@ async function play(key) {
 
   const romBytes = fixSaveChip(new Uint8Array(await rom.blob.arrayBuffer()));
   const file = new File([romBytes], rom.code ? rom.code + "." + rom.ext : "jogo." + rom.ext);
-  const emu = await createEmulator(file, key, coreOptions(perfLight()));
+  const emu = await createEmulator(file, key, coreOptions());
   if (!emu) { toast("Não deu para carregar o emulador. Confira a internet."); $("#player").hidden = true; $("#library").hidden = false; return; }
   player.emu = emu;
   emu.on("start", async () => {
@@ -1055,10 +1070,10 @@ async function play(key) {
         else actionToast(msg, "Ir para a tela de título", () => { try { gm.restart(); } catch (e) {} });
       } catch (e) { console.warn("state load", e); }
     }
-    player.stateTimer = setInterval(() => uploadState(), STATE_EVERY);
+
     await sleep(1500);
     if (start.upload) flush();
-    player.timer = setInterval(flush, 15000);
+    player.timer = setInterval(flush, 30000);
     startSpeedMeter();
     if (cast.pending) { const c = cast.pending; cast.pending = null; setTimeout(() => castTo(c), 500); }
   });
@@ -1091,14 +1106,14 @@ $("#pullBtn").addEventListener("click", () => pullSave((m) => m && toast(m)));
 $("#padPull").addEventListener("click", () => pullSave((m) => m && padMsg(m)));
 
 $("#saveNowBtn").addEventListener("click", async () => {
-  const before = player.lastSha; await flush(); uploadState({ force: true });
-  if (player.state === "ok") toast(player.lastSha === before ? "O save já está na nuvem" : "Save enviado");
+  await flush();
+  const ok = await uploadState({ force: true });
+  if (ok && cloud.db) toast("Progresso salvo: o jogo continua daqui em qualquer aparelho", 3500);
+  else if (ok) toast("Progresso salvo neste aparelho", 3000);
   else if (player.state === "none") toast("Ainda não há save. Salve dentro do jogo primeiro.");
 });
 $("#backBtn").addEventListener("click", async () => {
   await flush();
-  toast("Guardando o progresso…");
-  await uploadState({ force: true });
   if (player.state === "up" || player.state === "pending") {
     const ok = await dialog("O save ainda não subiu", "Ele ficou guardado neste aparelho e vai subir na próxima vez que você abrir o jogo aqui.",
       [{ label: "Voltar mesmo assim", value: true, cls: "primary" }, { label: "Continuar jogando", value: false }]);
@@ -1107,9 +1122,9 @@ $("#backBtn").addEventListener("click", async () => {
   location.reload();
 });
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "hidden") { flush({ leaving: true }); uploadState({ force: true, keepalive: true }); }
+  if (document.visibilityState === "hidden") flush({ leaving: true });
 });
-window.addEventListener("pagehide", () => { flush({ leaving: true }); uploadState({ force: true, keepalive: true }); });
+window.addEventListener("pagehide", () => { flush({ leaving: true }); });
 
 /* keep EmulatorJS from calling its own CDN for update checks */
 const realFetch = window.fetch.bind(window);
@@ -1438,8 +1453,9 @@ window.addEventListener("resize", layoutPad);
   $("#padSave").addEventListener("click", async () => {
     vib(PAD_VIB.press);
     padMsg("Enviando o save…");
-    const before = player.lastSha; await flush(); uploadState({ force: true });
-    if (player.state === "ok") { padMsg(player.lastSha === before ? "O save já estava na nuvem" : "Save enviado"); try { navigator.vibrate && navigator.vibrate([12, 70, 12]); } catch (e) {} }
+    await flush();
+    const okState = await uploadState({ force: true });
+    if (player.state === "ok" || okState) { padMsg(cloud.db ? "Progresso salvo: continua daqui em qualquer aparelho" : "Progresso salvo neste celular"); try { navigator.vibrate && navigator.vibrate([12, 70, 12]); } catch (e) {} }
     else if (player.state === "none") padMsg("Ainda não há save. Salve dentro do jogo primeiro.");
     else if (player.state === "local") padMsg("Save guardado neste celular (sem GitHub conectado)");
     else padMsg("Save guardado aqui. Ele sobe quando a internet voltar.");
@@ -1684,7 +1700,7 @@ async function runDiagnostic() {
   keepAwake();
   let bytes;
   try { bytes = new Uint8Array(await (await fetch("bench.gba")).arrayBuffer()); } catch (e) { diagShow("<p>Não deu para baixar o programa de teste. Confira a internet.</p>"); diag.running = false; return; }
-  const emu = await createEmulator(new File([bytes], "bench.gba"), "cartuchin-bench", coreOptions(false));
+  const emu = await createEmulator(new File([bytes], "bench.gba"), "cartuchin-bench", { ...coreOptions(), mgba_frameskip: "disabled" });
   if (!emu) { diagShow("<p>Não deu para carregar o emulador.</p>"); diag.running = false; return; }
   player.emu = emu;
   await new Promise((res) => emu.on("start", res));
