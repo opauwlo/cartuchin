@@ -704,26 +704,25 @@ $("#savInput").addEventListener("change", async (e) => {
 });
 
 /* ---------------- performance ----------------
-   "auto" starts at full quality and switches this device to the light profile
+   "auto" starts with the normal profile and switches this device to the light one
    the first time emulation can't keep 60 fps. "light" skips frames when needed so
    game speed and audio stay right, and gives audio a bigger buffer. */
 const PERF_KEY = "cartucho.perf";
 const perf = {
-  mode: ls.get(PERF_KEY + ".mode") || "auto",                 // auto | quality | light
+  mode: ls.get(PERF_KEY + ".mode") === "light" ? "light" : "auto",   // auto | light
   learned: ls.get(PERF_KEY + ".learned") === "light",        // auto mode already decided this device is slow
 };
 if (!ls.get(PERF_KEY + ".mode") && guessDevice() === "TV") perf.learned = true;
 const perfLight = () => perf.mode === "light" || (perf.mode === "auto" && perf.learned);
-/* The settings every mode shares are the cheapest ones that don't change the game:
-   no colour filters, no frame blending, the default idle-loop handling. What the
-   modes change is how much headroom the device gets:
-   - quality: draws every frame at the screen's full resolution, short audio buffer
-   - auto (default): skips drawing a frame only when sound is about to run dry, and
-     draws the picture at most 2x the GBA's size (the browser enlarges it, pixel-perfect)
-   - light: skips more eagerly, draws at the GBA's own 240x160, longest audio buffer */
-const perfProfile = () => perf.mode === "quality" ? "quality" : perfLight() ? "light" : "auto";
+/* The settings both modes share are the cheapest ones that don't change the game:
+   no colour filters, no frame blending, the default idle-loop handling, and the
+   picture drawn at most 2x the GBA's size and enlarged by the browser without
+   smoothing. A GBA game is 240x160 pixels: drawing it at the phone's full
+   resolution looks exactly the same and costs many times more.
+   - auto (default): skips drawing a frame only when sound is about to run dry
+   - light: draws at the GBA's own 240x160, skips earlier, longest audio buffer */
+const perfProfile = () => perfLight() ? "light" : "auto";
 const PROFILES = {
-  quality: { frameskip: "disabled", threshold: "33", latency: 80, gameMax: 0 },
   auto: { frameskip: "auto", threshold: "33", latency: 128, gameMax: 480 },
   light: { frameskip: "auto", threshold: "50", latency: 160, gameMax: 240 },
 };
@@ -744,9 +743,10 @@ function renderPerf() {
     const on = b.dataset.mode === perf.mode;
     b.classList.toggle("primary", on); b.setAttribute("aria-pressed", on ? "true" : "false");
   }
-  $("#perfHint").textContent = perf.mode === "auto"
-    ? (perf.learned ? "Este aparelho está no modo leve: imagem no tamanho do GBA e mais folga para o som." : "Desenha a imagem em 2x e só pula um quadro quando o som ia falhar. Se o jogo ficar lento, passa sozinho para o leve.")
-    : perf.mode === "light" ? "Imagem no tamanho do GBA (ampliada sem borrar), pula quadros mais cedo e dá mais folga ao som. Para aparelhos lentos e TVs." : "Todos os quadros na resolução máxima da tela. Só para aparelhos rápidos."
+  $("#perfHint").textContent = perf.mode === "light"
+    ? "Imagem no tamanho do GBA, pula quadros mais cedo e dá mais folga ao som. Para TVs e aparelhos lentos."
+    : perf.learned ? "Este aparelho ficou lento antes, então já usa o modo leve."
+    : "Recomendado. Só pula o desenho de um quadro quando o som ia falhar; se o jogo ficar lento, passa sozinho para o leve."
 }
 $("#perfModes").addEventListener("click", (e) => {
   const b = e.target.closest("button[data-mode]"); if (!b) return;
@@ -774,7 +774,7 @@ function startSpeedMeter() {
         tag.textContent = Math.round(Math.min(avg, 1) * 100) + "%";
         tag.className = "speed pix " + (avg >= 0.95 ? "ok" : avg >= 0.8 ? "warn" : "bad");
         tag.hidden = false;
-        $("#padSpeed").textContent = "· " + tag.textContent; $("#padSpeed").className = tag.className;
+        $("#padSpeed").textContent = tag.textContent; $("#padSpeed").className = "pad-speed " + tag.className.replace("speed pix", "").trim();
         if (perf.mode === "auto" && !perf.learned && now - speed.since > 8000 && speed.samples.length >= 3 && avg < 0.92) {
           perf.learned = true; ls.set(PERF_KEY + ".learned", "light");
           try { gm.setVariable("mgba_frameskip", "auto"); gm.setVariable("mgba_frameskip_threshold", PROFILES.light.threshold); } catch (e) {}
@@ -807,7 +807,8 @@ function updateChip() {
   };
   const [cls, t] = map[player.state] || map.loading;
   dot.className = "dot " + cls; txt.textContent = t;
-  const ps = $("#padSaveState"); if (ps) ps.textContent = t;
+  const ps = $("#padSaveState");
+  if (ps) ps.textContent = player.state === "ok" ? "· salvo " + ago(player.at) : player.state === "up" ? "· enviando…" : player.state === "pending" ? "· save pendente" : "";
 }
 setInterval(() => {
   if (player.key) { if (player.state === "ok") updateChip(); return; }

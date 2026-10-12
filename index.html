@@ -138,14 +138,18 @@ button { cursor: pointer; }
 #pad.rot { inset: auto; top: 0; left: 0; }
 #pad.wide { grid-template-columns: 1fr auto 1fr; grid-template-rows: auto auto 1fr; grid-template-areas: "top top top" "l . r" "dpad meta ab"; }
 #pad button { -webkit-tap-highlight-color: transparent; touch-action: none; font-family: var(--font-pixel); color: var(--ink); cursor: default; }
-.pad-top { grid-area: top; display: flex; align-items: center; gap: 10px; min-width: 0; }
-.pad-live { display: inline-flex; align-items: center; gap: 6px; font-size: 0.8rem; color: #9aa1b4; white-space: nowrap; }
-.pad-save { margin-left: 8px; color: #9aa1b4; }
+.pad-top { grid-area: top; display: flex; align-items: center; gap: 8px; min-width: 0; position: relative; }
+.pad-live { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 6px; font-size: 0.78rem; color: #9aa1b4; white-space: nowrap; overflow: hidden; }
+.pad-live > * { flex: none; } .pad-live .pad-save { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.pad-save { color: #9aa1b4; }
+.pad-speed { font-family: var(--font-pixel); font-size: 0.7rem; }
+.pad-speed.ok { color: #4cc58f; } .pad-speed.warn { color: #f0a640; } .pad-speed.bad { color: #ff7a6e; }
 .pad-save:empty { display: none; }
-.pad-msg { flex: 1 1 auto; min-width: 0; text-align: center; font-size: 0.8rem; color: var(--ink); opacity: 0; transition: opacity 0.2s; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pad-msg { position: absolute; left: 50%; top: calc(100% + 6px); transform: translateX(-50%); max-width: 90%; z-index: 2; pointer-events: none;
+  background: #e9ebf2; color: #14161f; font-size: 0.8rem; font-weight: 600; padding: 6px 12px; border-radius: 9px; opacity: 0; transition: opacity 0.2s; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pad-msg.show { opacity: 1; }
-.pad-tools { display: flex; gap: 6px; margin-left: auto; }
-.pad-tool { font-family: var(--font-body) !important; font-size: 0.78rem; font-weight: 600; padding: 7px 11px; border-radius: 9px; border: 1px solid #3a3f55; background: #20243300; }
+.pad-tools { display: flex; gap: 5px; flex: none; }
+.pad-tool { font-family: var(--font-body) !important; font-size: 0.78rem; font-weight: 600; padding: 7px 9px; border-radius: 9px; border: 1px solid #3a3f55; background: transparent; }
 #padSave { border-color: #4a57d8; color: #c9cfff !important; }
 .pad-sh { height: 48px; border: 0; font-size: 1rem; background: linear-gradient(180deg, var(--key-hi), var(--key)); box-shadow: inset 0 1px 0 rgba(255,255,255,0.12), 0 4px 0 var(--key-lo); }
 .pad-sh.l { grid-area: l; width: min(100%, 210px); justify-self: start; border-radius: 18px 10px 10px 10px; }
@@ -288,7 +292,6 @@ body { margin: 0; }
       <span>Desempenho neste aparelho</span>
       <div class="seg" id="perfModes" role="group" aria-label="Desempenho">
         <button class="btn small" type="button" data-mode="auto">Automático</button>
-        <button class="btn small" type="button" data-mode="quality">Qualidade</button>
         <button class="btn small" type="button" data-mode="light">Leve</button>
       </div>
       <span id="perfHint"></span>
@@ -315,14 +318,14 @@ body { margin: 0; }
   <div id="game"></div>
   <div id="pad" hidden>
     <div class="pad-top">
-      <span class="pad-live"><span class="dot ok"></span>Na TV <span id="padSpeed"></span><span class="pad-save" id="padSaveState"></span></span>
-      <span class="pad-msg" id="padMsg" role="status"></span>
+      <span class="pad-live"><span class="dot ok"></span><span>TV</span><span id="padSpeed"></span><span class="pad-save" id="padSaveState"></span></span>
       <div class="pad-tools">
-        <button class="pad-tool" id="padSave" type="button">Salvar na nuvem</button>
+        <button class="pad-tool" id="padSave" type="button">Salvar</button>
         <button class="pad-tool" id="padPull" type="button">Carregar</button>
         <button class="pad-tool" id="padRotate" type="button" aria-label="Girar o controle">Girar</button>
-        <button class="pad-tool" id="padStop" type="button">Encerrar</button>
+        <button class="pad-tool" id="padStop" type="button">Sair</button>
       </div>
+      <span class="pad-msg" id="padMsg" role="status"></span>
     </div>
     <button type="button" data-btn="L" class="pad-sh l">L</button>
     <button type="button" data-btn="R" class="pad-sh r">R</button>
