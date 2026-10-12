@@ -16,6 +16,8 @@ const CORES = {
   "melonds-thread": { label: "melonDS com threads", file: "melonds_thread_libretro", save: "sav", threads: true,
     options: { melonds_threaded_renderer: "enabled" } },
   desmume2015: { label: "DeSmuME 2015", file: "desmume2015_libretro", save: "dsv" },
+  // our own build of melonDS, with a profiler that reports where each frame's time goes
+  "melonds-prof": { label: "melonDS Cartuchin (medidor)", file: "melonds_prof_libretro", save: "sav" },
 };
 
 let romFile = null;
@@ -63,7 +65,7 @@ function loadScript(src) {
 function patchEmulator(core) {
   const EJS = window.EmulatorJS;
   EJS.prototype.downloadGameCore = function () {
-    this.extensions = ["nds"]; this.coreName = coreKey.replace("-thread", ""); this.defaultCoreOpts = {};
+    this.extensions = ["nds"]; this.coreName = coreKey.replace(/-(thread|prof)$/, ""); this.defaultCoreOpts = {};
     this.saveFileExt = core.save; this.webgl2Enabled = false; this.enableMouseLock = false;
     this.downloadFile(`cores/${core.file}.wasm`, () => {}, false, { responseType: "arraybuffer", method: "GET" }).then((res) => {
       if (res === -1 || !res.data) { this.startGameError("Erro de rede"); return; }
@@ -113,6 +115,19 @@ async function measure(ms) {
   return Math.round(((f1 - f0) / ((t1 - t0) / 1000)) / DS_FPS * 100);
 }
 
+/* where each frame's time went, from the profiling build (window.__dsProf, in ms per frame) */
+function profileHtml(p) {
+  if (!p || !p.frame) return "";
+  const otherSystem = Math.max(0, p.system - p.raster3d - p.draw2d);
+  const core = p.arm9 + p.arm7 + p.geometry + p.system;
+  const parts = [
+    ["CPU principal (ARM9)", p.arm9], ["CPU secundária (ARM7)", p.arm7], ["Geometria 3D", p.geometry],
+    ["Desenho 3D", p.raster3d], ["Desenho 2D", p.draw2d], ["Resto do sistema", otherSystem],
+    ["Fora do emulador (vídeo, som)", Math.max(0, p.frame - core)],
+  ];
+  const rows = parts.map(([name, ms]) => `<tr><td>${name}</td><td>${ms.toFixed(2)} ms</td><td>${Math.round((ms / p.frame) * 100)}%</td></tr>`).join("");
+  return `<b>Onde vai o tempo de cada quadro</b> (${p.frame.toFixed(1)} ms; o DS precisa de 16,7)<table style="width:100%;font-size:0.95rem">${rows}</table><br>`;
+}
 async function runMeasure() {
   $("#measure").disabled = true;
   const gm = emu.gameManager;
@@ -121,6 +136,7 @@ async function runMeasure() {
   $("#status").textContent = "Medindo o máximo, em avanço rápido (15 s)…";
   try { gm.setFastForwardRatio(0); gm.toggleFastForward(1); } catch (e) {}
   const max = await measure(15000);
+  const prof = window.__dsProf;
   try { gm.toggleFastForward(0); } catch (e) {}
   const verdict = max >= 115 ? "Ótimo: roda com folga. Dá para fazer o modo DS."
     : max >= 98 ? "Roda, mas no limite: cenas pesadas podem engasgar."
@@ -128,7 +144,7 @@ async function runMeasure() {
     : "Não dá: este celular não aguenta DS no navegador.";
   $("#status").textContent = "";
   $("#result").hidden = false;
-  $("#result").innerHTML = `<b>${CORES[coreKey].label}</b><br>Velocidade normal: <b>${normal}%</b><br>Máximo que este celular aguenta: <b>${max}%</b><br>${verdict}<br><small>Mande um print desta tela pro Claude. Para testar o outro emulador, recarregue a página.</small>`;
+  $("#result").innerHTML = profileHtml(prof) + `<b>${CORES[coreKey].label}</b><br>Velocidade normal: <b>${normal}%</b><br>Máximo que este celular aguenta: <b>${max}%</b><br>${verdict}<br><small>Mande um print desta tela pro Claude. Para testar o outro emulador, recarregue a página.</small>`;
 }
 
 $("#romInput").addEventListener("change", async (e) => {

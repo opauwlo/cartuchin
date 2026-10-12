@@ -2,6 +2,7 @@
    browser APIs TypeScript's DOM lib does not know yet). Type checking only: nothing
    here reaches the bundle. */
 interface Window {
+  __dsProf: any;
   VideoEncoder: any;
   VideoDecoder: any;
   EncodedVideoChunk: any;
