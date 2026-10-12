@@ -118,6 +118,11 @@ button { cursor: pointer; }
 .conn { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .conn span { margin-right: auto; }
 #ghMsg:empty { display: none; }
+.perf { display: grid; gap: 6px; }
+.seg { display: flex; gap: 6px; flex-wrap: wrap; }
+.speed { font-size: 0.72rem; padding: 2px 6px; border-radius: 6px; border: 1px solid var(--line); color: var(--muted); }
+.speed.ok { color: var(--ok); } .speed.warn { color: var(--warn); } .speed.bad { color: var(--bad); }
+@media (max-width: 420px) { .pbar .chip #pChipText { display: none; } }
 
 body { margin: 0; }
 </style>
@@ -185,6 +190,15 @@ body { margin: 0; }
       <button class="btn small ghost" id="disconnectBtn" type="button" hidden>Desconectar</button>
       <button class="btn small" id="connectBtn" type="button" hidden>Conectar ao GitHub</button>
     </div>
+    <div class="perf">
+      <span>Desempenho neste aparelho</span>
+      <div class="seg" id="perfModes" role="group" aria-label="Desempenho">
+        <button class="btn small" type="button" data-mode="auto">Automático</button>
+        <button class="btn small" type="button" data-mode="quality">Qualidade</button>
+        <button class="btn small" type="button" data-mode="light">Leve</button>
+      </div>
+      <span id="perfHint"></span>
+    </div>
     <label for="deviceName">Este aparelho se chama <input id="deviceName" type="text" maxlength="40" autocomplete="off"></label>
     <span>Save states do menu do emulador ficam só neste aparelho. O que sincroniza é o save feito dentro do jogo.</span>
     <span>Feito com <a href="https://github.com/EmulatorJS/EmulatorJS" target="_blank" rel="noopener">EmulatorJS</a> e <a href="https://mgba.io" target="_blank" rel="noopener">mGBA</a>.</span>
@@ -197,6 +211,7 @@ body { margin: 0; }
   <div class="pbar">
     <button class="btn small ghost" id="backBtn" type="button">← Biblioteca</button>
     <span class="name" id="pName"></span>
+    <span class="speed pix" id="pSpeed" hidden title="Velocidade da emulação"></span>
     <span class="chip" id="pChip"><span class="dot"></span><span id="pChipText">Carregando…</span></span>
     <button class="btn small" id="saveNowBtn" type="button">Enviar save</button>
   </div>

@@ -689,6 +689,75 @@ $("#savInput").addEventListener("change", async (e) => {
   } catch (err) { toast("Não deu para enviar o save agora. Tente de novo."); }
 });
 
+/* ---------------- performance ----------------
+   "auto" starts at full quality and switches this device to the light profile
+   the first time emulation can't keep 60 fps. "light" skips frames when needed so
+   game speed and audio stay right, and gives audio a bigger buffer. */
+const PERF_KEY = "cartucho.perf";
+const perf = {
+  mode: ls.get(PERF_KEY + ".mode") || "auto",                 // auto | quality | light
+  learned: ls.get(PERF_KEY + ".learned") === "light",        // auto mode already decided this device is slow
+};
+if (!ls.get(PERF_KEY + ".mode") && guessDevice() === "TV") perf.learned = true;
+const perfLight = () => perf.mode === "light" || (perf.mode === "auto" && perf.learned);
+function coreOptions(light) {
+  return {
+    "save-save-interval": "0",
+    mgba_idle_optimization: "Detect and Remove",
+    mgba_audio_low_pass_filter: "disabled",
+    mgba_color_correction: "OFF",
+    mgba_interframe_blending: "OFF",
+    mgba_frameskip: light ? "auto" : "disabled",
+    mgba_frameskip_threshold: "33",
+  };
+}
+function renderPerf() {
+  for (const b of document.querySelectorAll("#perfModes button")) {
+    const on = b.dataset.mode === perf.mode;
+    b.classList.toggle("primary", on); b.setAttribute("aria-pressed", on ? "true" : "false");
+  }
+  $("#perfHint").textContent = perf.mode === "auto"
+    ? (perf.learned ? "Este aparelho já está no modo leve." : "Começa em qualidade máxima e passa para o leve se o jogo ficar lento.")
+    : perf.mode === "light" ? "Pula quadros quando precisa para o jogo e o som não ficarem lentos." : "Nunca pula quadros. Use em aparelhos rápidos.";
+}
+$("#perfModes").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-mode]"); if (!b) return;
+  perf.mode = b.dataset.mode; ls.set(PERF_KEY + ".mode", perf.mode);
+  if (perf.mode !== "auto") { perf.learned = false; ls.set(PERF_KEY + ".learned", ""); }
+  renderPerf();
+});
+renderPerf();
+
+const speed = { last: null, samples: [], timer: null, since: 0 };
+function startSpeedMeter() {
+  const gm = player.emu && player.emu.gameManager; if (!gm) return;
+  speed.since = performance.now(); speed.samples = []; speed.last = null;
+  clearInterval(speed.timer);
+  speed.timer = setInterval(() => {
+    let frames; try { frames = Number(gm.getFrameNum()); } catch (e) { return; }
+    const now = performance.now();
+    if (document.visibilityState !== "visible" || player.emu.paused) { speed.last = null; return; }
+    if (speed.last) {
+      const pct = ((frames - speed.last.f) / ((now - speed.last.t) / 1000)) / 59.73;
+      if (pct > 0 && pct < 3) {
+        speed.samples.push(pct); if (speed.samples.length > 4) speed.samples.shift();
+        const avg = speed.samples.reduce((a, b) => a + b, 0) / speed.samples.length;
+        const tag = $("#pSpeed");
+        tag.textContent = Math.round(Math.min(avg, 1) * 100) + "%";
+        tag.className = "speed pix " + (avg >= 0.95 ? "ok" : avg >= 0.8 ? "warn" : "bad");
+        tag.hidden = false;
+        if (perf.mode === "auto" && !perf.learned && now - speed.since > 8000 && speed.samples.length >= 3 && avg < 0.92) {
+          perf.learned = true; ls.set(PERF_KEY + ".learned", "light");
+          try { gm.setVariable("mgba_frameskip", "auto"); gm.setVariable("mgba_frameskip_threshold", "33"); } catch (e) {}
+          toast("O jogo estava lento aqui, então liguei o modo leve neste aparelho.", 4500);
+          renderPerf();
+        }
+      }
+    }
+    speed.last = { f: frames, t: now };
+  }, 2000);
+}
+
 const devInput = $("#deviceName");
 devInput.value = device.name;
 devInput.addEventListener("change", () => {
@@ -788,6 +857,16 @@ function patchEmulator() {
   const EJS = window.EmulatorJS;
   if (!EJS || EJS.__cartucho) return;
   EJS.__cartucho = true;
+  const GM = window.EJS_GameManager;
+  if (GM && !GM.__cartucho) {
+    GM.__cartucho = true;
+    const orig = GM.prototype.getRetroArchCfg;
+    GM.prototype.getRetroArchCfg = function () {
+      let cfg = orig.call(this);
+      cfg = cfg.replace(/audio_latency = \d+/, "audio_latency = " + (perfLight() ? 128 : 80));
+      return cfg + "audio_rate_control = true\naudio_rate_control_delta = 0.010\nvideo_threaded = false\n";
+    };
+  }
   EJS.prototype.initGameCore = function (js, wasm, thread) { this.initModule(wasm, thread); };
   /* load the mGBA core straight from the published files: no archive, no extraction worker */
   EJS.prototype.downloadGameCore = function () {
@@ -842,7 +921,7 @@ async function play(key) {
     language: "pt-BR", langJson: window.__CARTUCHO_LANG || undefined,
     backgroundColor: "#000000", noAutoFocus: false,
     buttonOpts: { netplay: false, saveSavFiles: false, loadSavFiles: false, cacheManager: false, exitEmulation: false, contextMenu: false },
-    defaultOptions: { "save-save-interval": "0" },
+    defaultOptions: coreOptions(perfLight()),
   });
   player.emu = emu;
   emu.on("start", async () => {
@@ -853,6 +932,7 @@ async function play(key) {
     await sleep(1500);
     if (start.upload) flush();
     player.timer = setInterval(flush, 15000);
+    startSpeedMeter();
   });
 }
 
