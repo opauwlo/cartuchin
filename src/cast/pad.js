@@ -93,6 +93,7 @@ function padUpdate() {
     m |= pm;
     if (p.over && p.over !== "dpad" && !(pm & (1 << PAD_BITS.indexOf(p.over)))) over.push(p.over);
   }
+  if (m & ~cast.localMask) cast.touchAt = performance.now();   // a new press: timed until the game gets it
   cast.localMask = m;
   applyInput();
   // touch the DOM only when something visible changed

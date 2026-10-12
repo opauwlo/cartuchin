@@ -22,6 +22,9 @@ const tvScreen = window.__tvScreen = {
   framesMode: false,  // "quadros" mode: JPEG frames over the data channel
   drawn: 0,
   padTimer: null,
+  /** @type {ReturnType<typeof setInterval> | null} */ pingTimer: null,
+  /** @type {number[]} control channel round trips (ms) */ rtt: [],
+  /** @type {number[]} "quadros" mode: arrival → drawn (ms) */ decMs: [],
   lastSent: -1,       // last button mask sent to the phone
 };
 async function startScreen() {
@@ -91,6 +94,7 @@ async function startScreen() {
       e.channel.onmessage = (m) => { try {
         const d = JSON.parse(m.data);
         if (d && d.st) tvScreen.phoneStats = d.st;
+        if (d && d.pong) { tvScreen.rtt.push(performance.now() - d.pong); if (tvScreen.rtt.length > 10) tvScreen.rtt.shift(); }
       } catch (x) {} };
     };
     pc.onconnectionstatechange = () => {
@@ -170,7 +174,9 @@ function receiveFrames(channel) {
   canvas.hidden = false; $("#scrVideo").hidden = true;
   channel.binaryType = "arraybuffer";
 
+  let decodeStart = 0;
   function show(img) {
+    if (decodeStart) { tvScreen.decMs.push(performance.now() - decodeStart); if (tvScreen.decMs.length > 20) tvScreen.decMs.shift(); }
     const w = img.displayWidth || img.width, h = img.displayHeight || img.height;
     if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
     g.drawImage(img, 0, 0);
@@ -197,6 +203,7 @@ function receiveFrames(channel) {
   async function drawNext() {
     if (decoding || !pending) return;
     const buf = pending; pending = null; decoding = true;
+    decodeStart = performance.now();
     try {
       const key = new Uint8Array(buf, 0, 1)[0] === 1;
       const timestamp = new DataView(buf).getFloat64(1, true);
@@ -324,9 +331,28 @@ function watchScreen(pc) {
     else if (!frames && v.readyState < 2) problem = "A imagem chega, mas a TV ainda não começou a mostrar.";
     const ph = tvScreen.phoneStats;
     const warnNet = net.warnUntil && performance.now() < net.warnUntil;
+    const avg = (arr) => (arr.length ? Math.round(arr.reduce((a, b) => a + b, 0) / arr.length) : null);
+    const ms = (v) => (v == null ? "?" : v + " ms");
+    const ctl = avg(tvScreen.rtt), oneWay = ctl != null ? Math.round(ctl / 2) : null;
+    const lat = (ph && ph.lat) || {};
+    // TV side of the picture: jitter buffer wait + decode, from the WebRTC stats, or measured in "quadros" mode
+    let tvMs = null;
+    if (frames) tvMs = avg(tvScreen.decMs);
+    else if (rx && rx.framesDecoded) {
+      const dJb = (rx.jitterBufferDelay || 0) - (net.jbT || 0), dEm = (rx.jitterBufferEmittedCount || 0) - (net.jbN || 0);
+      const dDec = (rx.totalDecodeTime || 0) - (net.decT || 0), dFr = rx.framesDecoded - (net.decN || 0);
+      net.jbT = rx.jitterBufferDelay || 0; net.jbN = rx.jitterBufferEmittedCount || 0; net.decT = rx.totalDecodeTime || 0; net.decN = rx.framesDecoded;
+      if (dEm > 0 && dFr > 0) tvMs = Math.round((dJb / dEm + dDec / dFr) * 1000);
+    }
+    const gameFrame = lat.speed ? Math.round(16.7 / Math.min(1, lat.speed / 100)) : 17;
+    const parts = [lat.touch, gameFrame, lat.enc, lat.send, oneWay, tvMs];
+    const known = parts.filter((x) => x != null);
+    const total = known.length ? known.reduce((a, b) => a + b, 0) : null;   // of the parts measured so far
+    const latencyLine = `Atraso: controle TV→celular ${ms(oneWay)} · toque→jogo ${ms(lat.touch)} · 1 quadro do jogo ${ms(gameFrame)}${lat.speed ? ` (${lat.speed}%)` : ""} · codificar ${ms(lat.enc)} · enviar ${ms(lat.send)} · rede ${ms(oneWay)} · buffer+decodificar na TV ${ms(tvMs)} · total ≈ ${ms(total)} + 1 quadro da TV`;
     const lines = [
       problem || (warnNet ? `Wi-Fi instável: ${net.warnPct}% dos pacotes se perdem. Dica: ligue o roteador do celular e conecte a TV nele.` : "Conectado. Se a imagem não aparecer, mande uma foto desta tela."),
       `Rede: ${path}${rtt != null ? ` · ida e volta ${rtt} ms` : ""} · perda ${lossPct}%${rx && rx.jitter ? ` · variação ${Math.round(rx.jitter * 1000)} ms` : ""}`,
+      latencyLine,
       ph ? `Celular: ${ph.ua || ""} · formato ${ph.mode || "?"} · enviou ${ph.sent} quadros, ${ph.pk || 0} pacotes${ph.w ? ` (${ph.w}x${ph.h})` : ""} · chaves ${ph.keys || 0} · PLI ${ph.pli || 0}${ph.enc ? ` · ${ph.enc}` : ""}${ph.lim && ph.lim !== "none" ? ` · limitado por ${ph.lim}` : ""}${ph.track && ph.track !== "live" ? ` · captura ${ph.track}` : ""}${ph.br != null && ph.br >= 0 ? ` · brilho ${ph.br}` : ""}`
          : "Celular: sem relatório ainda",
       `TV: ${chromeVer()} · pacotes de vídeo ${got}, de áudio ${arx ? arx.packetsReceived || 0 : 0} · recebeu ${rx ? rx.framesReceived || 0 : 0}, decodificou ${dec}${codec ? ` · ${codec}` : ""}${rx && rx.frameWidth ? ` · ${rx.frameWidth}x${rx.frameHeight}` : ""} · chaves ${rx ? rx.keyFramesDecoded || 0 : 0} · PLI ${rx ? rx.pliCount || 0 : 0}${rx && rx.decoderImplementation ? ` · ${rx.decoderImplementation}` : ""}`,
@@ -336,6 +362,9 @@ function watchScreen(pc) {
     info.hidden = !(problem || warnNet || performance.now() - t0 < 12000);
   };
   tvScreen.watch = setInterval(check, 2000);
+  tvScreen.pingTimer = setInterval(() => {
+    if (tvScreen.dc && tvScreen.dc.readyState === "open") { try { tvScreen.dc.send(JSON.stringify({ ping: performance.now() })); } catch (e) {} }
+  }, 1000);
   setTimeout(check, 500);
 }
 function showWaiting(on) {
@@ -348,6 +377,10 @@ function closeScreenConnection() {
   tvScreen.gen = (tvScreen.gen || 0) + 1;
   clearInterval(tvScreen.watch);
   tvScreen.watch = null;
+  clearInterval(tvScreen.pingTimer);
+  tvScreen.pingTimer = null;
+  tvScreen.rtt = [];
+  tvScreen.decMs = [];
   if (tvScreen.dc) {
     try {
       tvScreen.dc.onmessage = null;

@@ -16,6 +16,7 @@ export const frameWorkerSource = () => {
   let encoder = null, reader = null, running = false, codec = "jpeg";
   let wantKey = true, framesIn = 0, busy = false, lastJpegAt = 0;
   const KEY_EVERY = 180; // frames
+  const inFlight = new Map(); // frame timestamp → when it entered the encoder (to measure its latency)
 
   function send(buffer, key, timestamp) {
     worker.postMessage({ frame: buffer, key, timestamp }, [buffer]);
@@ -26,7 +27,8 @@ export const frameWorkerSource = () => {
       output: (chunk) => {
         const buf = new ArrayBuffer(chunk.byteLength);
         chunk.copyTo(buf);
-        send(buf, chunk.type === "key", chunk.timestamp);
+        const started = inFlight.get(chunk.timestamp); inFlight.delete(chunk.timestamp);
+        worker.postMessage({ frame: buf, key: chunk.type === "key", timestamp: chunk.timestamp, encMs: started ? performance.now() - started : null }, [buf]);
       },
       error: (e) => worker.postMessage({ error: String(e) }),
     });
@@ -41,6 +43,7 @@ export const frameWorkerSource = () => {
     if (encoder.encodeQueueSize > 2) { frame.close(); return; }
     const key = wantKey || framesIn % KEY_EVERY === 0;
     wantKey = false;
+    inFlight.set(frame.timestamp, performance.now());
     encoder.encode(frame, { keyFrame: key });
     frame.close();
   }

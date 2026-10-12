@@ -84,6 +84,7 @@ function startSpeedMeter() {
         speed.samples.push(pct);
         if (speed.samples.length > 4) speed.samples.shift();
         const avg = speed.samples.reduce((a, b) => a + b, 0) / speed.samples.length;
+        speed.pct = avg;
         const tag = $("#pSpeed");
         tag.textContent = Math.round(Math.min(avg, 1) * 100) + "%";
         tag.className = "speed pix " + (avg >= 0.95 ? "ok" : avg >= 0.8 ? "warn" : "bad");
@@ -116,4 +117,4 @@ devInput.addEventListener("change", () => {
   ls.set("cartucho.device", device.name);
 });
 
-export { perf, perfProfile, PROFILES, coreOptions, renderPerf, startSpeedMeter };
+export { perf, perfProfile, PROFILES, coreOptions, renderPerf, startSpeedMeter, speed };

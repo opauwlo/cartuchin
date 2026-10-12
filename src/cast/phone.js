@@ -6,6 +6,7 @@ import { brightness } from "./tv.js";
 import { busy } from "../cloud.js";
 import { device } from "../device.js";
 import { player } from "../player/player.js";
+import { speed } from "../player/perf.js";
 import { $, ls, rid, sleep, toast } from "../util.js";
 
 /* ---------- phone side ---------- */
@@ -26,6 +27,7 @@ const cast = window.__cast = {
   /** @type {(() => void) | null} asks the encoder for a key frame */ requestKey: null,
   /** @type {any} what the TV said it can do ({ vp8: boolean }) */ tvHello: null,
   /** @type {"vp8" | "jpeg" | null} */ frameCodec: null,
+  touchAt: 0,
   pumped: 0,
   // buttons: what is pressed on this phone, what the TV sends, and what the game currently sees
   lastMask: 0, localMask: 0, remoteMask: 0,
@@ -37,6 +39,9 @@ const cast = window.__cast = {
    Directions are the exception: pressing a new direction releases the old one at
    once, so a quick turn never sends two directions together. */
 const MIN_HOLD = 70;
+/* latency samples (ms): touch → button in the game; encoder time in "quadros" mode */
+const lag = { touch: [], enc: [] };
+const avgMs = (arr, keep = 20) => { if (arr.length > keep) arr.splice(0, arr.length - keep); return arr.length ? Math.round(arr.reduce((a, b) => a + b, 0) / arr.length) : null; };
 const DIR_MASK = ["UP", "DOWN", "LEFT", "RIGHT"].reduce((m, k) => m | (1 << PAD_BITS.indexOf(k)), 0);
 const pressedAt = new Array(PAD_BITS.length).fill(0);
 let releaseTimer = null;
@@ -52,6 +57,7 @@ function applyInput() {
       try { gm.simulateInput(0, PAD[k], 1); } catch (e) {}
       applied |= bit;
       pressedAt[i] = now;
+      if (cast.touchAt) { lag.touch.push(now - cast.touchAt); cast.touchAt = 0; }
     } else if (!w && h) {
       const turning = (bit & DIR_MASK) && (want & DIR_MASK & ~bit);
       const left = turning ? 0 : pressedAt[i] + MIN_HOLD - now;
@@ -224,6 +230,7 @@ async function castTo(code, attempt = 0) {
           if (j.tv) cast.tvStats = j.tv;
           if (j.hello) cast.tvHello = j.hello;
           if (j.key && cast.requestKey) cast.requestKey();
+          if (j.ping) { try { dc.send(JSON.stringify({ pong: j.ping })); } catch (x) {} }   // the TV measures the control round trip
         } catch (x) {}
         return;
       }
@@ -296,6 +303,7 @@ async function startFramePump(track, dc) {
       if (dc.readyState !== "open" || dc.bufferedAmount > 200000) return; // the channel is behind: drop
       try { dc.send(packFrame(data.frame, data.key, data.timestamp)); cast.pumped++; } catch (e) {}
     } else if (data.fallback) cast.frameCodec = data.fallback;
+    if (data.encMs != null) lag.enc.push(data.encMs);
   };
   worker.postMessage({ cmd: "start", readable, codec: cast.frameCodec, width: STREAM_W, height: STREAM_H, bitrate: 1_200_000 }, [readable]);
   cast.requestKey = () => worker.postMessage({ cmd: "key" });
@@ -359,7 +367,12 @@ function watchCast(pc, sender, dc, emu) {
         }
       } catch (e) {}
     }
-    const st = { br, ua: chromeVer(), mode: `${CAST_MODES[cast.mode].name}${codec ? ` = ${codec}` : cast.frameCodec ? ` = ${cast.frameCodec === "vp8" ? "VP8 WebCodecs" : "JPEG"}` : ""} (${cast.attempt + 1}/${CAST_MODES.length})`,
+    // where the time goes on this side, in ms (the TV adds its own and the network)
+    const encMs = tx && tx.framesEncoded ? Math.round(((tx.totalEncodeTime || 0) - (lag.encT || 0)) / Math.max(1, tx.framesEncoded - (lag.encN || 0)) * 1000) : avgMs(lag.enc);
+    if (tx) { lag.encT = tx.totalEncodeTime || 0; lag.encN = tx.framesEncoded || 0; }
+    const sendMs = tx && tx.packetsSent ? Math.round((tx.totalPacketSendDelay || 0) / tx.packetsSent * 1000) : null;
+    const speedPct = speed.pct ? Math.round(speed.pct * 100) : null;
+    const st = { lat: { touch: avgMs(lag.touch), enc: encMs, send: sendMs, speed: speedPct }, br, ua: chromeVer(), mode: `${CAST_MODES[cast.mode].name}${codec ? ` = ${codec}` : cast.frameCodec ? ` = ${cast.frameCodec === "vp8" ? "VP8 WebCodecs" : "JPEG"}` : ""} (${cast.attempt + 1}/${CAST_MODES.length})`,
       enc: (tx && tx.encoderImplementation) || "", keys: tx ? tx.keyFramesEncoded || 0 : 0, pli: tx ? tx.pliCount || 0 : 0, pk: tx ? tx.packetsSent || 0 : 0, sent: tx ? tx.framesSent || 0 : cast.pumped || 0, w: (tx && tx.frameWidth) || 0, h: (tx && tx.frameHeight) || 0, lim: (tx && tx.qualityLimitationReason) || "",
       cw: emu.canvas ? emu.canvas.width : 0, ch: emu.canvas ? emu.canvas.height : 0, track: tr ? tr.readyState + (tr.muted ? " (sem quadros)" : "") : "sem trilha" };
     if (dc.readyState === "open") { try { dc.send(JSON.stringify({ st })); } catch (e) {} }

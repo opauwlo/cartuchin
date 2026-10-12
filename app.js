@@ -340,6 +340,12 @@
     // "quadros" mode: JPEG frames over the data channel
     drawn: 0,
     padTimer: null,
+    /** @type {ReturnType<typeof setInterval> | null} */
+    pingTimer: null,
+    /** @type {number[]} control channel round trips (ms) */
+    rtt: [],
+    /** @type {number[]} "quadros" mode: arrival → drawn (ms) */
+    decMs: [],
     lastSent: -1
     // last button mask sent to the phone
   };
@@ -435,6 +441,10 @@
           try {
             const d = JSON.parse(m.data);
             if (d && d.st) tvScreen.phoneStats = d.st;
+            if (d && d.pong) {
+              tvScreen.rtt.push(performance.now() - d.pong);
+              if (tvScreen.rtt.length > 10) tvScreen.rtt.shift();
+            }
           } catch (x) {
           }
         };
@@ -516,7 +526,12 @@
     canvas.hidden = false;
     $("#scrVideo").hidden = true;
     channel.binaryType = "arraybuffer";
+    let decodeStart = 0;
     function show(img) {
+      if (decodeStart) {
+        tvScreen.decMs.push(performance.now() - decodeStart);
+        if (tvScreen.decMs.length > 20) tvScreen.decMs.shift();
+      }
       const w = img.displayWidth || img.width, h = img.displayHeight || img.height;
       if (canvas.width !== w || canvas.height !== h) {
         canvas.width = w;
@@ -555,6 +570,7 @@
       const buf = pending;
       pending = null;
       decoding = true;
+      decodeStart = performance.now();
       try {
         const key = new Uint8Array(buf, 0, 1)[0] === 1;
         const timestamp = new DataView(buf).getFloat64(1, true);
@@ -691,9 +707,30 @@
       else if (!frames && v.readyState < 2) problem = "A imagem chega, mas a TV ainda não começou a mostrar.";
       const ph = tvScreen.phoneStats;
       const warnNet = net.warnUntil && performance.now() < net.warnUntil;
+      const avg = (arr) => arr.length ? Math.round(arr.reduce((a, b) => a + b, 0) / arr.length) : null;
+      const ms = (v2) => v2 == null ? "?" : v2 + " ms";
+      const ctl = avg(tvScreen.rtt), oneWay = ctl != null ? Math.round(ctl / 2) : null;
+      const lat = ph && ph.lat || {};
+      let tvMs = null;
+      if (frames) tvMs = avg(tvScreen.decMs);
+      else if (rx && rx.framesDecoded) {
+        const dJb = (rx.jitterBufferDelay || 0) - (net.jbT || 0), dEm = (rx.jitterBufferEmittedCount || 0) - (net.jbN || 0);
+        const dDec = (rx.totalDecodeTime || 0) - (net.decT || 0), dFr = rx.framesDecoded - (net.decN || 0);
+        net.jbT = rx.jitterBufferDelay || 0;
+        net.jbN = rx.jitterBufferEmittedCount || 0;
+        net.decT = rx.totalDecodeTime || 0;
+        net.decN = rx.framesDecoded;
+        if (dEm > 0 && dFr > 0) tvMs = Math.round((dJb / dEm + dDec / dFr) * 1e3);
+      }
+      const gameFrame = lat.speed ? Math.round(16.7 / Math.min(1, lat.speed / 100)) : 17;
+      const parts = [lat.touch, gameFrame, lat.enc, lat.send, oneWay, tvMs];
+      const known = parts.filter((x) => x != null);
+      const total = known.length ? known.reduce((a, b) => a + b, 0) : null;
+      const latencyLine = `Atraso: controle TV→celular ${ms(oneWay)} · toque→jogo ${ms(lat.touch)} · 1 quadro do jogo ${ms(gameFrame)}${lat.speed ? ` (${lat.speed}%)` : ""} · codificar ${ms(lat.enc)} · enviar ${ms(lat.send)} · rede ${ms(oneWay)} · buffer+decodificar na TV ${ms(tvMs)} · total ≈ ${ms(total)} + 1 quadro da TV`;
       const lines = [
         problem || (warnNet ? `Wi-Fi instável: ${net.warnPct}% dos pacotes se perdem. Dica: ligue o roteador do celular e conecte a TV nele.` : "Conectado. Se a imagem não aparecer, mande uma foto desta tela."),
         `Rede: ${path}${rtt != null ? ` · ida e volta ${rtt} ms` : ""} · perda ${lossPct}%${rx && rx.jitter ? ` · variação ${Math.round(rx.jitter * 1e3)} ms` : ""}`,
+        latencyLine,
         ph ? `Celular: ${ph.ua || ""} · formato ${ph.mode || "?"} · enviou ${ph.sent} quadros, ${ph.pk || 0} pacotes${ph.w ? ` (${ph.w}x${ph.h})` : ""} · chaves ${ph.keys || 0} · PLI ${ph.pli || 0}${ph.enc ? ` · ${ph.enc}` : ""}${ph.lim && ph.lim !== "none" ? ` · limitado por ${ph.lim}` : ""}${ph.track && ph.track !== "live" ? ` · captura ${ph.track}` : ""}${ph.br != null && ph.br >= 0 ? ` · brilho ${ph.br}` : ""}` : "Celular: sem relatório ainda",
         `TV: ${chromeVer()} · pacotes de vídeo ${got}, de áudio ${arx ? arx.packetsReceived || 0 : 0} · recebeu ${rx ? rx.framesReceived || 0 : 0}, decodificou ${dec}${codec ? ` · ${codec}` : ""}${rx && rx.frameWidth ? ` · ${rx.frameWidth}x${rx.frameHeight}` : ""} · chaves ${rx ? rx.keyFramesDecoded || 0 : 0} · PLI ${rx ? rx.pliCount || 0 : 0}${rx && rx.decoderImplementation ? ` · ${rx.decoderImplementation}` : ""}`,
         frames ? `Quadros pelo canal de dados (${window.VideoDecoder ? "WebCodecs" : "JPEG"}): desenhados ${tvScreen.drawn} · brilho ${bright}` : `Vídeo: ${v.paused ? "parado" : "tocando"} · ${v.videoWidth}x${v.videoHeight} · estado ${v.readyState} · exibidos ${shown} · brilho ${bright} · ${tvScreen.sharp ? "nítido (canvas)" : "vídeo direto"} · na tela ${Math.round(box.width)}x${Math.round(box.height)} de ${innerWidth}x${innerHeight}`
@@ -702,6 +739,14 @@
       info.hidden = !(problem || warnNet || performance.now() - t0 < 12e3);
     };
     tvScreen.watch = setInterval(check, 2e3);
+    tvScreen.pingTimer = setInterval(() => {
+      if (tvScreen.dc && tvScreen.dc.readyState === "open") {
+        try {
+          tvScreen.dc.send(JSON.stringify({ ping: performance.now() }));
+        } catch (e) {
+        }
+      }
+    }, 1e3);
     setTimeout(check, 500);
   }
   function showWaiting(on) {
@@ -712,6 +757,10 @@
     tvScreen.gen = (tvScreen.gen || 0) + 1;
     clearInterval(tvScreen.watch);
     tvScreen.watch = null;
+    clearInterval(tvScreen.pingTimer);
+    tvScreen.pingTimer = null;
+    tvScreen.rtt = [];
+    tvScreen.decMs = [];
     if (tvScreen.dc) {
       try {
         tvScreen.dc.onmessage = null;
@@ -940,6 +989,7 @@
     let encoder = null, reader = null, running = false, codec = "jpeg";
     let wantKey = true, framesIn = 0, busy2 = false, lastJpegAt = 0;
     const KEY_EVERY = 180;
+    const inFlight = /* @__PURE__ */ new Map();
     function send(buffer, key, timestamp) {
       worker.postMessage({ frame: buffer, key, timestamp }, [buffer]);
     }
@@ -948,7 +998,9 @@
         output: (chunk) => {
           const buf = new ArrayBuffer(chunk.byteLength);
           chunk.copyTo(buf);
-          send(buf, chunk.type === "key", chunk.timestamp);
+          const started = inFlight.get(chunk.timestamp);
+          inFlight.delete(chunk.timestamp);
+          worker.postMessage({ frame: buf, key: chunk.type === "key", timestamp: chunk.timestamp, encMs: started ? performance.now() - started : null }, [buf]);
         },
         error: (e) => worker.postMessage({ error: String(e) })
       });
@@ -964,6 +1016,7 @@
       }
       const key = wantKey || framesIn % KEY_EVERY === 0;
       wantKey = false;
+      inFlight.set(frame.timestamp, performance.now());
       encoder.encode(frame, { keyFrame: key });
       frame.close();
     }
@@ -1031,6 +1084,112 @@
     };
   };
 
+  // src/js/player/perf.js
+  var PERF_KEY = "cartucho.perf";
+  var perf = {
+    mode: ls.get(PERF_KEY + ".mode") === "light" ? "light" : "auto",
+    // auto | light
+    learned: ls.get(PERF_KEY + ".learned") === "light"
+    // auto mode already decided this device is slow
+  };
+  if (!ls.get(PERF_KEY + ".mode") && guessDevice() === "TV") perf.learned = true;
+  var perfLight = () => perf.mode === "light" || perf.mode === "auto" && perf.learned;
+  var perfProfile = () => perfLight() ? "light" : "auto";
+  var PROFILES = {
+    auto: { frameskip: "auto", threshold: "33", latency: 128, gameMax: 240 },
+    light: { frameskip: "auto", threshold: "50", latency: 160, gameMax: 240 }
+  };
+  function coreOptions() {
+    const pr = PROFILES[perfProfile()];
+    return {
+      "save-save-interval": "0",
+      mgba_idle_optimization: "Remove Known",
+      mgba_audio_low_pass_filter: "disabled",
+      mgba_color_correction: "OFF",
+      mgba_interframe_blending: "OFF",
+      mgba_frameskip: pr.frameskip,
+      mgba_frameskip_threshold: pr.threshold
+    };
+  }
+  function renderPerf() {
+    for (const b of $$("#perfModes button")) {
+      const on = b.dataset.mode === perf.mode;
+      b.classList.toggle("primary", on);
+      b.setAttribute("aria-pressed", on ? "true" : "false");
+    }
+    $("#perfHint").textContent = perf.mode === "light" ? "Imagem no tamanho do GBA, pula quadros mais cedo e dá mais folga ao som. Para TVs e aparelhos lentos." : perf.learned ? "Este aparelho ficou lento antes, então já usa o modo leve." : "Recomendado. Só pula o desenho de um quadro quando o som ia falhar; se o jogo ficar lento, passa sozinho para o leve.";
+  }
+  $("#perfModes").addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-mode]");
+    if (!b) return;
+    perf.mode = b.dataset.mode;
+    ls.set(PERF_KEY + ".mode", perf.mode);
+    if (perf.mode !== "auto") {
+      perf.learned = false;
+      ls.set(PERF_KEY + ".learned", "");
+    }
+    renderPerf();
+  });
+  renderPerf();
+  var speed = { last: null, samples: [], timer: null, since: 0 };
+  function startSpeedMeter() {
+    const gm = player.emu && player.emu.gameManager;
+    if (!gm) return;
+    speed.since = performance.now();
+    speed.samples = [];
+    speed.last = null;
+    clearInterval(speed.timer);
+    speed.timer = setInterval(() => {
+      let frames;
+      try {
+        frames = Number(gm.getFrameNum());
+      } catch (e) {
+        return;
+      }
+      const now = performance.now();
+      if (document.visibilityState !== "visible" || player.emu.paused) {
+        speed.last = null;
+        return;
+      }
+      if (speed.last) {
+        const pct = (frames - speed.last.f) / ((now - speed.last.t) / 1e3) / 59.73;
+        if (pct > 0 && pct < 3) {
+          speed.samples.push(pct);
+          if (speed.samples.length > 4) speed.samples.shift();
+          const avg = speed.samples.reduce((a, b) => a + b, 0) / speed.samples.length;
+          speed.pct = avg;
+          const tag = $("#pSpeed");
+          tag.textContent = Math.round(Math.min(avg, 1) * 100) + "%";
+          tag.className = "speed pix " + (avg >= 0.95 ? "ok" : avg >= 0.8 ? "warn" : "bad");
+          tag.hidden = false;
+          $("#padSpeed").textContent = tag.textContent;
+          $("#padSpeed").className = "pad-speed " + tag.className.replace("speed pix", "").trim();
+          if (perf.mode === "auto" && !perf.learned && now - speed.since > 8e3 && speed.samples.length >= 3 && avg < 0.92) {
+            perf.learned = true;
+            ls.set(PERF_KEY + ".learned", "light");
+            try {
+              gm.setVariable("mgba_frameskip", "auto");
+              gm.setVariable("mgba_frameskip_threshold", PROFILES.light.threshold);
+            } catch (e) {
+            }
+            window.dispatchEvent(new Event("resize"));
+            toast("O jogo estava lento aqui, então liguei o modo leve neste aparelho.", 4500);
+            renderPerf();
+          }
+        }
+      }
+      speed.last = { f: frames, t: now };
+    }, 2e3);
+  }
+  var devInput = $("#deviceName");
+  devInput.value = device.name;
+  devInput.addEventListener("change", () => {
+    const v = devInput.value.trim().slice(0, 40);
+    device.name = v || guessDevice();
+    devInput.value = device.name;
+    ls.set("cartucho.device", device.name);
+  });
+
   // src/js/cast/phone.js
   var cast = window.__cast = {
     /** @type {RTCPeerConnection | null} */
@@ -1063,6 +1222,7 @@
     tvHello: null,
     /** @type {"vp8" | "jpeg" | null} */
     frameCodec: null,
+    touchAt: 0,
     pumped: 0,
     // buttons: what is pressed on this phone, what the TV sends, and what the game currently sees
     lastMask: 0,
@@ -1070,6 +1230,11 @@
     remoteMask: 0
   };
   var MIN_HOLD = 70;
+  var lag = { touch: [], enc: [] };
+  var avgMs = (arr, keep = 20) => {
+    if (arr.length > keep) arr.splice(0, arr.length - keep);
+    return arr.length ? Math.round(arr.reduce((a, b) => a + b, 0) / arr.length) : null;
+  };
   var DIR_MASK = ["UP", "DOWN", "LEFT", "RIGHT"].reduce((m, k) => m | 1 << PAD_BITS.indexOf(k), 0);
   var pressedAt = new Array(PAD_BITS.length).fill(0);
   var releaseTimer = null;
@@ -1088,6 +1253,10 @@
         }
         applied |= bit;
         pressedAt[i] = now;
+        if (cast.touchAt) {
+          lag.touch.push(now - cast.touchAt);
+          cast.touchAt = 0;
+        }
       } else if (!w && h) {
         const turning = bit & DIR_MASK && want & DIR_MASK & ~bit;
         const left = turning ? 0 : pressedAt[i] + MIN_HOLD - now;
@@ -1278,6 +1447,12 @@
             if (j.tv) cast.tvStats = j.tv;
             if (j.hello) cast.tvHello = j.hello;
             if (j.key && cast.requestKey) cast.requestKey();
+            if (j.ping) {
+              try {
+                dc.send(JSON.stringify({ pong: j.ping }));
+              } catch (x) {
+              }
+            }
           } catch (x) {
           }
           return;
@@ -1360,6 +1535,7 @@
         } catch (e) {
         }
       } else if (data.fallback) cast.frameCodec = data.fallback;
+      if (data.encMs != null) lag.enc.push(data.encMs);
     };
     worker.postMessage({ cmd: "start", readable, codec: cast.frameCodec, width: STREAM_W, height: STREAM_H, bitrate: 12e5 }, [readable]);
     cast.requestKey = () => worker.postMessage({ cmd: "key" });
@@ -1433,7 +1609,15 @@
         } catch (e) {
         }
       }
+      const encMs = tx && tx.framesEncoded ? Math.round(((tx.totalEncodeTime || 0) - (lag.encT || 0)) / Math.max(1, tx.framesEncoded - (lag.encN || 0)) * 1e3) : avgMs(lag.enc);
+      if (tx) {
+        lag.encT = tx.totalEncodeTime || 0;
+        lag.encN = tx.framesEncoded || 0;
+      }
+      const sendMs = tx && tx.packetsSent ? Math.round((tx.totalPacketSendDelay || 0) / tx.packetsSent * 1e3) : null;
+      const speedPct = speed.pct ? Math.round(speed.pct * 100) : null;
       const st = {
+        lat: { touch: avgMs(lag.touch), enc: encMs, send: sendMs, speed: speedPct },
         br,
         ua: chromeVer(),
         mode: `${CAST_MODES[cast.mode].name}${codec ? ` = ${codec}` : cast.frameCodec ? ` = ${cast.frameCodec === "vp8" ? "VP8 WebCodecs" : "JPEG"}` : ""} (${cast.attempt + 1}/${CAST_MODES.length})`,
@@ -1493,111 +1677,6 @@
       if (still === 4) toast(`A imagem não está saindo deste celular (${st.sent} quadros enviados). Toque em "TV" para sair e conecte de novo.`, 6e3);
     }, 2e3);
   }
-
-  // src/js/player/perf.js
-  var PERF_KEY = "cartucho.perf";
-  var perf = {
-    mode: ls.get(PERF_KEY + ".mode") === "light" ? "light" : "auto",
-    // auto | light
-    learned: ls.get(PERF_KEY + ".learned") === "light"
-    // auto mode already decided this device is slow
-  };
-  if (!ls.get(PERF_KEY + ".mode") && guessDevice() === "TV") perf.learned = true;
-  var perfLight = () => perf.mode === "light" || perf.mode === "auto" && perf.learned;
-  var perfProfile = () => perfLight() ? "light" : "auto";
-  var PROFILES = {
-    auto: { frameskip: "auto", threshold: "33", latency: 128, gameMax: 240 },
-    light: { frameskip: "auto", threshold: "50", latency: 160, gameMax: 240 }
-  };
-  function coreOptions() {
-    const pr = PROFILES[perfProfile()];
-    return {
-      "save-save-interval": "0",
-      mgba_idle_optimization: "Remove Known",
-      mgba_audio_low_pass_filter: "disabled",
-      mgba_color_correction: "OFF",
-      mgba_interframe_blending: "OFF",
-      mgba_frameskip: pr.frameskip,
-      mgba_frameskip_threshold: pr.threshold
-    };
-  }
-  function renderPerf() {
-    for (const b of $$("#perfModes button")) {
-      const on = b.dataset.mode === perf.mode;
-      b.classList.toggle("primary", on);
-      b.setAttribute("aria-pressed", on ? "true" : "false");
-    }
-    $("#perfHint").textContent = perf.mode === "light" ? "Imagem no tamanho do GBA, pula quadros mais cedo e dá mais folga ao som. Para TVs e aparelhos lentos." : perf.learned ? "Este aparelho ficou lento antes, então já usa o modo leve." : "Recomendado. Só pula o desenho de um quadro quando o som ia falhar; se o jogo ficar lento, passa sozinho para o leve.";
-  }
-  $("#perfModes").addEventListener("click", (e) => {
-    const b = e.target.closest("button[data-mode]");
-    if (!b) return;
-    perf.mode = b.dataset.mode;
-    ls.set(PERF_KEY + ".mode", perf.mode);
-    if (perf.mode !== "auto") {
-      perf.learned = false;
-      ls.set(PERF_KEY + ".learned", "");
-    }
-    renderPerf();
-  });
-  renderPerf();
-  var speed = { last: null, samples: [], timer: null, since: 0 };
-  function startSpeedMeter() {
-    const gm = player.emu && player.emu.gameManager;
-    if (!gm) return;
-    speed.since = performance.now();
-    speed.samples = [];
-    speed.last = null;
-    clearInterval(speed.timer);
-    speed.timer = setInterval(() => {
-      let frames;
-      try {
-        frames = Number(gm.getFrameNum());
-      } catch (e) {
-        return;
-      }
-      const now = performance.now();
-      if (document.visibilityState !== "visible" || player.emu.paused) {
-        speed.last = null;
-        return;
-      }
-      if (speed.last) {
-        const pct = (frames - speed.last.f) / ((now - speed.last.t) / 1e3) / 59.73;
-        if (pct > 0 && pct < 3) {
-          speed.samples.push(pct);
-          if (speed.samples.length > 4) speed.samples.shift();
-          const avg = speed.samples.reduce((a, b) => a + b, 0) / speed.samples.length;
-          const tag = $("#pSpeed");
-          tag.textContent = Math.round(Math.min(avg, 1) * 100) + "%";
-          tag.className = "speed pix " + (avg >= 0.95 ? "ok" : avg >= 0.8 ? "warn" : "bad");
-          tag.hidden = false;
-          $("#padSpeed").textContent = tag.textContent;
-          $("#padSpeed").className = "pad-speed " + tag.className.replace("speed pix", "").trim();
-          if (perf.mode === "auto" && !perf.learned && now - speed.since > 8e3 && speed.samples.length >= 3 && avg < 0.92) {
-            perf.learned = true;
-            ls.set(PERF_KEY + ".learned", "light");
-            try {
-              gm.setVariable("mgba_frameskip", "auto");
-              gm.setVariable("mgba_frameskip_threshold", PROFILES.light.threshold);
-            } catch (e) {
-            }
-            window.dispatchEvent(new Event("resize"));
-            toast("O jogo estava lento aqui, então liguei o modo leve neste aparelho.", 4500);
-            renderPerf();
-          }
-        }
-      }
-      speed.last = { f: frames, t: now };
-    }, 2e3);
-  }
-  var devInput = $("#deviceName");
-  devInput.value = device.name;
-  devInput.addEventListener("change", () => {
-    const v = devInput.value.trim().slice(0, 40);
-    device.name = v || guessDevice();
-    devInput.value = device.name;
-    ls.set("cartucho.device", device.name);
-  });
 
   // src/js/ui/pickers.js
   function pickRom() {
@@ -2285,6 +2364,7 @@
       m |= pm;
       if (p.over && p.over !== "dpad" && !(pm & 1 << PAD_BITS.indexOf(p.over))) over.push(p.over);
     }
+    if (m & ~cast.localMask) cast.touchAt = performance.now();
     cast.localMask = m;
     applyInput();
     const overKey = over.sort().join(" ");
