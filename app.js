@@ -1816,6 +1816,7 @@ function setCastUi(state) {
 }
 function stopCast(msg) {
   clearInterval(cast.watch);
+  if (cast.pumpStop) { try { cast.pumpStop(); } catch (e) {} cast.pumpStop = null; }
   try { cast.pc && cast.pc.close(); } catch (e) {}
   // closing the connection does not stop the canvas capture: left running, every old
   // capture keeps copying each frame of the game, and they pile up on every reconnect
@@ -1833,8 +1834,11 @@ function stopCast(msg) {
    phone reconnects with the next format, and remembers the one that worked. */
 const CAST_MODES = [
   { name: "VP8", red: true },
-  { name: "VP8 simples", plain: true },             // like the very first version: browser defaults, few RTP extensions
   { name: "H.264", plain: true, codecs: [/h264/i, /vp9/i] }, // TVs decode H.264 in hardware
+  // no WebRTC video at all: each frame of the canvas is compressed by the phone and sent
+  // over the data channel, and the TV draws it. Slower to encode, but it depends on
+  // nothing the two browsers have to agree on.
+  { name: "quadros", frames: true },
 ];
 const chromeVer = () => { const ua = navigator.userAgent; const c = ua.match(/Chrom(?:e|ium)\/(\d+)/), t = ua.match(/Tizen (\d+(?:\.\d+)?)/), w = ua.match(/Web0S|webOS/); return (c ? "Chrome " + c[1] : "navegador ?") + (t ? ` (Tizen ${t[1]})` : w ? " (webOS)" : ""); };
 async function castTo(code, attempt = 0) {
@@ -1862,8 +1866,13 @@ async function castTo(code, attempt = 0) {
     // tuned for a so-so Wi-Fi (see test/net.js, which measures them under loss and jitter)
     const opt = { red: !!mode.red, kbps: 2500, layers: "", ...(window.__castOpts || {}) };
     let vt = null;
-    if (opt.layers) { try { vt = pc.addTransceiver(vtrack, { direction: "sendonly", streams: [stream], sendEncodings: [{ scalabilityMode: opt.layers }] }); } catch (e) {} }
-    if (!vt) vt = pc.addTransceiver(vtrack, { direction: "sendonly", streams: [stream] });
+    if (mode.frames) {
+      cast.frameChannel = pc.createDataChannel("quadros", { ordered: false, maxRetransmits: 0 });
+      cast.frameChannel.binaryType = "arraybuffer";
+    } else {
+      if (opt.layers) { try { vt = pc.addTransceiver(vtrack, { direction: "sendonly", streams: [stream], sendEncodings: [{ scalabilityMode: opt.layers }] }); } catch (e) {} }
+      if (!vt) vt = pc.addTransceiver(vtrack, { direction: "sendonly", streams: [stream] });
+    }
     const prefer = (tr, kind, first) => {
       try {
         const caps = RTCRtpSender.getCapabilities && RTCRtpSender.getCapabilities(kind);
@@ -1880,9 +1889,9 @@ async function castTo(code, attempt = 0) {
         tr.setHeaderExtensionsToNegotiate(tr.getHeaderExtensionsToNegotiate().map((x) => ({ uri: x.uri, direction: keep.test(x.uri) ? x.direction : "stopped" })));
       } catch (e) {}
     };
-    if (mode.codecs) prefer(vt, "video", mode.codecs);
-    else if (!mode.plain) prefer(vt, "video", [/vp8/i]);
-    if (mode.plain) trimExt(vt);
+    if (vt && mode.codecs) prefer(vt, "video", mode.codecs);
+    else if (vt && !mode.plain) prefer(vt, "video", [/vp8/i]);
+    if (vt && mode.plain) trimExt(vt);
     const tap = (window.__audioTaps || [])[0];
     if (tap && tap.out) {
       const at = tap.out.stream.getAudioTracks()[0];
@@ -1904,11 +1913,13 @@ async function castTo(code, attempt = 0) {
         setCastUi("on"); keepAwake(); showPad(true); wakeAudio();
         for (const t of window.__audioTaps || []) t.local.gain.value = 0;
         if (attempt === 0) toast("Jogando na TV. Este celular agora é o controle.", 3500);
-        const send = vt.sender, p = send.getParameters();
-        p.encodings = (p.encodings && p.encodings.length ? p.encodings : [{}]).map((e) => ({ ...e, maxBitrate: opt.kbps * 1000, maxFramerate: 60, scaleResolutionDownBy: 1, priority: "high", networkPriority: "high" }));
-        p.degradationPreference = "maintain-framerate";
-        send.setParameters(p).catch((e) => { cast.paramErr = String(e); });
-        watchCast(pc, send, dc, emu);
+        if (vt) {
+          const send = vt.sender, p = send.getParameters();
+          p.encodings = (p.encodings && p.encodings.length ? p.encodings : [{}]).map((e) => ({ ...e, maxBitrate: opt.kbps * 1000, maxFramerate: 60, scaleResolutionDownBy: 1, priority: "high", networkPriority: "high" }));
+          p.degradationPreference = "maintain-framerate";
+          send.setParameters(p).catch((e) => { cast.paramErr = String(e); });
+        } else startFramePump(vtrack, cast.frameChannel);
+        watchCast(pc, vt ? vt.sender : null, dc, emu);
       } else if (pc.connectionState === "failed") stopCast("Não deu para conectar com a TV. Os dois aparelhos estão na mesma rede Wi-Fi?");
       else if (pc.connectionState === "disconnected" || pc.connectionState === "closed") { if (cast.pc === pc) stopCast("A TV desconectou."); }
     };
@@ -1924,11 +1935,53 @@ async function castTo(code, attempt = 0) {
     setTimeout(() => { if (pc === cast.pc && pc.connectionState !== "connected") { stopListen(); stopCast("A TV não respondeu. Confira o código e se ela está na tela de espera."); } }, 25000);
   } catch (e) { stopCast("Não deu para começar a transmissão."); }
 }
+/* "quadros" mode: reads the frames of the captured canvas, compresses each one as a
+   small JPEG (240x160, ~8 KB) and sends it over the data channel, at most ~30 a second
+   and never piling up: if the channel is still busy, the frame is skipped. */
+async function startFramePump(track, dc) {
+  const off = new OffscreenCanvas(STREAM_W, STREAM_H);
+  const g = off.getContext("2d", { alpha: false });
+  let busy = false, lastAt = 0;
+  cast.pumped = 0;
+
+  async function push(frame) {
+    const now = performance.now();
+    const skip = busy || now - lastAt < 30 || dc.readyState !== "open" || dc.bufferedAmount > 150000;
+    if (skip) { if (frame.close) frame.close(); return; }
+    busy = true; lastAt = now;
+    try {
+      g.drawImage(frame, 0, 0, STREAM_W, STREAM_H);
+      if (frame.close) frame.close();
+      const blob = await off.convertToBlob({ type: "image/jpeg", quality: 0.85 });
+      dc.send(await blob.arrayBuffer());
+      cast.pumped++;
+    } catch (e) {}
+    busy = false;
+  }
+
+  if (window.MediaStreamTrackProcessor) {
+    // gives every new frame of the track; keeps only the latest when we are slow
+    const reader = new MediaStreamTrackProcessor({ track }).readable.getReader();
+    cast.pumpStop = () => reader.cancel().catch(() => {});
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) return;
+      await push(value);
+    }
+  } else if (window.ImageCapture) {
+    const grab = new ImageCapture(track);
+    let on = true;
+    cast.pumpStop = () => { on = false; };
+    while (on && track.readyState === "live") {
+      try { await push(await grab.grabFrame()); } catch (e) { await sleep(50); }
+    }
+  }
+}
 /* Every 2 s: tells the TV what this phone is sending (the TV shows it next to its own
    numbers), and if no new frame has left for a while although the game is running,
    restarts the canvas capture once, then warns. */
 function watchCast(pc, sender, dc, emu) {
-  let last = -1, still = 0, recaptured = false, checks = 0, worked = false;
+  let last = -1, still = 0, recaptured = !sender, checks = 0, worked = false;
   clearInterval(cast.watch);
   cast.watch = setInterval(async () => {
     if (pc !== cast.pc || pc.connectionState !== "connected") { clearInterval(cast.watch); return; }
@@ -1938,7 +1991,7 @@ function watchCast(pc, sender, dc, emu) {
       stats.forEach((x) => { all.set(x.id, x); if (x.type === "outbound-rtp" && (x.kind || x.mediaType) === "video") tx = x; });
       if (tx && all.get(tx.codecId)) codec = (all.get(tx.codecId).mimeType || "").replace("video/", "");
     } catch (e) {}
-    const tr = sender.track;
+    const tr = sender ? sender.track : (cast.stream && cast.stream.getVideoTracks()[0]);
     let br = -1;
     if (tr && window.ImageCapture) {
       try {
@@ -1947,7 +2000,7 @@ function watchCast(pc, sender, dc, emu) {
       } catch (e) {}
     }
     const st = { br, ua: chromeVer(), mode: `${CAST_MODES[cast.mode].name}${codec ? ` = ${codec}` : ""} (${cast.attempt + 1}/${CAST_MODES.length})`,
-      enc: (tx && tx.encoderImplementation) || "", keys: tx ? tx.keyFramesEncoded || 0 : 0, pli: tx ? tx.pliCount || 0 : 0, pk: tx ? tx.packetsSent || 0 : 0, sent: tx ? tx.framesSent || 0 : 0, w: (tx && tx.frameWidth) || 0, h: (tx && tx.frameHeight) || 0, lim: (tx && tx.qualityLimitationReason) || "",
+      enc: (tx && tx.encoderImplementation) || "", keys: tx ? tx.keyFramesEncoded || 0 : 0, pli: tx ? tx.pliCount || 0 : 0, pk: tx ? tx.packetsSent || 0 : 0, sent: tx ? tx.framesSent || 0 : cast.pumped || 0, w: (tx && tx.frameWidth) || 0, h: (tx && tx.frameHeight) || 0, lim: (tx && tx.qualityLimitationReason) || "",
       cw: emu.canvas ? emu.canvas.width : 0, ch: emu.canvas ? emu.canvas.height : 0, track: tr ? tr.readyState + (tr.muted ? " (sem quadros)" : "") : "sem trilha" };
     if (dc.readyState === "open") { try { dc.send(JSON.stringify({ st })); } catch (e) {} }
     // the TV says how many frames it decoded: none after ~8 s while this phone is
@@ -2234,14 +2287,17 @@ async function startScreen() {
         } else { v.muted = false; v.play().catch(() => { $("#scrTap").hidden = false; }); }
       }
     };
+    tvScreen.drawn = 0; tvScreen.framesMode = false; tvScreen.sharp = false;
+    $("#scrCanvas").hidden = true; $("#scrVideo").hidden = false;
     pc.ondatachannel = (e) => {
+      if (e.channel.label === "quadros") { receiveFrames(e.channel); return; }
       tvScreen.dc = e.channel; tvScreen.phoneStats = null;
       // the phone reports what it is sending, so the TV can show both ends in one place
       e.channel.onmessage = (m) => { try { const d = JSON.parse(m.data); if (d && d.st) tvScreen.phoneStats = d.st; } catch (x) {} };
     };
     pc.onconnectionstatechange = () => {
       if (pc !== tvScreen.pc) return;
-      if (pc.connectionState === "connected") { showWaiting(false); playScreenVideo(); watchScreen(pc); }
+      if (pc.connectionState === "connected") { showWaiting(false); playScreenVideo(); if (!tvScreen.framesMode) drawVideoSharp(); watchScreen(pc); }
       else if (["failed", "disconnected", "closed"].includes(pc.connectionState)) {
         showWaiting(true); $("#scrInfo").hidden = true; $("#scrStatus").textContent = "O celular desconectou. Esperando de novo…";
       }
@@ -2278,6 +2334,51 @@ function brightness(src) {
     for (let i = 0; i < d.length; i += 4) sum += d[i] + d[i + 1] + d[i + 2];
     return Math.round(sum / (d.length / 4) / 3);
   } catch (e) { return -1; }
+}
+/* "quadros" mode on the TV: each message is one JPEG frame. Decoding is async, so
+   while one frame decodes the newest arrival waits and older ones are dropped. */
+function receiveFrames(channel) {
+  const canvas = $("#scrCanvas"), g = canvas.getContext("2d", { alpha: false });
+  tvScreen.framesMode = true; tvScreen.sharp = false;
+  canvas.hidden = false; $("#scrVideo").hidden = true;
+  channel.binaryType = "arraybuffer";
+  let pending = null, decoding = false;
+  async function drawNext() {
+    if (decoding || !pending) return;
+    const buf = pending; pending = null; decoding = true;
+    try {
+      const img = await createImageBitmap(new Blob([buf], { type: "image/jpeg" }));
+      if (canvas.width !== img.width || canvas.height !== img.height) { canvas.width = img.width; canvas.height = img.height; }
+      g.drawImage(img, 0, 0);
+      if (img.close) img.close();
+      tvScreen.drawn++;
+    } catch (e) {}
+    decoding = false;
+    drawNext();
+  }
+  channel.onmessage = (m) => { pending = m.data; drawNext(); };
+}
+/* The stream is the GBA's own 240x160. Drawn into a canvas of that size and enlarged by
+   CSS with pixelated scaling, the pixels stay sharp (a <video> is always smoothed when
+   enlarged). The video stays underneath: if the canvas gets nothing in 3 s, it is hidden
+   and the video shows. */
+function drawVideoSharp() {
+  const v = $("#scrVideo"), canvas = $("#scrCanvas");
+  if (tvScreen.sharp) return;
+  const g = canvas.getContext("2d", { alpha: false });
+  const started = performance.now();
+  tvScreen.sharp = true; tvScreen.drawnSharp = 0;
+  canvas.hidden = false;
+  function frame() {
+    if (!tvScreen.active) { tvScreen.sharp = false; return; }
+    if (v.readyState >= 2 && v.videoWidth) {
+      if (canvas.width !== v.videoWidth || canvas.height !== v.videoHeight) { canvas.width = v.videoWidth; canvas.height = v.videoHeight; }
+      try { g.drawImage(v, 0, 0, canvas.width, canvas.height); tvScreen.drawnSharp++; } catch (e) {}
+    }
+    if (tvScreen.drawnSharp === 0 && performance.now() - started > 3000) { canvas.hidden = true; tvScreen.sharp = false; return; }
+    if (v.requestVideoFrameCallback) v.requestVideoFrameCallback(frame); else requestAnimationFrame(frame);
+  }
+  frame();
 }
 function playScreenVideo() {
   const v = $("#scrVideo");
@@ -2316,17 +2417,18 @@ function watchScreen(pc) {
     const path = !types.length ? "?" : types.includes("relay") ? "por um servidor" : types.includes("srflx") ? "pelo IP público do roteador" : "rede local, direto";
     net.bad = lossPct >= 5 ? (net.bad || 0) + 1 : 0;
     if (net.bad === 2 && !net.warned) { net.warned = true; net.warnPct = lossPct; net.warnUntil = performance.now() + 9000; }
-    const dec = rx ? rx.framesDecoded || 0 : 0;
+    const frames = tvScreen.framesMode;                        // "quadros" mode: the picture comes over the data channel
+    const dec = frames ? tvScreen.drawn : (rx ? rx.framesDecoded || 0 : 0);
     still = dec === lastDec ? still + 1 : 0; lastDec = dec;
     if (tvScreen.dc && tvScreen.dc.readyState === "open") { try { tvScreen.dc.send(JSON.stringify({ tv: { dec, pk: got, apk: arx ? arx.packetsReceived || 0 : 0 } })); } catch (e) {} }
     const shown = v.getVideoPlaybackQuality ? v.getVideoPlaybackQuality().totalVideoFrames : "?";
-    const bright = v.readyState >= 2 ? brightness(v) : -1;
+    const bright = frames || tvScreen.sharp ? brightness($("#scrCanvas")) : v.readyState >= 2 ? brightness(v) : -1;
     const box = v.getBoundingClientRect();
     if (v.paused && dec > 0) playScreenVideo();
     let problem = "";
     if (still >= 2) problem = dec === 0 ? "A imagem não está chegando do celular." : "A imagem parou de chegar do celular.";
-    else if (v.paused) problem = "A imagem chega, mas o vídeo está parado. Toque no botão ou aperte A.";
-    else if (v.readyState < 2) problem = "A imagem chega, mas a TV ainda não começou a mostrar.";
+    else if (!frames && v.paused) problem = "A imagem chega, mas o vídeo está parado. Toque no botão ou aperte A.";
+    else if (!frames && v.readyState < 2) problem = "A imagem chega, mas a TV ainda não começou a mostrar.";
     const ph = tvScreen.phoneStats;
     const warnNet = net.warnUntil && performance.now() < net.warnUntil;
     const lines = [
@@ -2335,7 +2437,7 @@ function watchScreen(pc) {
       ph ? `Celular: ${ph.ua || ""} · formato ${ph.mode || "?"} · enviou ${ph.sent} quadros, ${ph.pk || 0} pacotes${ph.w ? ` (${ph.w}x${ph.h})` : ""} · chaves ${ph.keys || 0} · PLI ${ph.pli || 0}${ph.enc ? ` · ${ph.enc}` : ""}${ph.lim && ph.lim !== "none" ? ` · limitado por ${ph.lim}` : ""}${ph.track && ph.track !== "live" ? ` · captura ${ph.track}` : ""}${ph.br != null && ph.br >= 0 ? ` · brilho ${ph.br}` : ""}`
          : "Celular: sem relatório ainda",
       `TV: ${chromeVer()} · pacotes de vídeo ${got}, de áudio ${arx ? arx.packetsReceived || 0 : 0} · recebeu ${rx ? rx.framesReceived || 0 : 0}, decodificou ${dec}${codec ? ` · ${codec}` : ""}${rx && rx.frameWidth ? ` · ${rx.frameWidth}x${rx.frameHeight}` : ""} · chaves ${rx ? rx.keyFramesDecoded || 0 : 0} · PLI ${rx ? rx.pliCount || 0 : 0}${rx && rx.decoderImplementation ? ` · ${rx.decoderImplementation}` : ""}`,
-      `Vídeo: ${v.paused ? "parado" : "tocando"} · ${v.videoWidth}x${v.videoHeight} · estado ${v.readyState} · exibidos ${shown} · brilho ${bright} · na tela ${Math.round(box.width)}x${Math.round(box.height)} de ${innerWidth}x${innerHeight}`,
+      frames ? `Quadros pelo canal de dados: desenhados ${tvScreen.drawn} · brilho ${bright}` : `Vídeo: ${v.paused ? "parado" : "tocando"} · ${v.videoWidth}x${v.videoHeight} · estado ${v.readyState} · exibidos ${shown} · brilho ${bright} · ${tvScreen.sharp ? "nítido (canvas)" : "vídeo direto"} · na tela ${Math.round(box.width)}x${Math.round(box.height)} de ${innerWidth}x${innerHeight}`,
     ];
     info.textContent = lines.join("\n");
     info.hidden = !(problem || warnNet || performance.now() - t0 < 12000);
@@ -2584,6 +2686,21 @@ if (ls.get("cartucho.reset.v1") !== "done") { resetEmulatorSettings(); ls.set("c
 /* ---------------- boot ---------------- */
 $("#connectBtn").addEventListener("click", () => { showWelcome(); window.scrollTo(0, 0); });
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js", { updateViaCache: "none" }).then((r) => r.update()).catch(() => {});
+/* GitHub Pages lets browsers keep the page for 10 minutes. version.txt is asked for
+   with the cache bypassed: when it names a newer version than this script, the page
+   reloads once, so a TV or phone never runs an old build after an update. */
+(async () => {
+  if (!APP_V || sessionStorage.getItem("cartucho.reloaded") === APP_V) return;
+  try {
+    const r = await fetch("version.txt?t=" + Date.now(), { cache: "no-store" });
+    const latest = (await r.text()).trim();
+    if (r.ok && /^\d{14}$/.test(latest) && latest > APP_V) {
+      sessionStorage.setItem("cartucho.reloaded", APP_V);
+      if ("caches" in window) { try { for (const k of await caches.keys()) await caches.delete(k); } catch (e) {} }
+      location.reload();
+    }
+  } catch (e) {}
+})();
 handleScreenLink();
 { // #diagnostico runs the whole speed test; #diagnostico:touch,cast only those steps (used by the automated test to re-check)
   const m = location.hash.match(/^#diagnostico(?::([a-z,]+))?$/);
