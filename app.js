@@ -1814,14 +1814,28 @@ function setCastUi(state) {
   b.innerHTML = state === "on" ? "<span class=\"long\">Na </span>TV ●" : state === "wait" ? "Conectando…" : "<span class=\"long\">Jogar na </span>TV";
   b.classList.toggle("primary", state === "on");
 }
-function stopCast(msg) {
-  clearInterval(cast.watch);
+/* Ends the current transmission and frees everything it held. Also runs before every
+   new attempt, so nothing from an old connection (capture, encoder, channel, timers,
+   muted local audio) lives on next to the new one. */
+function closeCastConnection() {
+  clearInterval(cast.watch); cast.watch = null;
   if (cast.pumpStop) { try { cast.pumpStop(); } catch (e) {} cast.pumpStop = null; }
-  try { cast.pc && cast.pc.close(); } catch (e) {}
+  if (cast.frameChannel) { try { cast.frameChannel.close(); } catch (e) {} cast.frameChannel = null; }
+  if (cast.dc) { try { cast.dc.onmessage = null; cast.dc.close(); } catch (e) {} cast.dc = null; }
+  if (cast.pc) {
+    const pc = cast.pc; cast.pc = null;
+    try { pc.onconnectionstatechange = null; pc.ondatachannel = null; pc.ontrack = null; } catch (e) {}
+    try { for (const s of pc.getSenders()) { try { s.replaceTrack(null); } catch (e) {} } } catch (e) {}
+    try { pc.close(); } catch (e) {}
+  }
   // closing the connection does not stop the canvas capture: left running, every old
   // capture keeps copying each frame of the game, and they pile up on every reconnect
-  if (cast.stream) { for (const t of cast.stream.getVideoTracks()) t.stop(); cast.stream = null; }
-  cast.pc = null; cast.dc = null;
+  if (cast.stream) { for (const t of cast.stream.getTracks()) t.stop(); cast.stream = null; }
+  cast.tvStats = null; cast.paramErr = null;
+  cast.remoteMask = 0; applyInput();
+}
+function stopCast(msg) {
+  closeCastConnection();
   cast.localMask = 0; applyRemote(0);
   for (const t of window.__audioTaps || []) t.local.gain.value = 1;
   setCastUi("off");
@@ -2264,7 +2278,7 @@ async function startScreen() {
   tvScreen.stopListen = sig.listen("oferta", async (msg) => {
     if (!msg.sdp || !msg.id || handled.has(msg.id)) return;
     handled.add(msg.id);
-    try { tvScreen.pc && tvScreen.pc.close(); } catch (e) {}
+    closeScreenConnection();
     const pc = new RTCPeerConnection(RTC_CONFIG); tvScreen.pc = pc;
     $("#scrStatus").textContent = `Conectando com ${msg.from || "o celular"}…`;
     pc.ontrack = (e) => {
@@ -2287,8 +2301,6 @@ async function startScreen() {
         } else { v.muted = false; v.play().catch(() => { $("#scrTap").hidden = false; }); }
       }
     };
-    tvScreen.drawn = 0; tvScreen.framesMode = false; tvScreen.sharp = false;
-    $("#scrCanvas").hidden = true; $("#scrVideo").hidden = false;
     pc.ondatachannel = (e) => {
       if (e.channel.label === "quadros") { receiveFrames(e.channel); return; }
       tvScreen.dc = e.channel; tvScreen.phoneStats = null;
@@ -2368,9 +2380,10 @@ function drawVideoSharp() {
   const g = canvas.getContext("2d", { alpha: false });
   const started = performance.now();
   tvScreen.sharp = true; tvScreen.drawnSharp = 0;
+  const gen = tvScreen.gen;                         // a new connection ends this loop
   canvas.hidden = false;
   function frame() {
-    if (!tvScreen.active) { tvScreen.sharp = false; return; }
+    if (!tvScreen.active || gen !== tvScreen.gen) { if (gen === tvScreen.gen) tvScreen.sharp = false; return; }
     if (v.readyState >= 2 && v.videoWidth) {
       if (canvas.width !== v.videoWidth || canvas.height !== v.videoHeight) { canvas.width = v.videoWidth; canvas.height = v.videoHeight; }
       try { g.drawImage(v, 0, 0, canvas.width, canvas.height); tvScreen.drawnSharp++; } catch (e) {}
@@ -2449,10 +2462,27 @@ function showWaiting(on) {
   $("#scrWait").hidden = !on;
   if (on) $("#scrStatus").textContent = "Esperando o celular…";
 }
+/* Forgets the phone that was connected: connection, channels, audio node, the video's
+   stream and every timer. Runs before each new phone connects and when leaving. */
+function closeScreenConnection() {
+  tvScreen.gen = (tvScreen.gen || 0) + 1;
+  clearInterval(tvScreen.watch); tvScreen.watch = null;
+  if (tvScreen.dc) { try { tvScreen.dc.onmessage = null; tvScreen.dc.close(); } catch (e) {} tvScreen.dc = null; }
+  if (tvScreen.audioSrc) { try { tvScreen.audioSrc.disconnect(); } catch (e) {} tvScreen.audioSrc = null; }
+  if (tvScreen.pc) {
+    const pc = tvScreen.pc; tvScreen.pc = null;
+    try { pc.onconnectionstatechange = null; pc.ondatachannel = null; pc.ontrack = null; } catch (e) {}
+    try { pc.close(); } catch (e) {}
+  }
+  const v = $("#scrVideo");
+  if (v.srcObject) { try { for (const t of v.srcObject.getTracks()) t.stop(); } catch (e) {} v.srcObject = null; }
+  tvScreen.phoneStats = null; tvScreen.lastSent = -1; tvScreen.drawn = 0; tvScreen.sharp = false; tvScreen.framesMode = false;
+  $("#scrInfo").hidden = true; $("#scrCanvas").hidden = true; $("#scrVideo").hidden = false;
+}
 function stopScreen() {
   tvScreen.active = false;
   try { tvScreen.stopListen && tvScreen.stopListen(); } catch (e) {}
-  try { tvScreen.pc && tvScreen.pc.close(); } catch (e) {}
+  closeScreenConnection();
   try { if (document.fullscreenElement) document.exitFullscreen(); } catch (e) {}
   location.reload();
 }
