@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Política de Privacidade · Cartuchin</title>
+<meta name="description" content="Como o Cartuchin trata seus dados.">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,800&family=Figtree:wght@400;600&display=swap">
+<link rel="stylesheet" href="doc.css">
+</head>
+<body>
+<main>
+  <div class="top"><img src="icon-192.png" alt=""><a href="./">Cartuchin</a></div>
+  <article>
+    <h1>Política de Privacidade</h1>
+    <p class="date">Atualizada em 12 de outubro de 2026</p>
+
+    <div class="box">
+      <b>Resumo:</b> o Cartuchin não tem servidor próprio e não coleta seus dados. Seus jogos e saves ficam no seu aparelho e, se você quiser, numa pasta oculta do <b>seu</b> Google Drive (ou num repositório do <b>seu</b> GitHub). Não há anúncios, rastreamento nem venda de dados.
+    </div>
+
+    <h2>1. Quem somos</h2>
+    <p>O Cartuchin é um emulador de Game Boy Advance que roda no navegador, criado por um desenvolvedor independente (GitHub: <a href="https://github.com/opauwlo">opauwlo</a>). O site é estático, hospedado no GitHub Pages, em <a href="https://opauwlo.github.io/cartuchin/">opauwlo.github.io/cartuchin</a>.</p>
+
+    <h2>2. O que fica no seu aparelho</h2>
+    <p>Para funcionar, o app guarda no armazenamento do seu navegador (localStorage e IndexedDB):</p>
+    <ul>
+      <li>as ROMs que você adiciona e os saves ainda não enviados para a nuvem;</li>
+      <li>suas preferências (nome do aparelho, modo de desempenho, posição do controle);</li>
+      <li>se você entrar com o Google: o token de acesso temporário (vale cerca de 1 hora) e o e-mail da conta, só para mostrar com qual conta você está conectado;</li>
+      <li>se você usar a opção GitHub: o token e o nome do repositório que você informou.</li>
+    </ul>
+    <p>Esses dados não saem do seu aparelho, exceto como descrito abaixo. Você pode apagá-los a qualquer momento limpando os dados do site no navegador.</p>
+
+    <h2>3. Entrar com Google (Google Drive)</h2>
+    <p>Se você escolher <b>Entrar com Google</b>, o app pede uma única permissão: <code>drive.appdata</code>, que dá acesso somente à pasta oculta de configurações do próprio Cartuchin no seu Google Drive. <b>O app não consegue ver, ler ou alterar nenhum outro arquivo do seu Drive.</b></p>
+    <p>Nessa pasta o app guarda:</p>
+    <ul>
+      <li>a lista dos seus jogos (nome, tipo e tamanho);</li>
+      <li>as ROMs que você adicionou, compactadas;</li>
+      <li>os saves dos jogos e a versão anterior de cada um;</li>
+      <li>o progresso salvo para continuar de onde parou, quando você toca em Salvar.</li>
+    </ul>
+    <p>Esses arquivos ficam na sua conta Google e só são lidos e gravados pelo app rodando no seu navegador, diretamente com os servidores do Google. Nós não recebemos, guardamos nem temos acesso a nenhum deles. Também lemos o e-mail da conta pela API do Drive, apenas para exibi-lo no app.</p>
+    <p>O uso e a transferência de informações recebidas das APIs do Google seguirão a <a href="https://developers.google.com/terms/api-services-user-data-policy">Política de Dados do Usuário dos Serviços de API do Google</a>, incluindo os requisitos de Uso Limitado. Os dados não são usados para publicidade, não são vendidos e não são usados para treinar modelos de inteligência artificial.</p>
+
+    <h2>4. Opção GitHub</h2>
+    <p>Se você preferir usar um repositório do GitHub, o app grava os mesmos arquivos no repositório privado que você indicar, com o token que você criou. Esses dados ficam na sua conta do GitHub.</p>
+
+    <h2>5. Jogar na TV</h2>
+    <p>No modo <b>Usar como tela</b>, a imagem, o som e os botões vão direto do seu celular para a TV pela sua rede (WebRTC). Para os dois aparelhos se encontrarem:</p>
+    <ul>
+      <li>uma mensagem curta é trocada pelo serviço público <a href="https://ntfy.sh">ntfy.sh</a>, <b>criptografada</b> com uma chave que vem do código mostrado na tela da TV, e que o ntfy não consegue ler;</li>
+      <li>servidores STUN do Google ajudam cada aparelho a descobrir seu endereço na rede.</li>
+    </ul>
+    <p>O conteúdo do jogo não passa por nenhum servidor.</p>
+
+    <h2>6. Serviços de terceiros</h2>
+    <ul>
+      <li><b>GitHub Pages</b> hospeda o site e pode registrar dados técnicos de acesso, como o endereço IP (<a href="https://docs.github.com/pt/site-policy/privacy-policies/github-general-privacy-statement">privacidade do GitHub</a>).</li>
+      <li><b>Google</b>: login, Google Drive, fontes do site (Google Fonts) e STUN (<a href="https://policies.google.com/privacy">privacidade do Google</a>).</li>
+      <li><b>ntfy.sh</b>: somente no pareamento e no modo TV, com mensagens criptografadas.</li>
+    </ul>
+    <p>Não usamos ferramentas de análise, cookies de rastreamento nem anúncios.</p>
+
+    <h2>7. Como apagar seus dados</h2>
+    <ul>
+      <li><b>No app:</b> toque em <b>Desconectar</b> no rodapé da biblioteca. Isso apaga o token do aparelho e revoga o acesso.</li>
+      <li><b>No Google:</b> em <a href="https://myaccount.google.com/connections">myaccount.google.com/connections</a>, remova o acesso do Cartuchin. Para apagar os arquivos da pasta oculta, abra o Google Drive no computador, vá em Configurações → Gerenciar apps → Cartuchin → Opções → <b>Excluir dados ocultos do app</b>.</li>
+      <li><b>No aparelho:</b> limpe os dados do site nas configurações do navegador.</li>
+    </ul>
+
+    <h2>8. Crianças</h2>
+    <p>O Cartuchin não é direcionado a menores de 13 anos e não coleta dados de ninguém, de nenhuma idade.</p>
+
+    <h2>9. Mudanças nesta política</h2>
+    <p>Se esta política mudar, a nova versão será publicada nesta página com a data atualizada.</p>
+
+    <h2>10. Contato</h2>
+    <p>Dúvidas ou pedidos sobre privacidade: abra uma conversa em <a href="https://github.com/opauwlo/cartuchin/issues">github.com/opauwlo/cartuchin/issues</a>.</p>
+  </article>
+  <footer><a href="./">Voltar ao Cartuchin</a><a href="termos.html">Termos de Serviço</a></footer>
+</main>
+</body>
+</html>
