@@ -1843,16 +1843,27 @@ async function castTo(code) {
     cast.stream = stream;
     const vtrack = stream.getVideoTracks()[0];
     try { vtrack.contentHint = "motion"; } catch (e) {}
-    const vt = pc.addTransceiver(vtrack, { direction: "sendonly", streams: [stream] });
-    try {
-      const caps = RTCRtpSender.getCapabilities && RTCRtpSender.getCapabilities("video");
-      if (caps && vt.setCodecPreferences) {
-        const pref = [...caps.codecs.filter((c) => /vp8/i.test(c.mimeType)), ...caps.codecs.filter((c) => !/vp8/i.test(c.mimeType))];
-        vt.setCodecPreferences(pref);
-      }
-    } catch (e) {}
+    // tuned for a so-so Wi-Fi (see test/net.js, which measures them under loss and jitter)
+    const opt = { red: true, kbps: 2500, layers: "", ...(window.__castOpts || {}) };
+    let vt = null;
+    if (opt.layers) { try { vt = pc.addTransceiver(vtrack, { direction: "sendonly", streams: [stream], sendEncodings: [{ scalabilityMode: opt.layers }] }); } catch (e) {} }
+    if (!vt) vt = pc.addTransceiver(vtrack, { direction: "sendonly", streams: [stream] });
+    const prefer = (tr, kind, first) => {
+      try {
+        const caps = RTCRtpSender.getCapabilities && RTCRtpSender.getCapabilities(kind);
+        if (!caps || !tr.setCodecPreferences) return;
+        const head = first.flatMap((re) => caps.codecs.filter((c) => re.test(c.mimeType)));
+        tr.setCodecPreferences([...head, ...caps.codecs.filter((c) => !head.includes(c))]);
+      } catch (e) {}
+    };
+    prefer(vt, "video", [/vp8/i]);
     const tap = (window.__audioTaps || [])[0];
-    if (tap && tap.out) { const at = tap.out.stream.getAudioTracks()[0]; if (at) pc.addTrack(at, stream); }
+    if (tap && tap.out) {
+      const at = tap.out.stream.getAudioTracks()[0];
+      // RED: every audio packet also carries the previous one, so a lost packet is
+      // rebuilt from the next instead of becoming a crackle (what Google Meet does)
+      if (at) prefer(pc.addTransceiver(at, { direction: "sendonly", streams: [stream] }), "audio", opt.red ? [/audio\/red/i, /opus/i] : [/opus/i]);
+    }
     const dc = pc.createDataChannel("controle", { ordered: false, maxRetransmits: 0 }); cast.dc = dc;
     dc.onmessage = (e) => { const m = Number(e.data); if (!Number.isNaN(m)) applyRemote(m); };
     pc.onconnectionstatechange = () => {
@@ -1862,9 +1873,9 @@ async function castTo(code) {
         for (const t of window.__audioTaps || []) t.local.gain.value = 0;
         toast("Jogando na TV. Este celular agora é o controle.", 3500);
         const send = vt.sender, p = send.getParameters();
-        p.encodings = (p.encodings && p.encodings.length ? p.encodings : [{}]).map((e) => ({ ...e, maxBitrate: 2_500_000, maxFramerate: 60, scaleResolutionDownBy: 1, priority: "high", networkPriority: "high" }));
+        p.encodings = (p.encodings && p.encodings.length ? p.encodings : [{}]).map((e) => ({ ...e, maxBitrate: opt.kbps * 1000, maxFramerate: 60, scaleResolutionDownBy: 1, priority: "high", networkPriority: "high" }));
         p.degradationPreference = "maintain-framerate";
-        send.setParameters(p).catch(() => {});
+        send.setParameters(p).catch((e) => { cast.paramErr = String(e); });
         watchCast(pc, send, dc, emu);
       } else if (pc.connectionState === "failed") stopCast("Não deu para conectar com a TV. Os dois aparelhos estão na mesma rede Wi-Fi?");
       else if (pc.connectionState === "disconnected" || pc.connectionState === "closed") { if (cast.pc === pc) stopCast("A TV desconectou."); }
@@ -2125,7 +2136,7 @@ function handleScreenLink() {
 }
 
 /* ---------- TV side ---------- */
-const tvScreen = { active: false, code: null, pc: null, dc: null, stopListen: null, padTimer: null, lastSent: -1 };
+const tvScreen = window.__tvScreen = { active: false, code: null, pc: null, dc: null, stopListen: null, padTimer: null, lastSent: -1 };
 async function startScreen() {
   tvScreen.active = true;
   // created inside the click, so the TV browser lets it play sound later
@@ -2213,15 +2224,26 @@ function playScreenVideo() {
 function watchScreen(pc) {
   const v = $("#scrVideo"), info = $("#scrInfo"), t0 = performance.now();
   let lastDec = -1, still = 0;
+  const net = {};
   clearInterval(tvScreen.watch);
   const check = async () => {
     if (pc !== tvScreen.pc || pc.connectionState !== "connected" || !tvScreen.active) { clearInterval(tvScreen.watch); info.hidden = true; return; }
-    let rx = null, codec = "";
+    let rx = null, codec = "", pair = null, all = new Map();
     try {
-      const stats = await pc.getStats(), all = new Map();
-      stats.forEach((x) => { all.set(x.id, x); if (x.type === "inbound-rtp" && (x.kind || x.mediaType) === "video") rx = x; });
+      const stats = await pc.getStats();
+      stats.forEach((x) => { all.set(x.id, x); if (x.type === "inbound-rtp" && (x.kind || x.mediaType) === "video") rx = x; if (x.type === "candidate-pair" && x.nominated && x.state === "succeeded") pair = x; });
       if (rx && rx.codecId && all.get(rx.codecId)) codec = (all.get(rx.codecId).mimeType || "").replace("video/", "");
     } catch (e) {}
+    // network: packets lost since the last check, round trip, and which path the pair took
+    const got = rx ? rx.packetsReceived || 0 : 0, lost = rx ? Math.max(0, rx.packetsLost || 0) : 0;
+    const dGot = got - (net.got || 0), dLost = lost - (net.lost || 0); net.got = got; net.lost = lost;
+    const lossPct = dGot + dLost > 0 ? Math.round((100 * dLost) / (dGot + dLost)) : 0;
+    const rtt = pair && pair.currentRoundTripTime != null ? Math.round(pair.currentRoundTripTime * 1000) : null;
+    const lc = pair && all.get(pair.localCandidateId), rc = pair && all.get(pair.remoteCandidateId);
+    const types = lc && rc ? [lc.candidateType, rc.candidateType] : [];
+    const path = !types.length ? "?" : types.includes("relay") ? "por um servidor" : types.includes("srflx") ? "pelo IP público do roteador" : "rede local, direto";
+    net.bad = lossPct >= 5 ? (net.bad || 0) + 1 : 0;
+    if (net.bad === 2 && !net.warned) { net.warned = true; net.warnPct = lossPct; net.warnUntil = performance.now() + 9000; }
     const dec = rx ? rx.framesDecoded || 0 : 0;
     still = dec === lastDec ? still + 1 : 0; lastDec = dec;
     const shown = v.getVideoPlaybackQuality ? v.getVideoPlaybackQuality().totalVideoFrames : "?";
@@ -2231,15 +2253,17 @@ function watchScreen(pc) {
     else if (v.paused) problem = "A imagem chega, mas o vídeo está parado. Toque no botão ou aperte A.";
     else if (v.readyState < 2) problem = "A imagem chega, mas a TV ainda não começou a mostrar.";
     const ph = tvScreen.phoneStats;
+    const warnNet = net.warnUntil && performance.now() < net.warnUntil;
     const lines = [
-      problem || "Conectado. Se a imagem não aparecer, mande uma foto desta tela.",
+      problem || (warnNet ? `Wi-Fi instável: ${net.warnPct}% dos pacotes se perdem. Dica: ligue o roteador do celular e conecte a TV nele.` : "Conectado. Se a imagem não aparecer, mande uma foto desta tela."),
+      `Rede: ${path}${rtt != null ? ` · ida e volta ${rtt} ms` : ""} · perda ${lossPct}%${rx && rx.jitter ? ` · variação ${Math.round(rx.jitter * 1000)} ms` : ""}`,
       ph ? `Celular: enviou ${ph.sent} quadros${ph.w ? ` (${ph.w}x${ph.h})` : ""}${ph.lim && ph.lim !== "none" ? `, limitado por ${ph.lim}` : ""}${ph.cw ? ` · jogo ${ph.cw}x${ph.ch}` : ""}${ph.track && ph.track !== "live" ? ` · captura ${ph.track}` : ""}`
          : "Celular: sem relatório ainda",
       `TV: recebeu ${rx ? rx.framesReceived || 0 : 0}, decodificou ${dec}${codec ? ` · ${codec}` : ""}${rx && rx.frameWidth ? ` · ${rx.frameWidth}x${rx.frameHeight}` : ""}`,
       `Vídeo: ${v.paused ? "parado" : "tocando"} · ${v.videoWidth}x${v.videoHeight} · estado ${v.readyState} · exibidos ${shown}`,
     ];
     info.textContent = lines.join("\n");
-    info.hidden = !(problem || performance.now() - t0 < 12000);
+    info.hidden = !(problem || warnNet || performance.now() - t0 < 12000);
   };
   tvScreen.watch = setInterval(check, 2000);
   setTimeout(check, 500);
