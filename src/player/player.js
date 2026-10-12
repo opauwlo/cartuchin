@@ -13,9 +13,19 @@ import { render } from "../ui/screens.js";
 import { $, actionToast, ago, el, sleep, toast } from "../util.js";
 
 /* ---------------- player + sync ---------------- */
-const player = window.__cartucho = { key: null, meta: null, emu: null, lastSha: null, baseRev: null, busy: false, again: false, timer: null, state: "loading", at: 0 };
+/** The game currently open: which one, the emulator instance and the save-sync state. */
+const player = window.__cartucho = {
+  key: null, meta: null,
+  /** @type {any} the EmulatorJS instance */ emu: null,
+  lastSha: null, baseRev: null, busy: false, again: false, timer: null, state: "loading", at: 0,
+  stateBusy: false, stateFrames: 0,
+};
 
-function setChip(state, at) { player.state = state; if (at) player.at = at; updateChip(); }
+function setChip(state, at) {
+  player.state = state;
+  if (at) player.at = at;
+  updateChip();
+}
 function updateChip() {
   const dot = $("#pChip .dot"), txt = $("#pChipText");
   const map = {
@@ -23,19 +33,30 @@ function updateChip() {
     pending: ["warn", "Save guardado aqui, envio pendente"], local: ["warn", "Save só neste aparelho"], none: ["", "Sem save ainda"],
   };
   const [cls, t] = map[player.state] || map.loading;
-  dot.className = "dot " + cls; txt.textContent = t;
+  dot.className = "dot " + cls;
+  txt.textContent = t;
   const ps = $("#padSaveState");
   if (ps) ps.textContent = player.state === "ok" ? "· salvo " + ago(player.at) : player.state === "up" ? "· enviando…" : player.state === "pending" ? "· save pendente" : "";
 }
 setInterval(() => {
-  if (player.key) { if (player.state === "ok") updateChip(); return; }
-  if (cloud.db && document.visibilityState === "visible") refreshLibrary().then(render).catch(() => {}); else if (cloud.ready) render();
+  if (player.key) {
+    if (player.state === "ok") updateChip();
+    return;
+  }
+  if (cloud.db && document.visibilityState === "visible") refreshLibrary().then(render).catch(() => {});
+  else if (cloud.ready) render();
 }, 30000);
 
 function savPath(gm) { return gm.getSaveFilePath(); }
 function writeSav(gm, sav) {
-  const path = savPath(gm); const parts = path.split("/"); let cp = "";
-  for (let i = 0; i < parts.length - 1; i++) { if (!parts[i]) continue; cp += "/" + parts[i]; if (!gm.FS.analyzePath(cp).exists) gm.FS.mkdir(cp); }
+  const path = savPath(gm);
+  const parts = path.split("/");
+  let cp = "";
+  for (let i = 0; i < parts.length - 1; i++) {
+    if (!parts[i]) continue;
+    cp += "/" + parts[i];
+    if (!gm.FS.analyzePath(cp).exists) gm.FS.mkdir(cp);
+  }
   if (gm.FS.analyzePath(path).exists) gm.FS.unlink(path);
   gm.FS.writeFile(path, sav);
 }
@@ -43,21 +64,32 @@ function writeSav(gm, sav) {
 async function flush(opts = {}) {
   const emu = player.emu;
   if (!emu || !emu.started || !emu.gameManager || !player.key) return;
-  if (player.busy) { player.again = true; return; }
+  if (player.busy) {
+    player.again = true;
+    return;
+  }
   player.busy = true;
   try {
     let sav = null;
     try { sav = emu.gameManager.getSaveFile(); } catch (e) {}
-    if (!sav || !sav.length) { if (!player.lastSha) setChip("none"); return; }
+    if (!sav || !sav.length) {
+      if (!player.lastSha) setChip("none");
+      return;
+    }
     sav = new Uint8Array(sav);
     const h = await sha(sav);
     if (h === player.lastSha) return;
     await idb.put("pend", player.key, { sav, sha: h, baseRev: player.baseRev, at: Date.now() }).catch(() => {});
-    if (!cloud.db) { player.lastSha = h; setChip("local"); return; }
+    if (!cloud.db) {
+      player.lastSha = h;
+      setChip("local");
+      return;
+    }
     setChip("up");
     try {
       const doc = await writeCloud(player.key, player.meta, sav, h, { keepalive: !!opts.leaving });
-      player.lastSha = h; player.baseRev = doc.rev;
+      player.lastSha = h;
+      player.baseRev = doc.rev;
       await idb.del("pend", player.key);
       await idb.put("sync", player.key, { lastSha: h, baseRev: doc.rev }).catch(() => {});
       setChip("ok", doc.at);
@@ -65,7 +97,10 @@ async function flush(opts = {}) {
     } catch (e) { setChip("pending"); }
   } finally {
     player.busy = false;
-    if (player.again) { player.again = false; setTimeout(flush, 500); }
+    if (player.again) {
+      player.again = false;
+      setTimeout(flush, 500);
+    }
   }
 }
 
@@ -76,11 +111,20 @@ async function flush(opts = {}) {
    up at that exact moment, as long as the snapshot belongs to the same in-game
    save that is being loaded (otherwise the two would disagree). */
 const stateShas = new Map();
-const isBlankSave = (u8) => { const f = u8[0]; if (f !== 0xff && f !== 0) return false; for (let i = 0; i < u8.length; i++) if (u8[i] !== f) return false; return true; };
+const isBlankSave = (u8) => {
+  const f = u8[0];
+  if (f !== 0xff && f !== 0) return false;
+  for (let i = 0; i < u8.length; i++) if (u8[i] !== f) return false;
+  return true;
+};
 async function getStateDoc(key) {
   const r = await readJson("states/" + key + ".json");
-  if (!r) { stateShas.delete(key); return null; }
-  stateShas.set(key, r.sha); return r.data;
+  if (!r) {
+    stateShas.delete(key);
+    return null;
+  }
+  stateShas.set(key, r.sha);
+  return r.data;
 }
 async function uploadState(opts = {}) {
   const emu = player.emu;
@@ -88,10 +132,12 @@ async function uploadState(opts = {}) {
   const gm = emu.gameManager;
   const frames = Number(gm.getFrameNum());
   if (!opts.force && player.stateFrames && frames - player.stateFrames < 600) return false;   // under ~10 s of play since the last one
-  let st; try { st = gm.getState(); } catch (e) { return false; }
+  let st;
+  try { st = gm.getState(); } catch (e) { return false; }
   player.stateBusy = true;
   try {
-    let sav = null; try { sav = new Uint8Array(gm.getSaveFile()); } catch (e) {}
+    let sav = null;
+    try { sav = new Uint8Array(gm.getSaveFile()); } catch (e) {}
     const packed = await pack(st);
     const doc = { game: player.key, enc: packed.enc, data: packed.data, size: st.length, at: Date.now(), device: device.name, saveSha: sav && !isBlankSave(sav) ? await sha(sav) : null };
     await idb.put("pend", "state:" + player.key, doc).catch(() => {});
@@ -105,7 +151,8 @@ async function uploadState(opts = {}) {
       } catch (e) {
         if (e.status !== 409 && e.status !== 422) throw e;
         const r = await readJson("states/" + player.key + ".json").catch(() => null);
-        if (r) stateShas.set(player.key, r.sha); else stateShas.delete(player.key);
+        if (r) stateShas.set(player.key, r.sha);
+        else stateShas.delete(player.key);
       }
     }
     return false;
@@ -114,7 +161,10 @@ async function uploadState(opts = {}) {
 async function findResumeState(key, start) {
   let best = await idb.get("pend", "state:" + key);
   if (cloud.db) {
-    try { const remote = await getStateDoc(key); if (remote && (!best || remote.at > best.at)) best = remote; } catch (e) {}
+    try {
+      const remote = await getStateDoc(key);
+      if (remote && (!best || remote.at > best.at)) best = remote;
+    } catch (e) {}
   }
   if (!best || !best.data) return null;
   const startSha = start.sav && !isBlankSave(start.sav) ? start.sha : null;
@@ -145,7 +195,12 @@ async function chooseStartSave(key) {
 }
 
 function loadScript(src) {
-  return new Promise((res, rej) => { const s = el("script", { src }); s.onload = res; s.onerror = () => rej(new Error(src)); document.body.append(s); });
+  return new Promise((res, rej) => {
+    const s = el("script", { src });
+    s.onload = res;
+    s.onerror = () => rej(new Error(src));
+    document.body.append(s);
+  });
 }
 let emuLoading = null;
 function loadEmulator() {
@@ -163,6 +218,7 @@ function loadEmulator() {
 
  // the GBA's own resolution: tiny to encode, the TV scales it up pixel-perfect
 (() => {
+  /** @type {any} */
   const RO = window.ResizeObserver;
   if (!RO || RO.__cartucho) return;
   const factorFor = (w, h) => {
@@ -177,22 +233,25 @@ function loadEmulator() {
     let w, h;
     if (window.__castCap) {
       // streaming: the canvas becomes exactly the GBA screen, 240x160, and is sent as is
-      w = STREAM_W; h = STREAM_H;
+      w = STREAM_W;
+      h = STREAM_H;
     } else {
       const pw = e.devicePixelContentBoxSize ? e.devicePixelContentBoxSize[0].inlineSize : e.contentRect.width * dpr;
       const ph = e.devicePixelContentBoxSize ? e.devicePixelContentBoxSize[0].blockSize : e.contentRect.height * dpr;
       const f = factorFor(pw, ph);
       if (f === 1) return e;
-      w = Math.round(pw * f); h = Math.round(ph * f);
+      w = Math.round(pw * f);
+      h = Math.round(ph * f);
     }
     return { target: e.target, contentRect: { width: w / dpr, height: h / dpr, x: 0, y: 0, top: 0, left: 0 },
       devicePixelContentBoxSize: [{ inlineSize: w, blockSize: h }], contentBoxSize: [{ inlineSize: w / dpr, blockSize: h / dpr }], borderBoxSize: e.borderBoxSize };
   };
+  /** @type {any} */
   class CappedResizeObserver extends RO {
     constructor(cb) { super((entries, obs) => cb(entries.map(scaleEntry), obs)); }
   }
   CappedResizeObserver.__cartucho = true;
-  window.ResizeObserver = CappedResizeObserver;
+  window.ResizeObserver = /** @type {any} */ (CappedResizeObserver);
 })();
 
 function patchEmulator() {
@@ -215,18 +274,29 @@ function patchEmulator() {
   EJS.prototype.downloadGameCore = function () {
     const core = { name: "mgba", extensions: ["gb", "gbc", "gba"], options: {}, save: "srm", repo: "https://github.com/EmulatorJS/mgba" };
     this.textElem.innerText = this.localization("Download Game Core");
-    this.extensions = core.extensions; this.coreName = core.name; this.repository = core.repo;
-    this.defaultCoreOpts = core.options; this.enableMouseLock = false; this.retroarchOpts = undefined; this.saveFileExt = core.save;
+    this.extensions = core.extensions;
+    this.coreName = core.name;
+    this.repository = core.repo;
+    this.defaultCoreOpts = core.options;
+    this.enableMouseLock = false;
+    this.retroarchOpts = undefined;
+    this.saveFileExt = core.save;
     this.webgl2Enabled = false;
     this.downloadFile("cores/mgba_libretro.wasm", (progress) => {
       this.textElem.innerText = this.localization("Download Game Core") + progress;
     }, false, { responseType: "arraybuffer", method: "GET" }).then((res) => {
-      if (res === -1 || !res.data) { this.startGameError(this.localization("Network Error")); return; }
+      if (res === -1 || !res.data) {
+        this.startGameError(this.localization("Network Error"));
+        return;
+      }
       this.initModule(new Uint8Array(res.data), null);
     });
   };
   EJS.prototype.initModule = function (wasm, thread) {
-    if (typeof window.EJS_Runtime !== "function") { this.startGameError(this.localization("Error loading EmulatorJS runtime")); return; }
+    if (typeof window.EJS_Runtime !== "function") {
+      this.startGameError(this.localization("Error loading EmulatorJS runtime"));
+      return;
+    }
     const wasmBytes = wasm instanceof Uint8Array ? wasm : new Uint8Array(wasm);
     window.EJS_Runtime({
       noInitialRun: true, onRuntimeInitialized: null, arguments: [], preRun: [], postRun: [],
@@ -235,8 +305,14 @@ function patchEmulator() {
       wasmBinary: wasmBytes,
       locateFile: (f) => f.endsWith(".wasm") ? URL.createObjectURL(new Blob([wasmBytes], { type: "application/wasm" })) : f,
       getSavExt: () => (this.saveFileExt ? "." + this.saveFileExt : ".srm"),
-    }).then((m) => { this.Module = m; this.downloadFiles(); })
-      .catch((e) => { console.warn(e); this.startGameError(this.localization("Failed to start game")); });
+    }).then((m) => {
+      this.Module = m;
+      this.downloadFiles();
+    })
+      .catch((e) => {
+        console.warn(e);
+        this.startGameError(this.localization("Failed to start game"));
+      });
   };
 }
 
@@ -261,22 +337,34 @@ async function play(key) {
   const start = await chooseStartSave(key);
   if (start === null) return;
   const resume = await findResumeState(key, start);
-  player.key = key; player.meta = { title: rom.title, system: rom.system, code: rom.code };
-  player.lastSha = start.upload ? null : start.sha; player.baseRev = start.baseRev;
+  player.key = key;
+  player.meta = { title: rom.title, system: rom.system, code: rom.code };
+  player.lastSha = start.upload ? null : start.sha;
+  player.baseRev = start.baseRev;
   $("#pName").textContent = rom.title;
-  $("#library").hidden = true; $("#player").hidden = false;
+  $("#library").hidden = true;
+  $("#player").hidden = false;
   setChip(start.sav ? (start.upload ? "pending" : (cloud.db ? "ok" : "local")) : "none", start.at);
   try { document.title = rom.title + " · Cartuchin"; } catch (e) {}
 
   const romBytes = fixSaveChip(new Uint8Array(await rom.blob.arrayBuffer()));
   const file = new File([romBytes], rom.code ? rom.code + "." + rom.ext : "jogo." + rom.ext);
   const emu = await createEmulator(file, key, coreOptions());
-  if (!emu) { toast("Não deu para carregar o emulador. Confira a internet."); $("#player").hidden = true; $("#library").hidden = false; return; }
+  if (!emu) {
+    toast("Não deu para carregar o emulador. Confira a internet.");
+    $("#player").hidden = true;
+    $("#library").hidden = false;
+    return;
+  }
   player.emu = emu;
   emu.on("start", async () => {
     const gm = emu.gameManager;
     if (start.sav) {
-      try { writeSav(gm, start.sav); gm.loadSaveFiles(); gm.restart(); } catch (e) { console.warn("save load", e); }
+      try {
+        writeSav(gm, start.sav);
+        gm.loadSaveFiles();
+        gm.restart();
+      } catch (e) { console.warn("save load", e); }
     }
     if (resume) {
       await sleep(300);
@@ -294,28 +382,51 @@ async function play(key) {
     player.timer = setInterval(flush, 30000);
     if (!cast.pc) showPad(false);
     startSpeedMeter();
-    if (cast.pending) { const c = cast.pending; cast.pending = null; setTimeout(() => castTo(c), 500); }
+    if (cast.pending) {
+      const c = cast.pending;
+      cast.pending = null;
+      setTimeout(() => castTo(c), 500);
+    }
   });
 }
 
 async function pullSave(report) {
   if (!player.key || !player.emu || !player.emu.started) return;
-  if (!cloud.db) { report(isGoogle() ? "Reconecte ao Google primeiro (botão no topo da biblioteca)." : "Este aparelho não está conectado à nuvem."); return; }
+  if (!cloud.db) {
+    report(isGoogle() ? "Reconecte ao Google primeiro (botão no topo da biblioteca)." : "Este aparelho não está conectado à nuvem.");
+    return;
+  }
   report("Buscando o save na nuvem…");
   let remote;
-  try { remote = await getSaveDoc(player.key); } catch (e) { report(`Não deu para falar com o ${cloudName()} agora.`); return; }
-  if (!remote) { report("Ainda não há save deste jogo na nuvem."); return; }
+  try { remote = await getSaveDoc(player.key); } catch (e) {
+    report(`Não deu para falar com o ${cloudName()} agora.`);
+    return;
+  }
+  if (!remote) {
+    report("Ainda não há save deste jogo na nuvem.");
+    return;
+  }
   const gm = player.emu.gameManager;
-  let cur = null; try { cur = new Uint8Array(gm.getSaveFile()); } catch (e) {}
-  if (cur && (await sha(cur)) === remote.sha) { report("Você já está com o save mais recente da nuvem."); return; }
+  let cur = null;
+  try { cur = new Uint8Array(gm.getSaveFile()); } catch (e) {}
+  if (cur && (await sha(cur)) === remote.sha) {
+    report("Você já está com o save mais recente da nuvem.");
+    return;
+  }
   const unsent = cur && player.lastSha && (await sha(cur)) !== player.lastSha;
   const ok = await dialog("Carregar o save da nuvem?",
     `Save de ${remote.device || "outro aparelho"}, ${ago(remote.at)}. O jogo reinicia na tela de título.` + (unsent ? " Este aparelho tem progresso que ainda não subiu: ele vai ser substituído." : ""),
     [{ label: "Carregar e reiniciar", value: true, cls: "primary" }, { label: "Cancelar", value: false }]);
-  if (!ok) { report(""); return; }
+  if (!ok) {
+    report("");
+    return;
+  }
   try {
-    writeSav(gm, await unpack(remote)); gm.loadSaveFiles(); gm.restart();
-    player.lastSha = remote.sha; player.baseRev = remote.rev;
+    writeSav(gm, await unpack(remote));
+    gm.loadSaveFiles();
+    gm.restart();
+    player.lastSha = remote.sha;
+    player.baseRev = remote.rev;
     await idb.del("pend", player.key);
     setChip("ok", remote.at);
     report(`Save de ${remote.device || "outro aparelho"} carregado`);
@@ -325,7 +436,10 @@ $("#pullBtn").addEventListener("click", () => pullSave((m) => m && toast(m)));
 $("#padPull").addEventListener("click", () => pullSave((m) => m && padMsg(m)));
 
 function tokenFromTap() {
-  if (isGoogle() && !tokenFresh() && gauth.client) return askGoogleToken(false).then(() => { googleNeedsTap(false); cloud.db = true; }, () => {});
+  if (isGoogle() && !tokenFresh() && gauth.client) return askGoogleToken(false).then(() => {
+    googleNeedsTap(false);
+    cloud.db = true;
+  }, () => {});
   return Promise.resolve();
 }
 $("#saveNowBtn").addEventListener("click", async () => {
@@ -353,7 +467,7 @@ window.addEventListener("pagehide", () => { flush({ leaving: true }); });
 /* keep EmulatorJS from calling its own CDN for update checks */
 const realFetch = window.fetch.bind(window);
 window.fetch = (input, init) => {
-  const u = typeof input === "string" ? input : (input && input.url) || "";
+  const u = typeof input === "string" ? input : (input && /** @type {any} */ (input).url) || "";
   if (/^https?:\/\/(cdn|netplay)\.emulatorjs\.org/.test(u)) return Promise.resolve(new Response("{}", { status: 404 }));
   return realFetch(input, init);
 };

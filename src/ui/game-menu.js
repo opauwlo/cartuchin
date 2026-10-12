@@ -1,36 +1,62 @@
 import { player } from "../player/player.js";
 import { dialog } from "./dialogs.js";
 import { closeSheets, openSheet, sheetAction } from "./sheets.js";
-import { $, ls, toast } from "../util.js";
+import { $, $$, ls, toast } from "../util.js";
 
 /* ---------------- game menu (speed, pause, sound, emulator options) ----------------
    The emulator's own menu bar is hidden while our controller is on screen, so the
    things people reach for while playing live here instead. */
 const ffState = { ratio: 1, last: Number(ls.get("cartucho.ff") || 2) };
 function setSpeed(r) {
-  const gm = player.emu && player.emu.gameManager; if (!gm) return;
+  const gm = player.emu && player.emu.gameManager;
+  if (!gm) return;
   r = Number(r) || 1;
   try {
-    if (r > 1) { gm.setFastForwardRatio(r); gm.toggleFastForward(1); ffState.last = r; ls.set("cartucho.ff", String(r)); }
+    if (r > 1) {
+      gm.setFastForwardRatio(r);
+      gm.toggleFastForward(1);
+      ffState.last = r;
+      ls.set("cartucho.ff", String(r));
+    }
     else gm.toggleFastForward(0);
   } catch (e) {}
   ffState.ratio = r;
   const ff = $("#padFF");
-  ff.textContent = (r > 1 ? r : ffState.last) + "x"; ff.setAttribute("aria-pressed", r > 1 ? "true" : "false");
-  for (const b of document.querySelectorAll("#ffModes button")) b.classList.toggle("primary", Number(b.dataset.ff) === r);
+  ff.textContent = (r > 1 ? r : ffState.last) + "x";
+  ff.setAttribute("aria-pressed", r > 1 ? "true" : "false");
+  for (const b of $$("#ffModes button")) b.classList.toggle("primary", Number(b.dataset.ff) === r);
 }
 $("#padFF").addEventListener("click", () => setSpeed(ffState.ratio > 1 ? 1 : ffState.last));
-$("#ffModes").addEventListener("click", (e) => { const b = e.target.closest("button[data-ff]"); if (b) { setSpeed(b.dataset.ff); fillGameMenu(); } });
+$("#ffModes").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-ff]");
+  if (b) {
+    setSpeed(b.dataset.ff);
+    fillGameMenu();
+  }
+});
 function fillGameMenu() {
   const emu = player.emu, acts = $("#gmActions");
   acts.replaceChildren(
-    sheetAction(emu && emu.paused ? "play" : "pause", emu && emu.paused ? "Continuar o jogo" : "Pausar", () => { try { emu.paused ? emu.play() : emu.pause(); } catch (e) {} fillGameMenu(); }),
-    sheetAction(emu && emu.muted ? "sound" : "mute", emu && emu.muted ? "Ligar o som" : "Tirar o som", () => { try { emu.muted ? (emu.muted = false, emu.setVolume(emu.volume || 0.5)) : (emu.muted = true, emu.setVolume(0)); } catch (e) {} fillGameMenu(); }),
-    sheetAction("save", "Salvar progresso na nuvem", () => { closeSheets(); $("#saveNowBtn").click(); }),
-    sheetAction("download", "Carregar o save da nuvem", () => { closeSheets(); $("#pullBtn").click(); }),
+    sheetAction(emu && emu.paused ? "play" : "pause", emu && emu.paused ? "Continuar o jogo" : "Pausar", () => {
+      try { emu.paused ? emu.play() : emu.pause(); } catch (e) {}
+      fillGameMenu();
+    }),
+    sheetAction(emu && emu.muted ? "sound" : "mute", emu && emu.muted ? "Ligar o som" : "Tirar o som", () => {
+      try { emu.muted ? (emu.muted = false, emu.setVolume(emu.volume || 0.5)) : (emu.muted = true, emu.setVolume(0)); } catch (e) {}
+      fillGameMenu();
+    }),
+    sheetAction("save", "Salvar progresso na nuvem", () => {
+      closeSheets();
+      $("#saveNowBtn").click();
+    }),
+    sheetAction("download", "Carregar o save da nuvem", () => {
+      closeSheets();
+      $("#pullBtn").click();
+    }),
     sheetAction("sliders", $("#player").classList.contains("show-ejs") ? "Esconder opções do emulador" : "Opções avançadas do emulador", () => {
       const on = !$("#player").classList.contains("show-ejs");
-      $("#player").classList.toggle("show-ejs", on); closeSheets();
+      $("#player").classList.toggle("show-ejs", on);
+      closeSheets();
       if (on) toast("As opções do emulador aparecem na barra embaixo da imagem do jogo", 3500);
     }),
     sheetAction("restart", "Reiniciar o jogo", async () => {
@@ -41,7 +67,11 @@ function fillGameMenu() {
     }, true));
   setSpeed(ffState.ratio);
 }
-function openGameMenu() { if (!player.emu) return; fillGameMenu(); openSheet("gameMenu"); }
+function openGameMenu() {
+  if (!player.emu) return;
+  fillGameMenu();
+  openSheet("gameMenu");
+}
 $("#padMenu").addEventListener("click", openGameMenu);
 $("#menuBtn").addEventListener("click", openGameMenu);
 $("#gmClose").addEventListener("click", closeSheets);

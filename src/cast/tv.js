@@ -5,18 +5,45 @@ import { newPairCode } from "../connect.js";
 import { $ } from "../util.js";
 
 /* ---------- TV side ---------- */
-const tvScreen = window.__tvScreen = { active: false, code: null, pc: null, dc: null, stopListen: null, padTimer: null, lastSent: -1 };
+/** Everything the TV holds while acting as the screen. */
+const tvScreen = window.__tvScreen = {
+  active: false,
+  /** @type {string | null} the pairing code shown on screen */ code: null,
+  /** @type {RTCPeerConnection | null} */ pc: null,
+  /** @type {RTCDataChannel | null} control channel */ dc: null,
+  /** @type {(() => void) | null} stops listening for offers */ stopListen: null,
+  /** @type {AudioContext | null} created on the "Usar como tela" tap, so sound is allowed */ ac: null,
+  /** @type {MediaStreamAudioSourceNode | null} */ audioSrc: null,
+  /** @type {ReturnType<typeof setInterval> | null} the diagnostic check */ watch: null,
+  /** @type {any} last report from the phone */ phoneStats: null,
+  gen: 0,             // bumped on every new connection; loops of an older one stop
+  sharp: false,       // drawing the video into the pixel-sharp canvas
+  drawnSharp: 0,
+  framesMode: false,  // "quadros" mode: JPEG frames over the data channel
+  drawn: 0,
+  padTimer: null,
+  lastSent: -1,       // last button mask sent to the phone
+};
 async function startScreen() {
   tvScreen.active = true;
   // created inside the click, so the TV browser lets it play sound later
-  try { tvScreen.ac = new (window.AudioContext || window.webkitAudioContext)(); tvScreen.ac.resume().catch(() => {}); } catch (e) { tvScreen.ac = null; }
-  $("#library").hidden = true; $("#screen").hidden = false;
+  try {
+    tvScreen.ac = new (window.AudioContext || window.webkitAudioContext)();
+    tvScreen.ac.resume().catch(() => {});
+  } catch (e) { tvScreen.ac = null; }
+  $("#library").hidden = true;
+  $("#screen").hidden = false;
   keepAwake();
   try { await document.documentElement.requestFullscreen(); } catch (e) {}
   tvScreen.code = newPairCode();
   const link = location.origin + location.pathname + "#tela-" + tvScreen.code;
   $("#scrCode").textContent = tvScreen.code.slice(0, 4) + " " + tvScreen.code.slice(4);
-  try { const qr = window.qrcode(0, "M"); qr.addData(link); qr.make(); $("#scrQr").innerHTML = qr.createSvgTag({ cellSize: 4, margin: 2, scalable: true }); } catch (e) {}
+  try {
+    const qr = window.qrcode(0, "M");
+    qr.addData(link);
+    qr.make();
+    $("#scrQr").innerHTML = qr.createSvgTag({ cellSize: 4, margin: 2, scalable: true });
+  } catch (e) {}
   showWaiting(true);
   const sig = await signal(tvScreen.code);
   const handled = new Set();
@@ -24,7 +51,8 @@ async function startScreen() {
     if (!msg.sdp || !msg.id || handled.has(msg.id)) return;
     handled.add(msg.id);
     closeScreenConnection();
-    const pc = new RTCPeerConnection(RTC_CONFIG); tvScreen.pc = pc;
+    const pc = new RTCPeerConnection(RTC_CONFIG);
+    tvScreen.pc = pc;
     $("#scrStatus").textContent = `Conectando com ${msg.from || "o celular"}…`;
     pc.ontrack = (e) => {
       const v = $("#scrVideo"), st = e.streams[0];
@@ -43,20 +71,37 @@ async function startScreen() {
           tvScreen.audioSrc.connect(ac.destination);
           if (ac.state !== "running") ac.resume().then(() => {}, () => { $("#scrTap").hidden = false; });
           setTimeout(() => { if (ac.state !== "running") $("#scrTap").hidden = false; }, 1500);
-        } else { v.muted = false; v.play().catch(() => { $("#scrTap").hidden = false; }); }
+        } else {
+          v.muted = false;
+          v.play().catch(() => { $("#scrTap").hidden = false; });
+        }
       }
     };
     pc.ondatachannel = (e) => {
-      if (e.channel.label === "quadros") { receiveFrames(e.channel); return; }
-      tvScreen.dc = e.channel; tvScreen.phoneStats = null;
+      if (e.channel.label === "quadros") {
+        receiveFrames(e.channel);
+        return;
+      }
+      tvScreen.dc = e.channel;
+      tvScreen.phoneStats = null;
       // the phone reports what it is sending, so the TV can show both ends in one place
-      e.channel.onmessage = (m) => { try { const d = JSON.parse(m.data); if (d && d.st) tvScreen.phoneStats = d.st; } catch (x) {} };
+      e.channel.onmessage = (m) => { try {
+        const d = JSON.parse(m.data);
+        if (d && d.st) tvScreen.phoneStats = d.st;
+      } catch (x) {} };
     };
     pc.onconnectionstatechange = () => {
       if (pc !== tvScreen.pc) return;
-      if (pc.connectionState === "connected") { showWaiting(false); playScreenVideo(); if (!tvScreen.framesMode) drawVideoSharp(); watchScreen(pc); }
+      if (pc.connectionState === "connected") {
+        showWaiting(false);
+        playScreenVideo();
+        if (!tvScreen.framesMode) drawVideoSharp();
+        watchScreen(pc);
+      }
       else if (["failed", "disconnected", "closed"].includes(pc.connectionState)) {
-        showWaiting(true); $("#scrInfo").hidden = true; $("#scrStatus").textContent = "O celular desconectou. Esperando de novo…";
+        showWaiting(true);
+        $("#scrInfo").hidden = true;
+        $("#scrStatus").textContent = "O celular desconectou. Esperando de novo…";
       }
     };
     try {
@@ -71,23 +116,42 @@ async function startScreen() {
   const tick = () => {
     if (!tvScreen.active) return;
     requestAnimationFrame(tick);
-    const dc = tvScreen.dc; if (!dc || dc.readyState !== "open") return;
+    const dc = tvScreen.dc;
+    if (!dc || dc.readyState !== "open") return;
     const mask = readPad(), now = performance.now();
-    if ((mask & 128) && $("#scrVideo").paused && $("#scrVideo").srcObject) { $("#scrVideo").play().catch(() => {}); $("#scrTap").hidden = true; }
+    if ((mask & 128) && $("#scrVideo").paused && $("#scrVideo").srcObject) {
+      $("#scrVideo").play().catch(() => {});
+      $("#scrTap").hidden = true;
+    }
     // the channel never resends lost packets (that would add delay), so every change is
     // sent three times in quick succession and the current state is repeated 10x a second
     const send = () => { try { dc.send(String(tvScreen.lastSent)); } catch (e) {} };
-    if (mask !== tvScreen.lastSent) { tvScreen.lastSent = mask; send(); setTimeout(send, 15); setTimeout(send, 40); lastBeat = now; }
-    else if (now - lastBeat > 100) { send(); lastBeat = now; }
+    if (mask !== tvScreen.lastSent) {
+      tvScreen.lastSent = mask;
+      send();
+      setTimeout(send, 15);
+      setTimeout(send, 40);
+      lastBeat = now;
+    }
+    else if (now - lastBeat > 100) {
+      send();
+      lastBeat = now;
+    }
   };
   requestAnimationFrame(tick);
 }
 /* average brightness (0-255) of a picture, through a tiny canvas; -1 if it can't be read */
+/** @type {HTMLCanvasElement | null} */
+let brightnessCanvas = null;
 function brightness(src) {
   try {
-    const c = brightness.c || (brightness.c = document.createElement("canvas")); c.width = 24; c.height = 16;
-    const g = c.getContext("2d"); g.drawImage(src, 0, 0, 24, 16);
-    const d = g.getImageData(0, 0, 24, 16).data; let sum = 0;
+    const c = brightnessCanvas || (brightnessCanvas = document.createElement("canvas"));
+    c.width = 24;
+    c.height = 16;
+    const g = c.getContext("2d");
+    g.drawImage(src, 0, 0, 24, 16);
+    const d = g.getImageData(0, 0, 24, 16).data;
+    let sum = 0;
     for (let i = 0; i < d.length; i += 4) sum += d[i] + d[i + 1] + d[i + 2];
     return Math.round(sum / (d.length / 4) / 3);
   } catch (e) { return -1; }
@@ -96,16 +160,23 @@ function brightness(src) {
    while one frame decodes the newest arrival waits and older ones are dropped. */
 function receiveFrames(channel) {
   const canvas = $("#scrCanvas"), g = canvas.getContext("2d", { alpha: false });
-  tvScreen.framesMode = true; tvScreen.sharp = false;
-  canvas.hidden = false; $("#scrVideo").hidden = true;
+  tvScreen.framesMode = true;
+  tvScreen.sharp = false;
+  canvas.hidden = false;
+  $("#scrVideo").hidden = true;
   channel.binaryType = "arraybuffer";
   let pending = null, decoding = false;
   async function drawNext() {
     if (decoding || !pending) return;
-    const buf = pending; pending = null; decoding = true;
+    const buf = pending;
+    pending = null;
+    decoding = true;
     try {
       const img = await createImageBitmap(new Blob([buf], { type: "image/jpeg" }));
-      if (canvas.width !== img.width || canvas.height !== img.height) { canvas.width = img.width; canvas.height = img.height; }
+      if (canvas.width !== img.width || canvas.height !== img.height) {
+        canvas.width = img.width;
+        canvas.height = img.height;
+      }
       g.drawImage(img, 0, 0);
       if (img.close) img.close();
       tvScreen.drawn++;
@@ -113,7 +184,10 @@ function receiveFrames(channel) {
     decoding = false;
     drawNext();
   }
-  channel.onmessage = (m) => { pending = m.data; drawNext(); };
+  channel.onmessage = (m) => {
+    pending = m.data;
+    drawNext();
+  };
 }
 /* The stream is the GBA's own 240x160. Drawn into a canvas of that size and enlarged by
    CSS with pixelated scaling, the pixels stay sharp (a <video> is always smoothed when
@@ -124,24 +198,42 @@ function drawVideoSharp() {
   if (tvScreen.sharp) return;
   const g = canvas.getContext("2d", { alpha: false });
   const started = performance.now();
-  tvScreen.sharp = true; tvScreen.drawnSharp = 0;
+  tvScreen.sharp = true;
+  tvScreen.drawnSharp = 0;
   const gen = tvScreen.gen;                         // a new connection ends this loop
   canvas.hidden = false;
   function frame() {
-    if (!tvScreen.active || gen !== tvScreen.gen) { if (gen === tvScreen.gen) tvScreen.sharp = false; return; }
-    if (v.readyState >= 2 && v.videoWidth) {
-      if (canvas.width !== v.videoWidth || canvas.height !== v.videoHeight) { canvas.width = v.videoWidth; canvas.height = v.videoHeight; }
-      try { g.drawImage(v, 0, 0, canvas.width, canvas.height); tvScreen.drawnSharp++; } catch (e) {}
+    if (!tvScreen.active || gen !== tvScreen.gen) {
+      if (gen === tvScreen.gen) tvScreen.sharp = false;
+      return;
     }
-    if (tvScreen.drawnSharp === 0 && performance.now() - started > 3000) { canvas.hidden = true; tvScreen.sharp = false; return; }
-    if (v.requestVideoFrameCallback) v.requestVideoFrameCallback(frame); else requestAnimationFrame(frame);
+    if (v.readyState >= 2 && v.videoWidth) {
+      if (canvas.width !== v.videoWidth || canvas.height !== v.videoHeight) {
+        canvas.width = v.videoWidth;
+        canvas.height = v.videoHeight;
+      }
+      try {
+        g.drawImage(v, 0, 0, canvas.width, canvas.height);
+        tvScreen.drawnSharp++;
+      } catch (e) {}
+    }
+    if (tvScreen.drawnSharp === 0 && performance.now() - started > 3000) {
+      canvas.hidden = true;
+      tvScreen.sharp = false;
+      return;
+    }
+    if (v.requestVideoFrameCallback) v.requestVideoFrameCallback(frame);
+    else requestAnimationFrame(frame);
   }
   frame();
 }
 function playScreenVideo() {
   const v = $("#scrVideo");
   const p = v.play();
-  if (p && p.catch) p.catch(() => { $("#scrTap").textContent = "Toque para mostrar o jogo"; $("#scrTap").hidden = false; });
+  if (p && p.catch) p.catch(() => {
+    $("#scrTap").textContent = "Toque para mostrar o jogo";
+    $("#scrTap").hidden = false;
+  });
 }
 /* Checks every 2 s that the picture is really arriving and playing. It never hides the
    picture: when something is off it only shows, in a corner, what each end is doing
@@ -153,8 +245,15 @@ function watchScreen(pc) {
   const net = {};
   clearInterval(tvScreen.watch);
   const check = async () => {
-    if (pc !== tvScreen.pc || pc.connectionState !== "connected" || !tvScreen.active) { clearInterval(tvScreen.watch); info.hidden = true; return; }
-    let rx = null, arx = null, codec = "", pair = null, all = new Map();
+    if (pc !== tvScreen.pc || pc.connectionState !== "connected" || !tvScreen.active) {
+      clearInterval(tvScreen.watch);
+      info.hidden = true;
+      return;
+    }
+    /** @type {any} */ let rx = null;
+    /** @type {any} */ let arx = null;
+    /** @type {any} */ let pair = null;
+    let codec = "", all = new Map();
     try {
       const stats = await pc.getStats();
       stats.forEach((x) => {
@@ -167,17 +266,24 @@ function watchScreen(pc) {
     } catch (e) {}
     // network: packets lost since the last check, round trip, and which path the pair took
     const got = rx ? rx.packetsReceived || 0 : 0, lost = rx ? Math.max(0, rx.packetsLost || 0) : 0;
-    const dGot = got - (net.got || 0), dLost = lost - (net.lost || 0); net.got = got; net.lost = lost;
+    const dGot = got - (net.got || 0), dLost = lost - (net.lost || 0);
+    net.got = got;
+    net.lost = lost;
     const lossPct = dGot + dLost > 0 ? Math.round((100 * dLost) / (dGot + dLost)) : 0;
     const rtt = pair && pair.currentRoundTripTime != null ? Math.round(pair.currentRoundTripTime * 1000) : null;
     const lc = pair && all.get(pair.localCandidateId), rc = pair && all.get(pair.remoteCandidateId);
     const types = lc && rc ? [lc.candidateType, rc.candidateType] : [];
     const path = !types.length ? "?" : types.includes("relay") ? "por um servidor" : types.includes("srflx") ? "pelo IP público do roteador" : "rede local, direto";
     net.bad = lossPct >= 5 ? (net.bad || 0) + 1 : 0;
-    if (net.bad === 2 && !net.warned) { net.warned = true; net.warnPct = lossPct; net.warnUntil = performance.now() + 9000; }
+    if (net.bad === 2 && !net.warned) {
+      net.warned = true;
+      net.warnPct = lossPct;
+      net.warnUntil = performance.now() + 9000;
+    }
     const frames = tvScreen.framesMode;                        // "quadros" mode: the picture comes over the data channel
     const dec = frames ? tvScreen.drawn : (rx ? rx.framesDecoded || 0 : 0);
-    still = dec === lastDec ? still + 1 : 0; lastDec = dec;
+    still = dec === lastDec ? still + 1 : 0;
+    lastDec = dec;
     if (tvScreen.dc && tvScreen.dc.readyState === "open") { try { tvScreen.dc.send(JSON.stringify({ tv: { dec, pk: got, apk: arx ? arx.packetsReceived || 0 : 0 } })); } catch (e) {} }
     const shown = v.getVideoPlaybackQuality ? v.getVideoPlaybackQuality().totalVideoFrames : "?";
     const bright = frames || tvScreen.sharp ? brightness($("#scrCanvas")) : v.readyState >= 2 ? brightness(v) : -1;
@@ -211,18 +317,42 @@ function showWaiting(on) {
    stream and every timer. Runs before each new phone connects and when leaving. */
 function closeScreenConnection() {
   tvScreen.gen = (tvScreen.gen || 0) + 1;
-  clearInterval(tvScreen.watch); tvScreen.watch = null;
-  if (tvScreen.dc) { try { tvScreen.dc.onmessage = null; tvScreen.dc.close(); } catch (e) {} tvScreen.dc = null; }
-  if (tvScreen.audioSrc) { try { tvScreen.audioSrc.disconnect(); } catch (e) {} tvScreen.audioSrc = null; }
+  clearInterval(tvScreen.watch);
+  tvScreen.watch = null;
+  if (tvScreen.dc) {
+    try {
+      tvScreen.dc.onmessage = null;
+      tvScreen.dc.close();
+    } catch (e) {}
+    tvScreen.dc = null;
+  }
+  if (tvScreen.audioSrc) {
+    try { tvScreen.audioSrc.disconnect(); } catch (e) {}
+    tvScreen.audioSrc = null;
+  }
   if (tvScreen.pc) {
-    const pc = tvScreen.pc; tvScreen.pc = null;
-    try { pc.onconnectionstatechange = null; pc.ondatachannel = null; pc.ontrack = null; } catch (e) {}
+    const pc = tvScreen.pc;
+    tvScreen.pc = null;
+    try {
+      pc.onconnectionstatechange = null;
+      pc.ondatachannel = null;
+      pc.ontrack = null;
+    } catch (e) {}
     try { pc.close(); } catch (e) {}
   }
   const v = $("#scrVideo");
-  if (v.srcObject) { try { for (const t of v.srcObject.getTracks()) t.stop(); } catch (e) {} v.srcObject = null; }
-  tvScreen.phoneStats = null; tvScreen.lastSent = -1; tvScreen.drawn = 0; tvScreen.sharp = false; tvScreen.framesMode = false;
-  $("#scrInfo").hidden = true; $("#scrCanvas").hidden = true; $("#scrVideo").hidden = false;
+  if (v.srcObject) {
+    try { for (const t of v.srcObject.getTracks()) t.stop(); } catch (e) {}
+    v.srcObject = null;
+  }
+  tvScreen.phoneStats = null;
+  tvScreen.lastSent = -1;
+  tvScreen.drawn = 0;
+  tvScreen.sharp = false;
+  tvScreen.framesMode = false;
+  $("#scrInfo").hidden = true;
+  $("#scrCanvas").hidden = true;
+  $("#scrVideo").hidden = false;
 }
 function stopScreen() {
   tvScreen.active = false;
@@ -234,7 +364,8 @@ function stopScreen() {
 $("#screenBtn").addEventListener("click", startScreen);
 $("#scrExit").addEventListener("click", stopScreen);
 $("#scrTap").addEventListener("click", () => {
-  if (tvScreen.ac) tvScreen.ac.resume().catch(() => {}); else $("#scrVideo").muted = false;
+  if (tvScreen.ac) tvScreen.ac.resume().catch(() => {});
+  else $("#scrVideo").muted = false;
   $("#scrVideo").play().catch(() => {});
   $("#scrTap").hidden = true;
 });
@@ -243,8 +374,12 @@ window.addEventListener("keydown", (e) => {
   if (!tvScreen.active) return;
   const k = KEYMAP[e.key] || KEYCODES[e.keyCode];
   if (!k) return;
-  if (k === "B" && !$("#scrWait").hidden) { stopScreen(); return; }
-  keysDown.add(k); e.preventDefault();
+  if (k === "B" && !$("#scrWait").hidden) {
+    stopScreen();
+    return;
+  }
+  keysDown.add(k);
+  e.preventDefault();
 });
 window.addEventListener("keyup", (e) => {
   const k = KEYMAP[e.key] || KEYCODES[e.keyCode];

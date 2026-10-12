@@ -7,7 +7,11 @@ import { $, el, rid, toast } from "../util.js";
 /* ---------------- rename and cover ---------------- */
 async function setGameMeta(key, patch) {
   const rom = roms.get(key);
-  if (rom) { const upd = { ...rom, ...patch, ident: true }; await idb.put("roms", key, upd).catch(() => {}); roms.set(key, upd); }
+  if (rom) {
+    const upd = { ...rom, ...patch, ident: true };
+    await idb.put("roms", key, upd).catch(() => {});
+    roms.set(key, upd);
+  }
   if (cloud.db) {
     try { await updateIndex((d) => { d.games[key] = { ...(d.games[key] || {}), ...patch }; }, `Biblioteca: ${patch.title || gameInfo(key).title}`); }
     catch (e) { toast("Mudou neste aparelho, mas não deu para salvar na nuvem agora."); }
@@ -19,16 +23,28 @@ function renameGame(key) {
   const input = el("input", { id: "renameInput", class: "rename-input", type: "text", maxlength: "60", value: g.title, autocomplete: "off" });
   const close = () => root.replaceChildren();
   root.replaceChildren(el("div", { class: "scrim" }, el("form", { class: "dialog", onsubmit: (e) => {
-      e.preventDefault(); const t = input.value.trim().replace(/\s+/g, " "); if (!t) { input.focus(); return; } close();
+      e.preventDefault();
+      const t = input.value.trim().replace(/\s+/g, " ");
+      if (!t) {
+        input.focus();
+        return;
+      }
+      close();
       setGameMeta(key, { title: t, titleSet: true }).then(() => toast("Nome atualizado"));
     } },
     el("h2", {}, "Renomear"), input,
     el("button", { class: "btn primary", type: "submit" }, "Salvar nome"),
     el("button", { class: "btn", type: "button", onclick: close }, "Cancelar"))));
-  input.focus(); input.select();
+  input.focus();
+  input.select();
 }
 let coverTarget = null;
-function pickCover(key) { coverTarget = key; const i = $("#coverInput"); i.value = ""; i.click(); }
+function pickCover(key) {
+  coverTarget = key;
+  const i = $("#coverInput");
+  i.value = "";
+  i.click();
+}
 async function squareJpeg(file, size = 400) {
   const bmp = await createImageBitmap(file);
   const s = Math.min(bmp.width, bmp.height), c = document.createElement("canvas");
@@ -37,7 +53,8 @@ async function squareJpeg(file, size = 400) {
   return new Promise((res) => c.toBlob(res, "image/jpeg", 0.86));
 }
 $("#coverInput").addEventListener("change", async (e) => {
-  const f = e.target.files && e.target.files[0], key = coverTarget; coverTarget = null;
+  const f = e.target.files && e.target.files[0], key = coverTarget;
+  coverTarget = null;
   if (!f || !key) return;
   try {
     const blob = await squareJpeg(f), rev = rid();

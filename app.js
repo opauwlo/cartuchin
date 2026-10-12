@@ -27,6 +27,7 @@
 
   // src/js/util.js
   var $ = (s) => document.querySelector(s);
+  var $$ = (s, root = document) => Array.from(root.querySelectorAll(s));
   var el = (tag, attrs = {}, ...kids) => {
     const n = document.createElement(tag);
     for (const [k, v] of Object.entries(attrs)) {
@@ -312,7 +313,36 @@
   var device = { name: ls.get("cartucho.device") || guessDevice() };
 
   // src/js/cast/tv.js
-  var tvScreen = window.__tvScreen = { active: false, code: null, pc: null, dc: null, stopListen: null, padTimer: null, lastSent: -1 };
+  var tvScreen = window.__tvScreen = {
+    active: false,
+    /** @type {string | null} the pairing code shown on screen */
+    code: null,
+    /** @type {RTCPeerConnection | null} */
+    pc: null,
+    /** @type {RTCDataChannel | null} control channel */
+    dc: null,
+    /** @type {(() => void) | null} stops listening for offers */
+    stopListen: null,
+    /** @type {AudioContext | null} created on the "Usar como tela" tap, so sound is allowed */
+    ac: null,
+    /** @type {MediaStreamAudioSourceNode | null} */
+    audioSrc: null,
+    /** @type {ReturnType<typeof setInterval> | null} the diagnostic check */
+    watch: null,
+    /** @type {any} last report from the phone */
+    phoneStats: null,
+    gen: 0,
+    // bumped on every new connection; loops of an older one stop
+    sharp: false,
+    // drawing the video into the pixel-sharp canvas
+    drawnSharp: 0,
+    framesMode: false,
+    // "quadros" mode: JPEG frames over the data channel
+    drawn: 0,
+    padTimer: null,
+    lastSent: -1
+    // last button mask sent to the phone
+  };
   async function startScreen() {
     tvScreen.active = true;
     try {
@@ -455,9 +485,10 @@
     };
     requestAnimationFrame(tick);
   }
+  var brightnessCanvas = null;
   function brightness(src) {
     try {
-      const c = brightness.c || (brightness.c = document.createElement("canvas"));
+      const c = brightnessCanvas || (brightnessCanvas = document.createElement("canvas"));
       c.width = 24;
       c.height = 16;
       const g = c.getContext("2d");
@@ -556,7 +587,10 @@
         info.hidden = true;
         return;
       }
-      let rx = null, arx = null, codec = "", pair = null, all = /* @__PURE__ */ new Map();
+      let rx = null;
+      let arx = null;
+      let pair = null;
+      let codec = "", all = /* @__PURE__ */ new Map();
       try {
         const stats = await pc.getStats();
         stats.forEach((x) => {
@@ -847,7 +881,37 @@
   }
 
   // src/js/cast/phone.js
-  var cast = window.__cast = { pc: null, dc: null, code: null, pending: null, lastMask: 0, localMask: 0, remoteMask: 0 };
+  var cast = window.__cast = {
+    /** @type {RTCPeerConnection | null} */
+    pc: null,
+    /** @type {RTCDataChannel | null} the control channel: TV → phone buttons, phone → TV stats */
+    dc: null,
+    /** @type {RTCDataChannel | null} "quadros" mode only: JPEG frames phone → TV */
+    frameChannel: null,
+    /** @type {MediaStream | null} the capture of the emulator canvas */
+    stream: null,
+    /** @type {string | null} pairing code of the TV */
+    code: null,
+    /** @type {string | null} code received by link, used once the game is running */
+    pending: null,
+    /** @type {number[]} order in which the formats of CAST_MODES are tried */
+    order: [],
+    mode: 0,
+    attempt: 0,
+    /** @type {any} last report from the TV (frames decoded, packets) */
+    tvStats: null,
+    /** @type {string | null} */
+    paramErr: null,
+    /** @type {ReturnType<typeof setInterval> | null} */
+    watch: null,
+    /** @type {(() => void) | null} stops the frame pump */
+    pumpStop: null,
+    pumped: 0,
+    // buttons: what is pressed on this phone, what the TV sends, and what the game currently sees
+    lastMask: 0,
+    localMask: 0,
+    remoteMask: 0
+  };
   var MIN_HOLD = 70;
   var DIR_MASK = ["UP", "DOWN", "LEFT", "RIGHT"].reduce((m, k) => m | 1 << PAD_BITS.indexOf(k), 0);
   var pressedAt = new Array(PAD_BITS.length).fill(0);
@@ -1275,7 +1339,7 @@
     };
   }
   function renderPerf() {
-    for (const b of document.querySelectorAll("#perfModes button")) {
+    for (const b of $$("#perfModes button")) {
       const on = b.dataset.mode === perf.mode;
       b.classList.toggle("primary", on);
       b.setAttribute("aria-pressed", on ? "true" : "false");
@@ -1503,14 +1567,14 @@
   var sheetKey = null;
   function openSheet(id) {
     $("#sheetScrim").hidden = false;
-    for (const sh of document.querySelectorAll(".sheet")) sh.hidden = sh.id !== id;
+    for (const sh of $$(".sheet")) sh.hidden = sh.id !== id;
     const first = $("#" + id).querySelector("button");
     if (first) setTimeout(() => first.focus(), 30);
   }
   function closeSheets() {
     sheetKey = null;
     $("#sheetScrim").hidden = true;
-    for (const sh of document.querySelectorAll(".sheet")) sh.hidden = true;
+    for (const sh of $$(".sheet")) sh.hidden = true;
   }
   $("#sheetScrim").addEventListener("click", closeSheets);
   window.addEventListener("keydown", (e) => {
@@ -1711,7 +1775,7 @@
     { id: "all", label: "Tudo junto", pad: "h", touch: true, cast: true },
     { id: "recast", label: "Depois de ligar e desligar a transmissão 3 vezes", recast: 3 }
   ];
-  var diag = window.__diag = { running: false, done: false, results: [], bases: [] };
+  var diag = window.__diag = { running: false, done: false, results: [], bases: [], only: null };
   var GBA_FPS = 59.7275;
   function diagShow(html) {
     $("#diagBody").innerHTML = html;
@@ -1965,7 +2029,7 @@
   function padGeometry() {
     if (padState.geo) return padState.geo;
     const geo = [];
-    for (const n of document.querySelectorAll("#pad [data-btn], #pad .pad-dpad")) {
+    for (const n of $$("#pad [data-btn], #pad .pad-dpad")) {
       const r = n.getBoundingClientRect();
       geo.push({
         id: n.classList.contains("pad-dpad") ? "dpad" : n.dataset.btn,
@@ -2044,7 +2108,7 @@
     if (m !== padState.shownMask || overKey !== padState.shownOver) {
       padState.shownMask = m;
       padState.shownOver = overKey;
-      for (const b of document.querySelectorAll("#pad [data-btn]")) {
+      for (const b of $$("#pad [data-btn]")) {
         const bit = 1 << PAD_BITS.indexOf(b.dataset.btn);
         b.classList.toggle("on", !!(m & bit));
         b.classList.toggle("over", over.includes(b.dataset.btn));
@@ -2056,12 +2120,13 @@
       }
     }
   }
+  var padMsgTimer = null;
   function padMsg(text) {
     const n = $("#padMsg");
     n.textContent = text;
     n.classList.add("show");
-    clearTimeout(padMsg.t);
-    padMsg.t = setTimeout(() => n.classList.remove("show"), 2600);
+    clearTimeout(padMsgTimer);
+    padMsgTimer = setTimeout(() => n.classList.remove("show"), 2600);
   }
   function layoutPad() {
     const pad = $("#pad");
@@ -2228,7 +2293,21 @@
   }
 
   // src/js/player/player.js
-  var player = window.__cartucho = { key: null, meta: null, emu: null, lastSha: null, baseRev: null, busy: false, again: false, timer: null, state: "loading", at: 0 };
+  var player = window.__cartucho = {
+    key: null,
+    meta: null,
+    /** @type {any} the EmulatorJS instance */
+    emu: null,
+    lastSha: null,
+    baseRev: null,
+    busy: false,
+    again: false,
+    timer: null,
+    state: "loading",
+    at: 0,
+    stateBusy: false,
+    stateFrames: 0
+  };
   function setChip(state, at) {
     player.state = state;
     if (at) player.at = at;
@@ -2480,7 +2559,8 @@
       }
     }
     CappedResizeObserver.__cartucho = true;
-    window.ResizeObserver = CappedResizeObserver;
+    window.ResizeObserver = /** @type {any} */
+    CappedResizeObserver;
   })();
   function patchEmulator() {
     const EJS = window.EmulatorJS;
@@ -2736,7 +2816,8 @@
   });
   var realFetch = window.fetch.bind(window);
   window.fetch = (input, init) => {
-    const u = typeof input === "string" ? input : input && input.url || "";
+    const u = typeof input === "string" ? input : input && /** @type {any} */
+    input.url || "";
     if (/^https?:\/\/(cdn|netplay)\.emulatorjs\.org/.test(u)) return Promise.resolve(new Response("{}", { status: 404 }));
     return realFetch(input, init);
   };
@@ -2759,7 +2840,10 @@
   }
   var APP_V = (() => {
     try {
-      return new URL(document.currentScript.src).searchParams.get("v") || "";
+      return new URL(
+        /** @type {HTMLScriptElement} */
+        document.currentScript.src
+      ).searchParams.get("v") || "";
     } catch (e) {
       return "";
     }
@@ -3588,7 +3672,11 @@ Content-Type: ${type}\r
   }
   window.addEventListener("pointerdown", (e) => {
     if (!isGoogle() || tokenFresh() || !gauth.client || Date.now() - gauth.lastAsk < 2e4) return;
-    if (!$("#library").hidden || e.target.closest && e.target.closest(".pbar, .pad-top")) {
+    const target = (
+      /** @type {HTMLElement} */
+      e.target
+    );
+    if (!$("#library").hidden || target.closest && target.closest(".pbar, .pad-top")) {
       askGoogleToken(false).then(afterGoogleToken, () => {
       });
     }
@@ -3751,7 +3839,7 @@ Content-Type: ${type}\r
     const ff = $("#padFF");
     ff.textContent = (r > 1 ? r : ffState.last) + "x";
     ff.setAttribute("aria-pressed", r > 1 ? "true" : "false");
-    for (const b of document.querySelectorAll("#ffModes button")) b.classList.toggle("primary", Number(b.dataset.ff) === r);
+    for (const b of $$("#ffModes button")) b.classList.toggle("primary", Number(b.dataset.ff) === r);
   }
   $("#padFF").addEventListener("click", () => setSpeed(ffState.ratio > 1 ? 1 : ffState.last));
   $("#ffModes").addEventListener("click", (e) => {
@@ -3826,7 +3914,7 @@ Content-Type: ${type}\r
   (() => {
     let was = {}, last = 0;
     function targets() {
-      const root = $("#dialogRoot").firstElementChild || [...document.querySelectorAll(".sheet")].find((x) => !x.hidden) || $("#library");
+      const root = $("#dialogRoot").firstElementChild || $$(".sheet").find((x) => !x.hidden) || $("#library");
       return [...root.querySelectorAll("button:not([disabled]), input[type=text]")].filter((n) => n.offsetParent !== null);
     }
     function move(step) {

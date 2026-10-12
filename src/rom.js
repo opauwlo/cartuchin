@@ -5,16 +5,30 @@ const KNOWN = {
   AMA: "Super Mario Advance", AA2: "Super Mario World: Super Mario Advance 2", AMT: "Metroid Fusion", BMX: "Metroid: Zero Mission",
   AGS: "Golden Sun", AGF: "Golden Sun: The Lost Age", AFX: "Final Fantasy Tactics Advance", AWR: "Advance Wars",
 };
-function ascii(u8, a, n) { let s = ""; for (let i = a; i < a + n && i < u8.length; i++) { const c = u8[i]; if (c === 0) break; s += c >= 32 && c < 127 ? String.fromCharCode(c) : ""; } return s.trim(); }
+function ascii(u8, a, n) {
+  let s = "";
+  for (let i = a; i < a + n && i < u8.length; i++) {
+    const c = u8[i];
+    if (c === 0) break;
+    s += c >= 32 && c < 127 ? String.fromCharCode(c) : "";
+  }
+  return s.trim();
+}
 function titleCase(s) { return s.toLowerCase().replace(/(^|\s|[-:])([a-z])/g, (m, a, b) => a + b.toUpperCase()); }
 function parseRom(u8, fileName) {
   let system, title, code = "";
   if (u8.length > 0xc0 && u8[0xb2] === 0x96) {
-    system = "gba"; title = ascii(u8, 0xa0, 12); code = ascii(u8, 0xac, 4);
+    system = "gba";
+    title = ascii(u8, 0xa0, 12);
+    code = ascii(u8, 0xac, 4);
   } else if (u8.length > 0x150 && u8[0x104] === 0xce && u8[0x105] === 0xed) {
-    system = "gb"; const cgb = u8[0x143] === 0x80 || u8[0x143] === 0xc0;
+    system = "gb";
+    const cgb = u8[0x143] === 0x80 || u8[0x143] === 0xc0;
     title = ascii(u8, 0x134, cgb ? 11 : 16);
-    if (cgb) { const c = ascii(u8, 0x13f, 4); if (/^[A-Z0-9]{4}$/.test(c)) code = c; }
+    if (cgb) {
+      const c = ascii(u8, 0x13f, 4);
+      if (/^[A-Z0-9]{4}$/.test(c)) code = c;
+    }
   } else return null;
   const clean = (title || fileName.replace(/\.[^.]+$/, "")).replace(/[^A-Za-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 40) || "jogo";
   const key = /^[A-Z0-9]{4}$/.test(code) ? code + "-" + clean : system + "-" + clean;
@@ -43,7 +57,8 @@ function fixSaveChip(u8) {
   if (MGBA_CODES.has(code) || findBytes(u8, "FLASH1M_V") < 0) return u8;
   const out = u8.slice();
   out.set([0x41, 0x58, 0x56, 0x45], 0xac);
-  let chk = 0; for (let i = 0xa0; i < 0xbd; i++) chk = (chk + out[i]) & 0xff;
+  let chk = 0;
+  for (let i = 0xa0; i < 0xbd; i++) chk = (chk + out[i]) & 0xff;
   out[0xbd] = (-(chk + 0x19)) & 0xff;
   return out;
 }

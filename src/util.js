@@ -1,5 +1,8 @@
 /* ---------------- small helpers ---------------- */
+/** @type {(selector: string) => any} querySelector, typed loosely: callers read .value, .hidden, .textContent… */
 const $ = (s) => document.querySelector(s);
+/** @type {(selector: string, root?: ParentNode) => HTMLElement[]} every element matching the selector */
+const $$ = (s, root = document) => Array.from(root.querySelectorAll(s));
 const el = (tag, attrs = {}, ...kids) => {
   const n = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs)) {
@@ -21,7 +24,10 @@ const rid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(
 function actionToast(msg, label, fn, ms = 9000) {
   const btn = el("button", { class: "toast-btn", type: "button" }, label);
   const t = el("div", { class: "toast toast-action", role: "status" }, el("span", {}, msg), btn);
-  btn.addEventListener("click", () => { t.remove(); fn(); });
+  btn.addEventListener("click", () => {
+    t.remove();
+    fn();
+  });
   document.body.append(t);
   setTimeout(() => t.remove(), ms);
 }
@@ -44,4 +50,4 @@ function ago(ts) {
 }
 function fmtSize(n) { return n >= 1024 ? Math.round(n / 1024) + " KB" : n + " B"; }
 
-export { $, el, ls, sleep, rid, actionToast, toast, ago };
+export { $, $$, el, ls, sleep, rid, actionToast, toast, ago };

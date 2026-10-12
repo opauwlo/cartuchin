@@ -4,18 +4,20 @@ import { play } from "../player/player.js";
 import { confirmRemoveRom, confirmRestore, downloadSave } from "./dialogs.js";
 import { pickRom, pickSav } from "./pickers.js";
 import { pickCover, renameGame } from "./rename-cover.js";
-import { $, ago, el } from "../util.js";
+import { $, $$, ago, el } from "../util.js";
 
 /* ---------------- sheets ---------------- */
 let sheetKey = null;
 function openSheet(id) {
   $("#sheetScrim").hidden = false;
-  for (const sh of document.querySelectorAll(".sheet")) sh.hidden = sh.id !== id;
-  const first = $("#" + id).querySelector("button"); if (first) setTimeout(() => first.focus(), 30);
+  for (const sh of $$(".sheet")) sh.hidden = sh.id !== id;
+  const first = $("#" + id).querySelector("button");
+  if (first) setTimeout(() => first.focus(), 30);
 }
 function closeSheets() {
-  sheetKey = null; $("#sheetScrim").hidden = true;
-  for (const sh of document.querySelectorAll(".sheet")) sh.hidden = true;
+  sheetKey = null;
+  $("#sheetScrim").hidden = true;
+  for (const sh of $$(".sheet")) sh.hidden = true;
 }
 $("#sheetScrim").addEventListener("click", closeSheets);
 window.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("#sheetScrim").hidden) closeSheets(); });
@@ -41,11 +43,16 @@ const ICONS = {
 function sheetAction(icon, label, fn, danger) {
   const b = el("button", { class: "gs-action" + (danger ? " danger" : ""), type: "button", onclick: fn });
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-  svg.setAttribute("viewBox", "0 0 24 24"); svg.innerHTML = ICONS[icon];
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.innerHTML = ICONS[icon];
   b.append(svg, el("span", {}, label));
   return b;
 }
-function openGameSheet(key) { sheetKey = key; fillGameSheet(key); openSheet("gameSheet"); }
+function openGameSheet(key) {
+  sheetKey = key;
+  fillGameSheet(key);
+  openSheet("gameSheet");
+}
 function fillGameSheet(key) {
   const g = gameInfo(key), sh = $("#gameSheet");
   const status = el("div", { class: "gs-status" },
@@ -55,8 +62,14 @@ function fillGameSheet(key) {
       : g.rom ? [el("span", { class: "dot" }), cloud.db ? "ROM só neste aparelho" : "ROM neste aparelho"] : [el("span", { class: "dot warn" }), "A ROM não está neste aparelho"]));
   const working = busy.get(key);
   const playBtn = working ? el("button", { class: "btn primary", type: "button", disabled: true }, working)
-    : g.playable ? el("button", { class: "btn primary", type: "button", onclick: () => { closeSheets(); play(key); } }, g.save ? "Continuar" : "Jogar")
-    : el("button", { class: "btn primary", type: "button", onclick: () => { closeSheets(); pickRom(); } }, "Adicionar a ROM neste aparelho");
+    : g.playable ? el("button", { class: "btn primary", type: "button", onclick: () => {
+      closeSheets();
+      play(key);
+    } }, g.save ? "Continuar" : "Jogar")
+    : el("button", { class: "btn primary", type: "button", onclick: () => {
+      closeSheets();
+      pickRom();
+    } }, "Adicionar a ROM neste aparelho");
   const acts = el("div", { class: "gs-actions" });
   if (g.rom && !g.crom && cloud.db && !working) acts.append(sheetAction("cloud", `Guardar a ROM no ${cloudName()}`, () => uploadRom(g.rom)));
   acts.append(sheetAction("image", "Trocar capa", () => pickCover(key)));

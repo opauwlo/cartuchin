@@ -17,7 +17,9 @@ async function sealJson(key, obj) {
   const gz = new Uint8Array(await new Response(new Blob([raw]).stream().pipeThrough(new CompressionStream("gzip"))).arrayBuffer());
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const ct = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, gz));
-  const out = new Uint8Array(12 + ct.length); out.set(iv); out.set(ct, 12);
+  const out = new Uint8Array(12 + ct.length);
+  out.set(iv);
+  out.set(ct, 12);
   return b64(out);
 }
 async function openJson(key, text) {
@@ -39,8 +41,11 @@ async function signal(code) {
       const seen = new Set();
       es.onmessage = async (ev) => {
         try {
-          const m = JSON.parse(ev.data); if (m.event !== "message" || !m.message) return;
-          const id = m.id || m.message.slice(0, 40); if (seen.has(id)) return; seen.add(id);
+          const m = JSON.parse(ev.data);
+          if (m.event !== "message" || !m.message) return;
+          const id = m.id || m.message.slice(0, 40);
+          if (seen.has(id)) return;
+          seen.add(id);
           onMsg(await openJson(key, m.message));
         } catch (e) {}
       };
@@ -52,11 +57,17 @@ function iceDone(pc, ms = 2500) {
   if (pc.iceGatheringState === "complete") return Promise.resolve();
   return new Promise((res) => {
     const t = setTimeout(res, ms);
-    pc.addEventListener("icegatheringstatechange", () => { if (pc.iceGatheringState === "complete") { clearTimeout(t); res(); } });
+    pc.addEventListener("icegatheringstatechange", () => { if (pc.iceGatheringState === "complete") {
+      clearTimeout(t);
+      res();
+    } });
   });
 }
 let wakeLock = null;
-async function keepAwake() { try { if (navigator.wakeLock && !wakeLock) { wakeLock = await navigator.wakeLock.request("screen"); wakeLock.addEventListener("release", () => { wakeLock = null; }); } } catch (e) {} }
+async function keepAwake() { try { if (navigator.wakeLock && !wakeLock) {
+  wakeLock = await navigator.wakeLock.request("screen");
+  wakeLock.addEventListener("release", () => { wakeLock = null; });
+} } catch (e) {} }
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && (cast.pc || tvScreen.active)) keepAwake(); });
 
 /* Every sound that would reach the speakers also goes through a tap the stream can carry. */
@@ -70,9 +81,12 @@ document.addEventListener("visibilitychange", () => { if (document.visibilitySta
       const ctx = dest.context;
       let t = taps.get(ctx);
       if (!t) {
-        const local = ctx.createGain(); connect.call(local, dest);
+        const local = ctx.createGain();
+        connect.call(local, dest);
         const out = ctx.createMediaStreamDestination ? ctx.createMediaStreamDestination() : null;
-        t = { ctx, local, out }; taps.set(ctx, t); window.__audioTaps.push(t);
+        t = { ctx, local, out };
+        taps.set(ctx, t);
+        window.__audioTaps.push(t);
       }
       if (t.out) connect.call(this, t.out);
       return connect.call(this, t.local);
@@ -96,11 +110,20 @@ function readPad() {
   const s = {};
   if (pad) {
     const b = (i) => !!(pad.buttons[i] && pad.buttons[i].pressed), ax = pad.axes || [];
-    s.A = b(1); s.B = b(0); s.L = b(4) || b(6); s.R = b(5) || b(7); s.SELECT = b(8); s.START = b(9);
-    s.UP = b(12) || ax[1] < -0.5; s.DOWN = b(13) || ax[1] > 0.5; s.LEFT = b(14) || ax[0] < -0.5; s.RIGHT = b(15) || ax[0] > 0.5;
+    s.A = b(1);
+    s.B = b(0);
+    s.L = b(4) || b(6);
+    s.R = b(5) || b(7);
+    s.SELECT = b(8);
+    s.START = b(9);
+    s.UP = b(12) || ax[1] < -0.5;
+    s.DOWN = b(13) || ax[1] > 0.5;
+    s.LEFT = b(14) || ax[0] < -0.5;
+    s.RIGHT = b(15) || ax[0] > 0.5;
   }
   for (const k of PAD_BITS) if (keysDown.has(k)) s[k] = true;
-  let mask = 0; PAD_BITS.forEach((k, i) => { if (s[k]) mask |= 1 << i; });
+  let mask = 0;
+  PAD_BITS.forEach((k, i) => { if (s[k]) mask |= 1 << i; });
   return mask;
 }
 

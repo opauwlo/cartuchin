@@ -8,7 +8,24 @@ import { player } from "../player/player.js";
 import { $, ls, rid, sleep, toast } from "../util.js";
 
 /* ---------- phone side ---------- */
-const cast = window.__cast = { pc: null, dc: null, code: null, pending: null, lastMask: 0, localMask: 0, remoteMask: 0 };
+/** Everything the phone holds while transmitting to a TV. */
+const cast = window.__cast = {
+  /** @type {RTCPeerConnection | null} */ pc: null,
+  /** @type {RTCDataChannel | null} the control channel: TV → phone buttons, phone → TV stats */ dc: null,
+  /** @type {RTCDataChannel | null} "quadros" mode only: JPEG frames phone → TV */ frameChannel: null,
+  /** @type {MediaStream | null} the capture of the emulator canvas */ stream: null,
+  /** @type {string | null} pairing code of the TV */ code: null,
+  /** @type {string | null} code received by link, used once the game is running */ pending: null,
+  /** @type {number[]} order in which the formats of CAST_MODES are tried */ order: [],
+  mode: 0, attempt: 0,
+  /** @type {any} last report from the TV (frames decoded, packets) */ tvStats: null,
+  /** @type {string | null} */ paramErr: null,
+  /** @type {ReturnType<typeof setInterval> | null} */ watch: null,
+  /** @type {(() => void) | null} stops the frame pump */ pumpStop: null,
+  pumped: 0,
+  // buttons: what is pressed on this phone, what the TV sends, and what the game currently sees
+  lastMask: 0, localMask: 0, remoteMask: 0,
+};
 
 /* A GBA game reads the buttons once per frame (every 16.7 ms). A quick tap on glass
    can begin and end between two reads, and then the game never sees it: that is the
@@ -20,7 +37,8 @@ const DIR_MASK = ["UP", "DOWN", "LEFT", "RIGHT"].reduce((m, k) => m | (1 << PAD_
 const pressedAt = new Array(PAD_BITS.length).fill(0);
 let releaseTimer = null;
 function applyInput() {
-  const gm = player.emu && player.emu.gameManager; if (!gm) return;
+  const gm = player.emu && player.emu.gameManager;
+  if (!gm) return;
   const want = (cast.localMask | cast.remoteMask) >>> 0;
   const now = performance.now();
   let applied = cast.lastMask, wait = Infinity;
@@ -28,11 +46,15 @@ function applyInput() {
     const bit = 1 << i, w = want & bit, h = applied & bit;
     if (w && !h) {
       try { gm.simulateInput(0, PAD[k], 1); } catch (e) {}
-      applied |= bit; pressedAt[i] = now;
+      applied |= bit;
+      pressedAt[i] = now;
     } else if (!w && h) {
       const turning = (bit & DIR_MASK) && (want & DIR_MASK & ~bit);
       const left = turning ? 0 : pressedAt[i] + MIN_HOLD - now;
-      if (left <= 0) { try { gm.simulateInput(0, PAD[k], 0); } catch (e) {} applied &= ~bit; }
+      if (left <= 0) {
+        try { gm.simulateInput(0, PAD[k], 0); } catch (e) {}
+        applied &= ~bit;
+      }
       else wait = Math.min(wait, left);
     }
   });
@@ -40,7 +62,10 @@ function applyInput() {
   clearTimeout(releaseTimer);
   if (wait < Infinity) releaseTimer = setTimeout(applyInput, wait + 1);
 }
-function applyRemote(mask) { cast.remoteMask = mask; applyInput(); }
+function applyRemote(mask) {
+  cast.remoteMask = mask;
+  applyInput();
+}
 function setCastUi(state) {
   const b = $("#castBtn");
   b.innerHTML = state === "on" ? "<span class=\"long\">Na </span>TV ●" : state === "wait" ? "Conectando…" : "<span class=\"long\">Jogar na </span>TV";
@@ -50,29 +75,56 @@ function setCastUi(state) {
    new attempt, so nothing from an old connection (capture, encoder, channel, timers,
    muted local audio) lives on next to the new one. */
 function closeCastConnection() {
-  clearInterval(cast.watch); cast.watch = null;
-  if (cast.pumpStop) { try { cast.pumpStop(); } catch (e) {} cast.pumpStop = null; }
-  if (cast.frameChannel) { try { cast.frameChannel.close(); } catch (e) {} cast.frameChannel = null; }
-  if (cast.dc) { try { cast.dc.onmessage = null; cast.dc.close(); } catch (e) {} cast.dc = null; }
+  clearInterval(cast.watch);
+  cast.watch = null;
+  if (cast.pumpStop) {
+    try { cast.pumpStop(); } catch (e) {}
+    cast.pumpStop = null;
+  }
+  if (cast.frameChannel) {
+    try { cast.frameChannel.close(); } catch (e) {}
+    cast.frameChannel = null;
+  }
+  if (cast.dc) {
+    try {
+      cast.dc.onmessage = null;
+      cast.dc.close();
+    } catch (e) {}
+    cast.dc = null;
+  }
   if (cast.pc) {
-    const pc = cast.pc; cast.pc = null;
-    try { pc.onconnectionstatechange = null; pc.ondatachannel = null; pc.ontrack = null; } catch (e) {}
+    const pc = cast.pc;
+    cast.pc = null;
+    try {
+      pc.onconnectionstatechange = null;
+      pc.ondatachannel = null;
+      pc.ontrack = null;
+    } catch (e) {}
     try { for (const s of pc.getSenders()) { try { s.replaceTrack(null); } catch (e) {} } } catch (e) {}
     try { pc.close(); } catch (e) {}
   }
   // closing the connection does not stop the canvas capture: left running, every old
   // capture keeps copying each frame of the game, and they pile up on every reconnect
-  if (cast.stream) { for (const t of cast.stream.getTracks()) t.stop(); cast.stream = null; }
-  cast.tvStats = null; cast.paramErr = null;
-  cast.remoteMask = 0; applyInput();
+  if (cast.stream) {
+    for (const t of cast.stream.getTracks()) t.stop();
+    cast.stream = null;
+  }
+  cast.tvStats = null;
+  cast.paramErr = null;
+  cast.remoteMask = 0;
+  applyInput();
 }
 function stopCast(msg) {
   closeCastConnection();
-  cast.localMask = 0; applyRemote(0);
+  cast.localMask = 0;
+  applyRemote(0);
   for (const t of window.__audioTaps || []) t.local.gain.value = 1;
   setCastUi("off");
   showPad(false);
-  if (window.__castCap) { window.__castCap = 0; window.dispatchEvent(new Event("resize")); }
+  if (window.__castCap) {
+    window.__castCap = 0;
+    window.dispatchEvent(new Event("resize"));
+  }
   if (msg) toast(msg, 3500);
 }
 /* Video formats, from the best to the most compatible. TV browsers are old and each
@@ -86,23 +138,34 @@ const CAST_MODES = [
   // nothing the two browsers have to agree on.
   { name: "quadros", frames: true },
 ];
-const chromeVer = () => { const ua = navigator.userAgent; const c = ua.match(/Chrom(?:e|ium)\/(\d+)/), t = ua.match(/Tizen (\d+(?:\.\d+)?)/), w = ua.match(/Web0S|webOS/); return (c ? "Chrome " + c[1] : "navegador ?") + (t ? ` (Tizen ${t[1]})` : w ? " (webOS)" : ""); };
+const chromeVer = () => {
+  const ua = navigator.userAgent;
+  const c = ua.match(/Chrom(?:e|ium)\/(\d+)/), t = ua.match(/Tizen (\d+(?:\.\d+)?)/), w = ua.match(/Web0S|webOS/);
+  return (c ? "Chrome " + c[1] : "navegador ?") + (t ? ` (Tizen ${t[1]})` : w ? " (webOS)" : "");
+};
 async function castTo(code, attempt = 0) {
   const emu = player.emu;
-  if (!emu || !emu.started || !emu.canvas) { cast.pending = code; return; }
+  if (!emu || !emu.started || !emu.canvas) {
+    cast.pending = code;
+    return;
+  }
   stopCast();
   setCastUi("wait");
   if (attempt === 0) {
     const saved = Number(ls.get("cartucho.castMode")) || 0;
     cast.order = [saved, ...CAST_MODES.map((m, i) => i).filter((i) => i !== saved)];
   }
-  cast.code = code; cast.attempt = attempt; cast.tvStats = null;
+  cast.code = code;
+  cast.attempt = attempt;
+  cast.tvStats = null;
   const level = cast.order[attempt] || 0, mode = CAST_MODES[level];
   cast.mode = level;
   try {
     const sig = await signal(code);
-    const pc = new RTCPeerConnection(RTC_CONFIG); cast.pc = pc;
-    window.__castCap = 1; window.dispatchEvent(new Event("resize"));
+    const pc = new RTCPeerConnection(RTC_CONFIG);
+    cast.pc = pc;
+    window.__castCap = 1;
+    window.dispatchEvent(new Event("resize"));
     await sleep(150);
     // capture the emulator's own canvas: no copy, no readback from the GPU
     const stream = emu.canvas.captureStream(60);
@@ -146,17 +209,28 @@ async function castTo(code, attempt = 0) {
       if (at && mode.plain) pc.addTrack(at, stream);
       else if (at) prefer(pc.addTransceiver(at, { direction: "sendonly", streams: [stream] }), "audio", opt.red ? [/audio\/red/i, /opus/i] : [/opus/i]);
     }
-    const dc = pc.createDataChannel("controle", { ordered: false, maxRetransmits: 0 }); cast.dc = dc;
+    const dc = pc.createDataChannel("controle", { ordered: false, maxRetransmits: 0 });
+    cast.dc = dc;
     dc.onmessage = (e) => {
       const d = String(e.data);
       // the TV also reports what it receives and decodes (JSON); everything else is the pad
-      if (d[0] === "{") { try { const j = JSON.parse(d); if (j.tv) cast.tvStats = j.tv; } catch (x) {} return; }
-      const m = Number(d); if (!Number.isNaN(m)) applyRemote(m);
+      if (d[0] === "{") {
+        try {
+          const j = JSON.parse(d);
+          if (j.tv) cast.tvStats = j.tv;
+        } catch (x) {}
+        return;
+      }
+      const m = Number(d);
+      if (!Number.isNaN(m)) applyRemote(m);
     };
     pc.onconnectionstatechange = () => {
       if (pc !== cast.pc) return;
       if (pc.connectionState === "connected") {
-        setCastUi("on"); keepAwake(); showPad(true); wakeAudio();
+        setCastUi("on");
+        keepAwake();
+        showPad(true);
+        wakeAudio();
         for (const t of window.__audioTaps || []) t.local.gain.value = 0;
         if (attempt === 0) toast("Jogando na TV. Este celular agora é o controle.", 3500);
         if (vt) {
@@ -178,7 +252,10 @@ async function castTo(code, attempt = 0) {
       try { await pc.setRemoteDescription(msg.sdp); } catch (e) { stopCast("A TV respondeu de um jeito inesperado. Tente de novo."); }
     });
     await sig.send("oferta", { id: offerId, sdp: pc.localDescription.toJSON(), from: device.name });
-    setTimeout(() => { if (pc === cast.pc && pc.connectionState !== "connected") { stopListen(); stopCast("A TV não respondeu. Confira o código e se ela está na tela de espera."); } }, 25000);
+    setTimeout(() => { if (pc === cast.pc && pc.connectionState !== "connected") {
+      stopListen();
+      stopCast("A TV não respondeu. Confira o código e se ela está na tela de espera.");
+    } }, 25000);
   } catch (e) { stopCast("Não deu para começar a transmissão."); }
 }
 /* "quadros" mode: reads the frames of the captured canvas, compresses each one as a
@@ -193,8 +270,12 @@ async function startFramePump(track, dc) {
   async function push(frame) {
     const now = performance.now();
     const skip = busy || now - lastAt < 30 || dc.readyState !== "open" || dc.bufferedAmount > 150000;
-    if (skip) { if (frame.close) frame.close(); return; }
-    busy = true; lastAt = now;
+    if (skip) {
+      if (frame.close) frame.close();
+      return;
+    }
+    busy = true;
+    lastAt = now;
     try {
       g.drawImage(frame, 0, 0, STREAM_W, STREAM_H);
       if (frame.close) frame.close();
@@ -230,11 +311,17 @@ function watchCast(pc, sender, dc, emu) {
   let last = -1, still = 0, recaptured = !sender, checks = 0, worked = false;
   clearInterval(cast.watch);
   cast.watch = setInterval(async () => {
-    if (pc !== cast.pc || pc.connectionState !== "connected") { clearInterval(cast.watch); return; }
-    let tx = null, codec = "";
+    if (pc !== cast.pc || pc.connectionState !== "connected") {
+      clearInterval(cast.watch);
+      return;
+    }
+    /** @type {any} */ let tx = null, codec = "";
     try {
       const stats = await pc.getStats(), all = new Map();
-      stats.forEach((x) => { all.set(x.id, x); if (x.type === "outbound-rtp" && (x.kind || x.mediaType) === "video") tx = x; });
+      stats.forEach((x) => {
+        all.set(x.id, x);
+        if (x.type === "outbound-rtp" && (x.kind || x.mediaType) === "video") tx = x;
+      });
       if (tx && all.get(tx.codecId)) codec = (all.get(tx.codecId).mimeType || "").replace("video/", "");
     } catch (e) {}
     const tr = sender ? sender.track : (cast.stream && cast.stream.getVideoTracks()[0]);
@@ -242,7 +329,10 @@ function watchCast(pc, sender, dc, emu) {
     if (tr && window.ImageCapture) {
       try {
         const bmp = await Promise.race([new ImageCapture(tr).grabFrame(), sleep(600).then(() => null)]);
-        if (bmp) { br = brightness(bmp); bmp.close && bmp.close(); }
+        if (bmp) {
+          br = brightness(bmp);
+          bmp.close && bmp.close();
+        }
       } catch (e) {}
     }
     const st = { br, ua: chromeVer(), mode: `${CAST_MODES[cast.mode].name}${codec ? ` = ${codec}` : ""} (${cast.attempt + 1}/${CAST_MODES.length})`,
@@ -253,7 +343,10 @@ function watchCast(pc, sender, dc, emu) {
     // sending means the TV can't take this format, so try the next one
     checks++;
     const tv = cast.tvStats;
-    if (tv && tv.dec > 0 && !worked) { worked = true; ls.set("cartucho.castMode", String(cast.mode)); }
+    if (tv && tv.dec > 0 && !worked) {
+      worked = true;
+      ls.set("cartucho.castMode", String(cast.mode));
+    }
     if (!worked && tv && checks >= 4 && st.sent > 60 && tv.dec === 0) {
       clearInterval(cast.watch);
       if (cast.attempt + 1 < CAST_MODES.length) {
@@ -262,8 +355,13 @@ function watchCast(pc, sender, dc, emu) {
       } else toast("A TV não conseguiu receber a imagem em nenhum formato. Mande uma foto do diagnóstico que aparece na TV.", 8000);
       return;
     }
-    if (emu.paused) { still = 0; last = st.sent; return; }
-    still = st.sent === last ? still + 1 : 0; last = st.sent;
+    if (emu.paused) {
+      still = 0;
+      last = st.sent;
+      return;
+    }
+    still = st.sent === last ? still + 1 : 0;
+    last = st.sent;
     if (still === 2 && !recaptured) {
       recaptured = true;
       try {

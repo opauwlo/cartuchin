@@ -25,11 +25,15 @@ const DIAG_STEPS = [
   { id: "all", label: "Tudo junto", pad: "h", touch: true, cast: true },
   { id: "recast", label: "Depois de ligar e desligar a transmissão 3 vezes", recast: 3 },
 ];
-const diag = window.__diag = { running: false, done: false, results: [], bases: [] };
+/** @type {{ running: boolean, done: boolean, results: any[], bases: any[], only: string[] | null }} */
+const diag = window.__diag = { running: false, done: false, results: [], bases: [], only: null };
 const GBA_FPS = 59.7275;
 
 function diagShow(html) { $("#diagBody").innerHTML = html; }
-const median = (xs) => { const v = [...xs].sort((a, b) => a - b); return v.length ? v[Math.floor(v.length / 2)] : 0; };
+const median = (xs) => {
+  const v = [...xs].sort((a, b) => a - b);
+  return v.length ? v[Math.floor(v.length / 2)] : 0;
+};
 function diagRow(r) {
   const pct = Math.round((r.fps / GBA_FPS) * 100);
   if (r.rel == null) return `<tr><td>${r.label}</td><td class="num">${pct}%</td><td class="num">referência</td></tr>`;
@@ -58,15 +62,23 @@ function diagTouches() {
     const geo = padGeometry(), d = geo.find((g) => g.id === "dpad"), a = geo.find((g) => g.id === "A");
     if (!d || !a) return;
     const r = (d.r - d.l) * 0.35, x = d.cx + Math.cos(t / 6) * r, y = d.cy + Math.sin(t / 6) * r;
-    if (!down) { fire("pointerdown", x, y, 31); down = true; } else fire("pointermove", x, y, 31);
+    if (!down) {
+      fire("pointerdown", x, y, 31);
+      down = true;
+    } else fire("pointermove", x, y, 31);
     if (t % 12 === 0) fire("pointerdown", a.cx, a.cy, 32);
     if (t % 12 === 6) fire("pointerup", a.cx, a.cy, 32);
     t++;
   }, 8);   // 125 events a second, like a fast touchscreen
-  return () => { clearInterval(timer); if (down) fire("pointerup", 0, 0, 31); fire("pointerup", 0, 0, 32); };
+  return () => {
+    clearInterval(timer);
+    if (down) fire("pointerup", 0, 0, 31);
+    fire("pointerup", 0, 0, 32);
+  };
 }
 async function diagLoopback(emu) {
-  window.__castCap = 1; window.dispatchEvent(new Event("resize"));
+  window.__castCap = 1;
+  window.dispatchEvent(new Event("resize"));
   await sleep(200);
   const a = new RTCPeerConnection(), b = new RTCPeerConnection();
   a.onicecandidate = (e) => e.candidate && b.addIceCandidate(e.candidate).catch(() => {});
@@ -74,29 +86,63 @@ async function diagLoopback(emu) {
   const stream = emu.canvas.captureStream(60);
   a.addTrack(stream.getVideoTracks()[0], stream);
   const tap = (window.__audioTaps || [])[0];
-  if (tap && tap.out) { const at = tap.out.stream.getAudioTracks()[0]; if (at) a.addTrack(at, stream); }
-  const v = document.createElement("video"); v.muted = true; v.playsInline = true;
-  b.ontrack = (e) => { v.srcObject = e.streams[0]; v.play().catch(() => {}); };
-  await a.setLocalDescription(await a.createOffer()); await b.setRemoteDescription(a.localDescription);
-  await b.setLocalDescription(await b.createAnswer()); await a.setRemoteDescription(b.localDescription);
-  return () => { try { a.close(); b.close(); } catch (e) {} for (const t of stream.getVideoTracks()) t.stop(); v.srcObject = null; window.__castCap = 0; window.dispatchEvent(new Event("resize")); };
+  if (tap && tap.out) {
+    const at = tap.out.stream.getAudioTracks()[0];
+    if (at) a.addTrack(at, stream);
+  }
+  const v = document.createElement("video");
+  v.muted = true;
+  v.playsInline = true;
+  b.ontrack = (e) => {
+    v.srcObject = e.streams[0];
+    v.play().catch(() => {});
+  };
+  await a.setLocalDescription(await a.createOffer());
+  await b.setRemoteDescription(a.localDescription);
+  await b.setLocalDescription(await b.createAnswer());
+  await a.setRemoteDescription(b.localDescription);
+  return () => {
+    try {
+      a.close();
+      b.close();
+    } catch (e) {}
+    for (const t of stream.getVideoTracks()) t.stop();
+    v.srcObject = null;
+    window.__castCap = 0;
+    window.dispatchEvent(new Event("resize"));
+  };
 }
 async function runDiagnostic() {
   if (diag.running) return;
-  diag.running = true; diag.done = false; diag.results = [];
-  $("#library").hidden = true; $("#player").hidden = false; $("#diag").hidden = false;
+  diag.running = true;
+  diag.done = false;
+  diag.results = [];
+  $("#library").hidden = true;
+  $("#player").hidden = false;
+  $("#diag").hidden = false;
   $("#pName").textContent = "Teste de velocidade";
   diagShow("<p>Carregando o emulador…</p>");
   keepAwake();
   let bytes;
-  try { bytes = new Uint8Array(await (await fetch("bench.gba")).arrayBuffer()); } catch (e) { diagShow("<p>Não deu para baixar o programa de teste. Confira a internet.</p>"); diag.running = false; return; }
+  try { bytes = new Uint8Array(await (await fetch("bench.gba")).arrayBuffer()); } catch (e) {
+    diagShow("<p>Não deu para baixar o programa de teste. Confira a internet.</p>");
+    diag.running = false;
+    return;
+  }
   const emu = await createEmulator(new File([bytes], "bench.gba"), "cartuchin-bench", { ...coreOptions(), mgba_frameskip: "disabled" });
-  if (!emu) { diagShow("<p>Não deu para carregar o emulador.</p>"); diag.running = false; return; }
+  if (!emu) {
+    diagShow("<p>Não deu para carregar o emulador.</p>");
+    diag.running = false;
+    return;
+  }
   player.emu = emu;
   await new Promise((res) => emu.on("start", res));
   await sleep(1500);
   const gm = emu.gameManager;
-  try { gm.setFastForwardRatio(0); gm.toggleFastForward(1); } catch (e) {}
+  try {
+    gm.setFastForwardRatio(0);
+    gm.toggleFastForward(1);
+  } catch (e) {}
   diagShow("<p>Aquecendo o emulador…</p>");
   await sleep(5000);   // the browser optimises the emulator's code during the first seconds
   const measure = async () => {
@@ -115,17 +161,35 @@ async function runDiagnostic() {
     diagShow(`<p class="diag-now">Medindo ${i + 1} de ${steps.length}: <b>${step.label}</b></p>${diagTable()}`);
     const undo = [];
     if (step.pad) {
-      padState.forceOrient = step.pad; $("#pad").classList.toggle("rich", !!step.rich); showPad(true);
-      undo.push(() => { showPad(false); $("#pad").classList.remove("rich"); padState.forceOrient = null; });
+      padState.forceOrient = step.pad;
+      $("#pad").classList.toggle("rich", !!step.rich);
+      showPad(true);
+      undo.push(() => {
+        showPad(false);
+        $("#pad").classList.remove("rich");
+        padState.forceOrient = null;
+      });
     }
     if (step.local) {
-      padState.forceLocal = true; showPad(false);
-      undo.push(() => { padState.forceLocal = false; showPad(false); });
+      padState.forceLocal = true;
+      showPad(false);
+      undo.push(() => {
+        padState.forceLocal = false;
+        showPad(false);
+      });
     }
-    if (step.touch) { await sleep(100); undo.push(diagTouches()); }
+    if (step.touch) {
+      await sleep(100);
+      undo.push(diagTouches());
+    }
     if (step.cast) { try { undo.push(await diagLoopback(emu)); } catch (e) {} }
     for (let k = 0; k < (step.recast || 0); k++) {
-      try { const stop = await diagLoopback(emu); await sleep(700); stop(); await sleep(200); } catch (e) {}
+      try {
+        const stop = await diagLoopback(emu);
+        await sleep(700);
+        stop();
+        await sleep(200);
+      } catch (e) {}
     }
     await sleep(1000);
     const fps = await measure();
@@ -138,7 +202,8 @@ async function runDiagnostic() {
     diag.results[0].fps = median(diag.bases);
   }
   try { gm.toggleFastForward(0); } catch (e) {}
-  diag.running = false; diag.done = true;
+  diag.running = false;
+  diag.done = true;
   const base = diag.results[0].fps;
   const worst = diag.results.filter((r) => r.rel != null).reduce((w, r) => (r.rel < w.rel ? r : w), { rel: Infinity });
   const verdict = Math.round((base / GBA_FPS) * 100) < 100
@@ -151,8 +216,18 @@ async function runDiagnostic() {
     <pre class="diag-pre" id="diagText"></pre>`);
   $("#diagText").textContent = diagReport();
   $("#diagCopy").addEventListener("click", async () => {
-    try { await navigator.clipboard.writeText(diagReport()); toast("Resultado copiado"); }
-    catch (e) { const r = document.createRange(); r.selectNodeContents($("#diagText")); const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r); toast("Selecionei o texto: copie com o menu do navegador"); }
+    try {
+      await navigator.clipboard.writeText(diagReport());
+      toast("Resultado copiado");
+    }
+    catch (e) {
+      const r = document.createRange();
+      r.selectNodeContents($("#diagText"));
+      const sel = getSelection();
+      sel.removeAllRanges();
+      sel.addRange(r);
+      toast("Selecionei o texto: copie com o menu do navegador");
+    }
   });
   $("#diagClose").addEventListener("click", () => location.reload());
 }
@@ -164,9 +239,14 @@ $("#diagBtn").addEventListener("click", runDiagnostic);
 function resetEmulatorSettings() {
   let n = 0;
   try {
-    for (const k of Object.keys(localStorage)) if (/^ejs-/.test(k) || /^cartucho\.perf\./.test(k)) { localStorage.removeItem(k); n++; }
+    for (const k of Object.keys(localStorage)) if (/^ejs-/.test(k) || /^cartucho\.perf\./.test(k)) {
+      localStorage.removeItem(k);
+      n++;
+    }
   } catch (e) {}
-  perf.mode = "auto"; perf.learned = guessDevice() === "TV"; renderPerf();
+  perf.mode = "auto";
+  perf.learned = guessDevice() === "TV";
+  renderPerf();
   return n;
 }
 $("#resetEmuBtn").addEventListener("click", async () => {

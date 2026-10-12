@@ -44,7 +44,13 @@ async function gh(path, opts = {}, auth = cloud.auth) {
   };
   if (opts.body) headers["Content-Type"] = "application/json";
   const r = await fetch(GH_API + path, { method: opts.method || "GET", body: opts.body, headers, cache: "no-store", keepalive: !!opts.keepalive });
-  if (!r.ok) { const e = new Error("github " + r.status); e.status = r.status; throw e; }
+  if (!r.ok) {
+    /** @type {any} */
+    /** @type {any} */
+    const e = new Error("github " + r.status);
+    e.status = r.status;
+    throw e;
+  }
   if (opts.raw) return r;
   return r.status === 204 ? null : r.json();
 }
@@ -56,7 +62,10 @@ async function readJson(p) {
   try {
     const r = await gh(contents(p));
     return { sha: r.sha, data: JSON.parse(utf8.dec(unb64((r.content || "").replace(/\s/g, "")))) };
-  } catch (e) { if (e.status === 404) return null; throw e; }
+  } catch (e) {
+    if (e.status === 404) return null;
+    throw e;
+  }
 }
 async function putFile(p, base64, sha, message, keepalive) {
   if (isGoogle()) return drive.put(p, unb64(base64), "application/json", keepalive);
@@ -69,13 +78,22 @@ async function putFile(p, base64, sha, message, keepalive) {
 }
 async function listDir(dir) {
   if (isGoogle()) return drive.list(dir);
-  try { const r = await gh(contents(dir)); return Array.isArray(r) ? r.map((f) => ({ name: f.name })) : []; }
-  catch (e) { if (e.status === 404) return []; throw e; }
+  try {
+    const r = await gh(contents(dir));
+    return Array.isArray(r) ? r.map((f) => ({ name: f.name })) : [];
+  }
+  catch (e) {
+    if (e.status === 404) return [];
+    throw e;
+  }
 }
 async function putBinary(path, bytes, message, type = "application/gzip") {
   if (isGoogle()) return drive.put(path, bytes, type);
   let sha;
-  try { const ex = await gh(contents(path)); sha = ex && ex.sha; } catch (e) { if (e.status !== 404) throw e; }
+  try {
+    const ex = await gh(contents(path));
+    sha = ex && ex.sha;
+  } catch (e) { if (e.status !== 404) throw e; }
   return putFile(path, b64(bytes), sha, message);
 }
 async function getBinary(path) {   // a Response whose body is the file
@@ -98,7 +116,11 @@ function loadGis() {
   if (window.google && google.accounts && google.accounts.oauth2) return Promise.resolve();
   if (!gauth.loading) gauth.loading = new Promise((res, rej) => {
     const sc = el("script", { src: "https://accounts.google.com/gsi/client", async: true });
-    sc.onload = res; sc.onerror = () => { gauth.loading = null; rej(new Error("gis")); };
+    sc.onload = res;
+    sc.onerror = () => {
+      gauth.loading = null;
+      rej(new Error("gis"));
+    };
     document.head.append(sc);
   });
   return gauth.loading;
@@ -109,9 +131,15 @@ function gisClient() {
     client_id: CONFIG.googleClientId, scope: DRIVE_SCOPE,
     callback: (resp) => {
       const ws = gauth.waiters.splice(0);
-      if (!resp || resp.error || !resp.access_token) { ws.forEach((w) => w.rej(new Error((resp && resp.error) || "denied"))); return; }
+      if (!resp || resp.error || !resp.access_token) {
+        ws.forEach((w) => w.rej(new Error((resp && resp.error) || "denied")));
+        return;
+      }
       const o2 = google.accounts.oauth2;
-      if (o2.hasGrantedAllScopes && !o2.hasGrantedAllScopes(resp, DRIVE_SCOPE)) { ws.forEach((w) => w.rej(new Error("scope"))); return; }
+      if (o2.hasGrantedAllScopes && !o2.hasGrantedAllScopes(resp, DRIVE_SCOPE)) {
+        ws.forEach((w) => w.rej(new Error("scope")));
+        return;
+      }
       cloud.auth = { ...(isGoogle() ? cloud.auth : {}), kind: "google", token: resp.access_token, exp: Date.now() + (Number(resp.expires_in) || 3600) * 1000 };
       saveAuth(cloud.auth);
       ws.forEach((w) => w.res(cloud.auth.token));
@@ -130,7 +158,14 @@ function askGoogleToken(first, consent) {
     c.requestAccessToken({ prompt: consent ? "consent" : first ? "select_account" : "", hint: (cloud.auth && cloud.auth.email) || undefined });
   });
 }
-function needToken() { const e = new Error("google-token"); e.status = 401; e.token = true; return e; }
+function needToken() {
+  /** @type {any} */
+  /** @type {any} */
+  const e = new Error("google-token");
+  e.status = 401;
+  e.token = true;
+  return e;
+}
 
 const drive = {
   files: new Map(),   // name -> { id, t }
@@ -139,8 +174,19 @@ const drive = {
     if (!tokenFresh()) throw needToken();
     const headers = Object.assign({ Authorization: "Bearer " + cloud.auth.token }, opts.headers || {});
     const r = await fetch(url, { method: opts.method || "GET", headers, body: opts.body, cache: "no-store", keepalive: !!opts.keepalive });
-    if (r.status === 401) { cloud.auth.exp = 0; saveAuth(cloud.auth); throw needToken(); }
-    if (!r.ok) { const e = new Error("drive " + r.status); e.status = r.status; try { e.detail = await r.text(); } catch (x) {} throw e; }
+    if (r.status === 401) {
+      cloud.auth.exp = 0;
+      saveAuth(cloud.auth);
+      throw needToken();
+    }
+    if (!r.ok) {
+      /** @type {any} */
+      /** @type {any} */
+      const e = new Error("drive " + r.status);
+      e.status = r.status;
+      try { e.detail = await r.text(); } catch (x) {}
+      throw e;
+    }
     return r;
   },
   remember(f) {
@@ -149,7 +195,8 @@ const drive = {
     if (!cur || t >= cur.t) this.files.set(f.name, { id: f.id, t });
   },
   async refresh() {
-    const fresh = new Map(); this.files = fresh;
+    const fresh = new Map();
+    this.files = fresh;
     let pageToken = "";
     do {
       const q = new URLSearchParams({ spaces: "appDataFolder", pageSize: "1000", fields: "nextPageToken,files(id,name,modifiedTime)" });
@@ -176,13 +223,26 @@ const drive = {
     return [...this.files.keys()].filter((n) => n.startsWith(dir + "/")).map((n) => ({ name: n.slice(dir.length + 1) }));
   },
   async readJson(name) {
-    const id = await this.idFor(name); if (!id) return null;
+    const id = await this.idFor(name);
+    if (!id) return null;
     try { return { sha: id, data: await (await this.api(`${DRIVE}/files/${id}?alt=media`)).json() }; }
-    catch (e) { if (e.status === 404) { this.files.delete(name); return null; } throw e; }
+    catch (e) {
+      if (e.status === 404) {
+        this.files.delete(name);
+        return null;
+      }
+      throw e;
+    }
   },
   async download(name) {
     const id = await this.idFor(name);
-    if (!id) { const e = new Error("missing"); e.status = 404; throw e; }
+    if (!id) {
+      /** @type {any} */
+      /** @type {any} */
+      const e = new Error("missing");
+      e.status = 404;
+      throw e;
+    }
     return this.api(`${DRIVE}/files/${id}?alt=media`);
   },
   async put(name, bytes, type, keepalive) {
@@ -192,7 +252,10 @@ const drive = {
         await this.api(`${DRIVE_UP}/files/${id}?uploadType=media&fields=id`, { method: "PATCH", headers: { "Content-Type": type }, body: bytes, keepalive: !!keepalive && bytes.length < 60000 });
         this.files.set(name, { id, t: Date.now() });
         return id;
-      } catch (e) { if (e.status !== 404) throw e; this.files.delete(name); }
+      } catch (e) {
+        if (e.status !== 404) throw e;
+        this.files.delete(name);
+      }
     }
     const meta = { name, parents: ["appDataFolder"] };
     let j;
@@ -225,9 +288,13 @@ async function updateIndex(mutate, message) {
     mutate(data);
     try {
       const sha = await putFile("cartucho.json", b64(utf8.enc(JSON.stringify(data, null, 1))), cur && cur.sha, message);
-      cloud.index = data; cloud.indexSha = sha;
+      cloud.index = data;
+      cloud.indexSha = sha;
       return data;
-    } catch (e) { if (e.status !== 409 && e.status !== 422) throw e; await sleep(400 + Math.random() * 600); }
+    } catch (e) {
+      if (e.status !== 409 && e.status !== 422) throw e;
+      await sleep(400 + Math.random() * 600);
+    }
   }
   throw new Error("index-conflict");
 }
@@ -241,22 +308,38 @@ async function refreshLibrary() {
   for (const [key, g] of Object.entries(cloud.index.games || {})) if (g && g.rom) cloud.roms.set(key, { game: key, ...g });
   const files = await listDir("saves");
   const docs = await Promise.all(files.filter((f) => f.name.endsWith(".json")).map(async (f) => {
-    try { const r = await readJson("saves/" + f.name); return r && r.data && r.data.game ? r : null; } catch (e) { return null; }
+    try {
+      const r = await readJson("saves/" + f.name);
+      return r && r.data && r.data.game ? r : null;
+    } catch (e) { return null; }
   }));
   cloud.docs.clear();
-  for (const d of docs) if (d) { cloud.docs.set(d.data.game, d.data); cloud.saveShas.set(d.data.game, d.sha); }
+  for (const d of docs) if (d) {
+    cloud.docs.set(d.data.game, d.data);
+    cloud.saveShas.set(d.data.game, d.sha);
+  }
 }
 
 async function connect() {
   cloud.auth = loadAuth();
-  if (!cloud.auth) { cloud.ready = true; showConnect(); return; }
-  if (isGoogle()) { await connectGoogle(); handlePairLink(); return; }
+  if (!cloud.auth) {
+    cloud.ready = true;
+    showConnect();
+    return;
+  }
+  if (isGoogle()) {
+    await connectGoogle();
+    handlePairLink();
+    return;
+  }
   try {
     await gh(`/repos/${cloud.auth.owner}/${cloud.auth.repo}`);
-    cloud.db = true; cloud.assets = true;
+    cloud.db = true;
+    cloud.assets = true;
     await refreshLibrary();
   } catch (e) {
-    cloud.db = false; cloud.assets = false;
+    cloud.db = false;
+    cloud.assets = false;
     if (e.status === 401 || e.status === 403 || e.status === 404) {
       $("#notice").dataset.sticky = "1";
       notice("O GitHub recusou a conexão: o token pode ter vencido ou perdido o acesso ao repositório. Conecte de novo em \"Conexão com o GitHub\", lá embaixo.", "err");
@@ -265,19 +348,27 @@ async function connect() {
       notice("Sem conexão com o GitHub agora. Dá para jogar o que já está neste aparelho; o save sobe quando a internet voltar.");
     }
   }
-  cloud.ready = true; render();
+  cloud.ready = true;
+  render();
   handlePairLink();
 }
 
 async function connectGoogle() {
   if (googleAvailable()) loadGis().then(gisClient).catch(() => {});
   if (!tokenFresh()) {
-    cloud.db = false; cloud.ready = true; googleNeedsTap(true); render();
+    cloud.db = false;
+    cloud.ready = true;
+    googleNeedsTap(true);
+    render();
     return;
   }
   try {
-    if (!cloud.auth.email) { cloud.auth.email = await drive.whoami(); saveAuth(cloud.auth); }
-    cloud.db = true; cloud.assets = true;
+    if (!cloud.auth.email) {
+      cloud.auth.email = await drive.whoami();
+      saveAuth(cloud.auth);
+    }
+    cloud.db = true;
+    cloud.assets = true;
     googleNeedsTap(false);
     await refreshLibrary();
   } catch (e) {
@@ -285,15 +376,21 @@ async function connectGoogle() {
     if (e.token) googleNeedsTap(true);
     else driveProblem(e);
   }
-  cloud.ready = true; render();
+  cloud.ready = true;
+  render();
 }
 function driveReason(e) {
-  try { const j = JSON.parse(e.detail || "{}").error || {}; return { reason: ((j.errors && j.errors[0] && j.errors[0].reason) || j.status || "") + " " + ((j.details || []).map((d) => d.reason).join(" ")), message: j.message || "" }; }
+  try {
+    const j = JSON.parse(e.detail || "{}").error || {};
+    return { reason: ((j.errors && j.errors[0] && j.errors[0].reason) || j.status || "") + " " + ((j.details || []).map((d) => d.reason).join(" ")), message: j.message || "" };
+  }
   catch (x) { return { reason: "", message: "" }; }
 }
 function driveProblem(e) {
   const n = $("#notice"), { reason, message } = driveReason(e);
-  n.dataset.sticky = "1"; n.className = "notice err"; n.hidden = false;
+  n.dataset.sticky = "1";
+  n.className = "notice err";
+  n.hidden = false;
   if (/accessNotConfigured|SERVICE_DISABLED/i.test(reason) || /has not been used|is disabled/i.test(message)) {
     const proj = (message.match(/project (\d+)/) || [])[1];
     n.replaceChildren(el("span", {}, "A API do Google Drive não está ativada no projeto do app no Google Cloud. "),
@@ -314,30 +411,42 @@ function googleNeedsTap(on) {
   cloud.needTap = on;
   const n = $("#notice");
   if (on) {
-    n.dataset.sticky = "1"; n.className = "notice"; n.hidden = false;
+    n.dataset.sticky = "1";
+    n.className = "notice";
+    n.hidden = false;
     n.replaceChildren(el("span", {}, "Sua sessão do Google expirou. Os saves ficam guardados aqui até você reconectar. "),
       el("button", { class: "btn small primary", type: "button", onclick: reconnectGoogle }, "Reconectar"));
-  } else if (n.dataset.sticky === "1" && n.querySelector("button")) { n.dataset.sticky = ""; n.hidden = true; }
+  } else if (n.dataset.sticky === "1" && n.querySelector("button")) {
+    n.dataset.sticky = "";
+    n.hidden = true;
+  }
 }
 function reconnectGoogle() {
   askGoogleToken(false).then(afterGoogleToken, () => toast("Não deu para reconectar. Tente de novo.", 3500));
 }
 async function afterGoogleToken() {
   googleNeedsTap(false);
-  if (player.key) { cloud.db = true; flush(); }
+  if (player.key) {
+    cloud.db = true;
+    flush();
+  }
   else await connectGoogle();
 }
 window.addEventListener("pointerdown", (e) => {
   if (!isGoogle() || tokenFresh() || !gauth.client || Date.now() - gauth.lastAsk < 20000) return;
   // only on the library or the game's top bar: never in the middle of playing
-  if (!$("#library").hidden || (e.target.closest && e.target.closest(".pbar, .pad-top"))) {
+  const target = /** @type {HTMLElement} */ (e.target);
+  if (!$("#library").hidden || (target.closest && target.closest(".pbar, .pad-top"))) {
     askGoogleToken(false).then(afterGoogleToken, () => {});
   }
 }, true);
 
 async function getSaveDoc(key) {
   const r = await readJson("saves/" + key + ".json");
-  if (r) { cloud.saveShas.set(key, r.sha); return r.data; }
+  if (r) {
+    cloud.saveShas.set(key, r.sha);
+    return r.data;
+  }
   cloud.saveShas.delete(key);
   return null;
 }
@@ -346,7 +455,10 @@ async function writeCloud(key, meta, sav, savSha, opts = {}) {
   const packed = await pack(sav);
   let cur = cloud.docs.get(key) || null, known = cloud.saveShas.has(key);
   for (let attempt = 0; attempt < 3; attempt++) {
-    if (!known) { cur = await getSaveDoc(key); known = true; }
+    if (!known) {
+      cur = await getSaveDoc(key);
+      known = true;
+    }
     const doc = {
       game: key, title: meta.title, system: meta.system, code: meta.code || "",
       enc: packed.enc, data: packed.data, size: sav.length, sha: savSha,
@@ -359,7 +471,9 @@ async function writeCloud(key, meta, sav, savSha, opts = {}) {
     try {
       const sha = await putFile("saves/" + key + ".json", b64(utf8.enc(JSON.stringify(doc))), cloud.saveShas.get(key),
         `Save: ${meta.title} (${device.name})`, opts.keepalive);
-      cloud.saveShas.set(key, sha); cloud.docs.set(key, doc); render();
+      cloud.saveShas.set(key, sha);
+      cloud.docs.set(key, doc);
+      render();
       return doc;
     } catch (e) {
       if (e.status !== 409 && e.status !== 422) throw e;
@@ -371,7 +485,11 @@ async function writeCloud(key, meta, sav, savSha, opts = {}) {
 }
 
 /* ---------------- ROM in the cloud ---------------- */
-function setBusy(key, msg) { if (msg) busy.set(key, msg); else busy.delete(key); render(); }
+function setBusy(key, msg) {
+  if (msg) busy.set(key, msg);
+  else busy.delete(key);
+  render();
+}
 
 async function uploadRom(rom) {
   if (!cloud.db || busy.has(rom.key)) return false;
@@ -399,17 +517,21 @@ async function uploadRom(rom) {
 }
 
 async function fetchRom(key) {
-  const meta = cloud.roms.get(key); if (!meta || !cloud.auth) return null;
+  const meta = cloud.roms.get(key);
+  if (!meta || !cloud.auth) return null;
   setBusy(key, "Baixando a ROM…");
   try {
     const r = await getBinary(meta.rom);
     const total = Number(r.headers.get("content-length")) || 0;
-    let got = 0; const chunks = [];
+    let got = 0;
+    const chunks = [];
     if (r.body && r.body.getReader) {
       const rd = r.body.getReader();
       for (;;) {
-        const { done, value } = await rd.read(); if (done) break;
-        chunks.push(value); got += value.length;
+        const { done, value } = await rd.read();
+        if (done) break;
+        chunks.push(value);
+        got += value.length;
         if (total) setBusy(key, `Baixando a ROM… ${Math.round((got / total) * 100)}%`);
       }
     } else chunks.push(new Uint8Array(await r.arrayBuffer()));

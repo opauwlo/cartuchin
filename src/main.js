@@ -30,7 +30,10 @@ import { showWelcome } from "./ui/screens.js";
 import { $ } from "./util.js";
 
 /* ---------------- boot ---------------- */
-$("#connectBtn").addEventListener("click", () => { showWelcome(); window.scrollTo(0, 0); });
+$("#connectBtn").addEventListener("click", () => {
+  showWelcome();
+  window.scrollTo(0, 0);
+});
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js", { updateViaCache: "none" }).then((r) => r.update()).catch(() => {});
 /* GitHub Pages lets browsers keep the page for 10 minutes. version.txt is asked for
    with the cache bypassed: when it names a newer version than this script, the page
@@ -50,7 +53,11 @@ if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js", { up
 handleScreenLink();
 { // #diagnostico runs the whole speed test; #diagnostico:touch,cast only those steps (used by the automated test to re-check)
   const m = location.hash.match(/^#diagnostico(?::([a-z,]+))?$/);
-  if (m) { diag.only = m[1] ? m[1].split(",") : null; try { history.replaceState(null, "", location.pathname); } catch (e) {} setTimeout(runDiagnostic, 300); }
+  if (m) {
+    diag.only = m[1] ? m[1].split(",") : null;
+    try { history.replaceState(null, "", location.pathname); } catch (e) {}
+    setTimeout(runDiagnostic, 300);
+  }
 }
 (async () => {
   await loadRoms();

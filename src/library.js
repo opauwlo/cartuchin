@@ -17,9 +17,13 @@ async function loadRoms() {
 
 function notice(msg, kind) {
   const n = $("#notice");
-  if (!msg) { n.hidden = true; return; }
+  if (!msg) {
+    n.hidden = true;
+    return;
+  }
   n.className = "notice" + (kind === "err" ? " err" : "");
-  n.textContent = msg; n.hidden = false;
+  n.textContent = msg;
+  n.hidden = false;
 }
 
 /* ---------------- game identity: name and cover ----------------
@@ -27,7 +31,7 @@ function notice(msg, kind) {
    to its official name and says whether a box art exists on thumbnails.libretro.com.
    ROM hacks are not in it: they get a clean name from the file, a box art when the
    libretro collection has one for that hack, or a generated cover. */
-const APP_V = (() => { try { return new URL(document.currentScript.src).searchParams.get("v") || ""; } catch (e) { return ""; } })();
+const APP_V = (() => { try { return new URL(/** @type {HTMLScriptElement} */ (document.currentScript).src).searchParams.get("v") || ""; } catch (e) { return ""; } })();
 const gameDbs = {};
 function gameDb(sys) { return gameDbs[sys] || (gameDbs[sys] = fetch(`db/${sys}.json?v=${APP_V}`).then((r) => (r.ok ? r.json() : null)).catch(() => null)); }
 const thumbName = (n) => n.replace(/[&*/:`<>?\\|"]/g, "_");
@@ -56,14 +60,19 @@ async function identifyRom(bytes, info, fileName) {
   const crc = crc32(bytes).toString(16).toUpperCase().padStart(8, "0");
   const systems = info.system === "gba" ? ["gba"] : ["gbc", "gb"];
   for (const sys of systems) {
-    const db = await gameDb(sys); if (!db) continue;
+    const db = await gameDb(sys);
+    if (!db) continue;
     const i = db.crc[crc];
-    if (i != null) { const name = db.names[i]; return { title: prettyName(name), cover: db.art[i] === "1" ? { dir: db.dir, name } : null }; }
+    if (i != null) {
+      const name = db.names[i];
+      return { title: prettyName(name), cover: db.art[i] === "1" ? { dir: db.dir, name } : null };
+    }
   }
   const title = cleanTitle(fileName || info.title);
   const want = normTitle(title);
   for (const sys of systems) {
-    const db = await gameDb(sys); if (!db) continue;
+    const db = await gameDb(sys);
+    if (!db) continue;
     const h = (db.hacks || []).find((n) => normTitle(n) === want);
     if (h) return { title: prettyName(h), cover: { dir: db.dir, name: h } };
   }
@@ -72,7 +81,8 @@ async function identifyRom(bytes, info, fileName) {
 /* older ROMs on this device get a name and a cover in the background, one at a time */
 let identifying = false;
 async function identifyOldRoms() {
-  if (identifying) return; identifying = true;
+  if (identifying) return;
+  identifying = true;
   try {
     for (const rom of [...roms.values()]) {
       if (rom.ident || !rom.blob) continue;
@@ -82,7 +92,12 @@ async function identifyOldRoms() {
       roms.set(rom.key, upd);
       const ix = cloud.index && cloud.index.games && cloud.index.games[rom.key];
       if (cloud.db && ix && (!ix.titleSet || ix.cover === undefined)) {
-        await updateIndex((d) => { const g = d.games[rom.key]; if (!g) return; if (!g.titleSet) g.title = upd.title; if (g.cover === undefined || g.cover === null) g.cover = upd.cover; }, `Biblioteca: ${upd.title}`).catch(() => {});
+        await updateIndex((d) => {
+          const g = d.games[rom.key];
+          if (!g) return;
+          if (!g.titleSet) g.title = upd.title;
+          if (g.cover === undefined || g.cover === null) g.cover = upd.cover;
+        }, `Biblioteca: ${upd.title}`).catch(() => {});
       }
       render();
     }
@@ -121,7 +136,11 @@ async function customCoverUrl(key, rev) {
     return url;
   } catch (e) { return null; } finally { coverLoading.delete(id); }
 }
-function hueOf(t) { let h = 0; for (const c of t) h = (h * 31 + c.charCodeAt(0)) >>> 0; return h % 360; }
+function hueOf(t) {
+  let h = 0;
+  for (const c of t) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+  return h % 360;
+}
 function genCover(g) {
   return el("div", { class: "gen-cover", style: `--h:${hueOf(g.title)}` }, el("span", { class: "gen-title" }, g.title), el("span", { class: "gen-sys" }, [g.sys, g.code].filter(Boolean).join(" ")));
 }
@@ -130,12 +149,18 @@ function coverEl(g) {
   if (g.cover === "custom") {
     const id = g.key + ":" + g.coverRev;
     if (coverUrls.has(id)) box.append(el("img", { src: coverUrls.get(id), alt: "", loading: "lazy" }));
-    else { box.append(genCover(g)); customCoverUrl(g.key, g.coverRev).then((u) => { if (u) render(); }); }
+    else {
+      box.append(genCover(g));
+      customCoverUrl(g.key, g.coverRev).then((u) => { if (u) render(); });
+    }
   } else if (g.cover && g.cover.name) {
     const [main, mirror] = artUrls(g.cover);
     const img = el("img", { src: main, alt: "", loading: "lazy", decoding: "async" });
     img.addEventListener("error", () => {
-      if (img.dataset.alt !== "1") { img.dataset.alt = "1"; img.src = mirror; }
+      if (img.dataset.alt !== "1") {
+        img.dataset.alt = "1";
+        img.src = mirror;
+      }
       else img.replaceWith(genCover(g));
     });
     box.append(img);
@@ -156,7 +181,8 @@ function tile(g) {
 }
 function addTile() {
   const plus = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-  plus.setAttribute("viewBox", "0 0 24 24"); plus.innerHTML = '<path d="M12 5v14M5 12h14"/>';
+  plus.setAttribute("viewBox", "0 0 24 24");
+  plus.innerHTML = '<path d="M12 5v14M5 12h14"/>';
   return el("button", { class: "tile add-tile", type: "button", onclick: pickRom }, el("div", { class: "cover" }, plus), el("span", { class: "tile-title" }, "Adicionar jogo"));
 }
 function continueHero(g) {

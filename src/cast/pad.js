@@ -6,7 +6,7 @@ import { guessDevice } from "../device.js";
 import { diag } from "../diag.js";
 import { notice } from "../library.js";
 import { flush, player, tokenFromTap, uploadState } from "../player/player.js";
-import { $, el, ls } from "../util.js";
+import { $, $$, el, ls } from "../util.js";
 
 /* ---------- the phone as a controller ----------
    A touchscreen can't tell a resting finger from a pressing one, so the rule is
@@ -20,7 +20,7 @@ const padState = { rot: 0, geo: null, shownMask: -1, shownOver: "", shownDir: ""
 function padGeometry() {
   if (padState.geo) return padState.geo;
   const geo = [];
-  for (const n of document.querySelectorAll("#pad [data-btn], #pad .pad-dpad")) {
+  for (const n of $$("#pad [data-btn], #pad .pad-dpad")) {
     const r = n.getBoundingClientRect();
     geo.push({ id: n.classList.contains("pad-dpad") ? "dpad" : n.dataset.btn, round: n.classList.contains("pad-face"),
       l: r.left, t: r.top, r: r.right, b: r.bottom, cx: (r.left + r.right) / 2, cy: (r.top + r.bottom) / 2, rad: Math.min(r.width, r.height) / 2 });
@@ -38,7 +38,10 @@ function controlAt(x, y) {
     if (g.round) d = Math.hypot(x - g.cx, y - g.cy) / g.rad;                       // 1 = on the edge
     else d = Math.max(Math.abs(x - g.cx) / w, Math.abs(y - g.cy) / h);
     const reach = g.id === "dpad" ? 1.35 : g.round ? 1.3 : 1.15;
-    if (d <= reach && d < bestD) { best = g.id; bestD = d; }
+    if (d <= reach && d < bestD) {
+      best = g.id;
+      bestD = d;
+    }
   }
   return best;
 }
@@ -47,21 +50,32 @@ function controlAt(x, y) {
    the overlap (up+right together) swallowed quick turns. Diagonals still exist, but
    only in a thin 20-degree band right on the diagonal. */
 function dpadMask(x, y, prev) {
-  const d = padGeometry().find((g) => g.id === "dpad"); if (!d) return 0;
+  const d = padGeometry().find((g) => g.id === "dpad");
+  if (!d) return 0;
   let dx = (x - d.cx) / ((d.r - d.l) / 2), dy = (y - d.cy) / ((d.b - d.t) / 2);
   if (padState.rot === 90) [dx, dy] = [dy, -dx];
   else if (padState.rot === -90) [dx, dy] = [-dy, dx];
   if (Math.hypot(dx, dy) < 0.15) return 0;
   const bit = (k) => 1 << PAD_BITS.indexOf(k);
   const a = Math.atan2(dy, dx) * 180 / Math.PI;   // 0 = right, 90 = down
+  /** @type {[number, string, string][]} */
   const diag = [[45, "RIGHT", "DOWN"], [135, "DOWN", "LEFT"], [-135, "LEFT", "UP"], [-45, "UP", "RIGHT"]];
-  for (const [c, k1, k2] of diag) { let off = Math.abs(a - c); if (off > 180) off = 360 - off; if (off <= 10) return bit(k1) | bit(k2); }
+  for (const [c, k1, k2] of diag) {
+    let off = Math.abs(a - c);
+    if (off > 180) off = 360 - off;
+    if (off <= 10) return bit(k1) | bit(k2);
+  }
+  /** @type {[number, string][]} */
   const cards = [[0, "RIGHT"], [90, "DOWN"], [180, "LEFT"], [-90, "UP"]];
   let best = null, bestOff = 999;
   for (const [c, k] of cards) {
-    let off = Math.abs(a - c); if (off > 180) off = 360 - off;
+    let off = Math.abs(a - c);
+    if (off > 180) off = 360 - off;
     if (prev & bit(k)) off -= 4;              // a little stickiness, so the border doesn't flicker
-    if (off < bestOff) { bestOff = off; best = k; }
+    if (off < bestOff) {
+      bestOff = off;
+      best = k;
+    }
   }
   return bit(best);
 }
@@ -75,7 +89,8 @@ function padUpdate() {
   const over = [];
   for (const p of padTouches.values()) {
     const pm = touchMask(p);
-    p.mask = pm; m |= pm;
+    p.mask = pm;
+    m |= pm;
     if (p.over && p.over !== "dpad" && !(pm & (1 << PAD_BITS.indexOf(p.over)))) over.push(p.over);
   }
   cast.localMask = m;
@@ -83,22 +98,32 @@ function padUpdate() {
   // touch the DOM only when something visible changed
   const overKey = over.sort().join(" ");
   if (m !== padState.shownMask || overKey !== padState.shownOver) {
-    padState.shownMask = m; padState.shownOver = overKey;
-    for (const b of document.querySelectorAll("#pad [data-btn]")) {
+    padState.shownMask = m;
+    padState.shownOver = overKey;
+    for (const b of $$("#pad [data-btn]")) {
       const bit = 1 << PAD_BITS.indexOf(b.dataset.btn);
       b.classList.toggle("on", !!(m & bit));
       b.classList.toggle("over", over.includes(b.dataset.btn));
     }
     const dirs = ["UP", "DOWN", "LEFT", "RIGHT"].filter((k) => m & (1 << PAD_BITS.indexOf(k))).join(" ");
-    if (dirs !== padState.shownDir) { padState.shownDir = dirs; $("#pad .pad-dpad").dataset.dir = dirs; }
+    if (dirs !== padState.shownDir) {
+      padState.shownDir = dirs;
+      $("#pad .pad-dpad").dataset.dir = dirs;
+    }
   }
 }
+/** @type {any} */
+let padMsgTimer = null;
 function padMsg(text) {
-  const n = $("#padMsg"); n.textContent = text; n.classList.add("show");
-  clearTimeout(padMsg.t); padMsg.t = setTimeout(() => n.classList.remove("show"), 2600);
+  const n = $("#padMsg");
+  n.textContent = text;
+  n.classList.add("show");
+  clearTimeout(padMsgTimer);
+  padMsgTimer = setTimeout(() => n.classList.remove("show"), 2600);
 }
 function layoutPad() {
-  const pad = $("#pad"); if (pad.hidden) return;
+  const pad = $("#pad");
+  if (pad.hidden) return;
   padState.geo = null;
   if (padState.mode === "local") {
     /* Nothing may cover the game. A layer on top of the picture, even a transparent
@@ -113,9 +138,20 @@ function layoutPad() {
     const availH = innerHeight - bar.bottom, availW = innerWidth;
     const upright = availH > availW;
     let gw, gh;
-    if (upright) { gw = availW; gh = Math.min(availW / 1.5, availH * 0.55); gw = gh * 1.5; }
-    else { gh = availH; gw = Math.min(availH * 1.5, availW * 0.62); gh = gw / 1.5; }
-    for (const n of [pad, pl]) { n.classList.toggle("port", upright); n.classList.toggle("land", !upright); }
+    if (upright) {
+      gw = availW;
+      gh = Math.min(availW / 1.5, availH * 0.55);
+      gw = gh * 1.5;
+    }
+    else {
+      gh = availH;
+      gw = Math.min(availH * 1.5, availW * 0.62);
+      gh = gw / 1.5;
+    }
+    for (const n of [pad, pl]) {
+      n.classList.toggle("port", upright);
+      n.classList.toggle("land", !upright);
+    }
     pl.style.setProperty("--game-w", Math.floor(gw) + "px");
     pl.style.setProperty("--game-h", Math.floor(gh) + "px");
     pad.style.setProperty("--pad-top", bar.bottom + "px");
@@ -128,8 +164,12 @@ function layoutPad() {
   padState.rot = pref === "v" || !portrait ? 0 : pref === "hr" ? -90 : 90;
   pad.classList.toggle("rot", padState.rot !== 0);
   pad.classList.toggle("wide", padState.rot !== 0 || !portrait);
-  if (padState.rot === 0) { pad.style.width = pad.style.height = pad.style.transform = ""; return; }
-  pad.style.width = innerHeight + "px"; pad.style.height = innerWidth + "px";
+  if (padState.rot === 0) {
+    pad.style.width = pad.style.height = pad.style.transform = "";
+    return;
+  }
+  pad.style.width = innerHeight + "px";
+  pad.style.height = innerWidth + "px";
   pad.style.transform = padState.rot === 90 ? `translateX(${innerWidth}px) rotate(90deg)` : `translateY(${innerHeight}px) rotate(-90deg)`;
   requestAnimationFrame(() => { padState.geo = null; });
 }
@@ -142,19 +182,26 @@ if (window.ResizeObserver) new ResizeObserver(() => { if (padState.mode === "loc
   const down = (e) => {
     if (isUi(e)) return;
     if (!padTouches.size) padState.geo = null;
-    e.preventDefault(); try { pad.setPointerCapture(e.pointerId); } catch (x) {}
+    e.preventDefault();
+    try { pad.setPointerCapture(e.pointerId); } catch (x) {}
     const c = controlAt(e.clientX, e.clientY);
     padTouches.set(e.pointerId, { x: e.clientX, y: e.clientY, anchor: c, over: c, mask: 0 });
     padUpdate();
   };
   const move = (e) => {
-    const p = padTouches.get(e.pointerId); if (!p) return;
-    e.preventDefault(); p.x = e.clientX; p.y = e.clientY;
+    const p = padTouches.get(e.pointerId);
+    if (!p) return;
+    e.preventDefault();
+    p.x = e.clientX;
+    p.y = e.clientY;
     const c = controlAt(p.x, p.y);
     p.over = c;
     padUpdate();
   };
-  const up = (e) => { if (!padTouches.delete(e.pointerId)) return; padUpdate(); };
+  const up = (e) => {
+    if (!padTouches.delete(e.pointerId)) return;
+    padUpdate();
+  };
   pad.addEventListener("pointerdown", down);
   pad.addEventListener("pointermove", move);
   pad.addEventListener("pointerup", up);
@@ -174,7 +221,8 @@ if (window.ResizeObserver) new ResizeObserver(() => { if (padState.mode === "loc
   $("#padRotate").addEventListener("click", () => {
     const order = ["h", "hr", "v"], cur = ls.get("cartucho.pad.orient") || "h";
     const next = order[(order.indexOf(cur) + 1) % order.length];
-    ls.set("cartucho.pad.orient", next); layoutPad();
+    ls.set("cartucho.pad.orient", next);
+    layoutPad();
     padMsg(next === "v" ? "Controle na vertical" : "Controle na horizontal");
   });
 })();
@@ -185,7 +233,9 @@ const touchDevice = () => matchMedia("(pointer: coarse)").matches && guessDevice
 padState.mode = "off";   // off | local | cast
 function showPad(on) {
   const pad = $("#pad");
-  padTouches.clear(); cast.localMask = 0; applyInput();
+  padTouches.clear();
+  cast.localMask = 0;
+  applyInput();
   if (on) padState.mode = "cast";
   else padState.mode = (player.key || padState.forceLocal) && touchDevice() ? "local" : "off";
   pad.hidden = padState.mode === "off";
@@ -198,12 +248,22 @@ function showPad(on) {
 }
 
 function askCastCode() {
-  if (cast.pc) { stopCast("Transmissão encerrada."); return; }
+  if (cast.pc) {
+    stopCast("Transmissão encerrada.");
+    return;
+  }
   const root = $("#dialogRoot");
   const input = el("input", { id: "castInput", type: "text", maxlength: "9", autocomplete: "off", autocapitalize: "characters", placeholder: "ABCD 1234", class: "code-input" });
   const close = () => root.replaceChildren();
   root.replaceChildren(el("div", { class: "scrim" }, el("form", { class: "dialog", onsubmit: (e) => {
-      e.preventDefault(); const c = normCode(input.value); if (c.length !== 8) { input.focus(); return; } close(); castTo(c);
+      e.preventDefault();
+      const c = normCode(input.value);
+      if (c.length !== 8) {
+        input.focus();
+        return;
+      }
+      close();
+      castTo(c);
     } },
     el("h2", {}, "Jogar na TV"),
     el("p", {}, "Na TV, abra o Cartuchin e escolha \"Usar como tela\". Digite aqui o código que aparecer. Os dois precisam estar no mesmo Wi-Fi."),
