@@ -119,6 +119,20 @@ button { cursor: pointer; }
 .conn span { margin-right: auto; }
 #ghMsg:empty { display: none; }
 .perf { display: grid; gap: 6px; }
+.top-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+#screen { position: fixed; inset: 0; background: #000; z-index: 15; display: grid; place-items: center; }
+#scrVideo { width: 100%; height: 100%; object-fit: contain; background: #000; image-rendering: pixelated; }
+.scr-wait { position: absolute; inset: 0; display: grid; place-items: center; padding: 24px; background: var(--bg); overflow: auto; }
+.scr-card { max-width: 760px; width: 100%; display: grid; gap: 16px; }
+.scr-card h2 { font-family: var(--font-display); font-size: clamp(1.6rem, 4vw, 2.6rem); margin: 0; }
+.scr-card p { margin: 0; color: var(--muted); font-size: 1.05rem; }
+.scr-row { display: flex; gap: 24px; align-items: center; flex-wrap: wrap; }
+.scr-row .qr { width: 220px; }
+.scr-code-box { display: grid; gap: 6px; min-width: 0; }
+.scr-label { font-family: var(--font-pixel); font-size: 0.8rem; letter-spacing: 0.1em; color: var(--muted); text-transform: uppercase; }
+#scrCode { font-size: clamp(2rem, 6vw, 3.4rem); text-align: left; }
+.scr-small { font-size: 0.9rem !important; }
+.scr-tap { position: absolute; bottom: 32px; left: 50%; transform: translateX(-50%); }
 .seg { display: flex; gap: 6px; flex-wrap: wrap; }
 #game canvas { image-rendering: pixelated; image-rendering: crisp-edges; }
 .speed { font-size: 0.72rem; padding: 2px 6px; border-radius: 6px; border: 1px solid var(--line); color: var(--muted); }
@@ -135,7 +149,10 @@ body { margin: 0; }
       <h1>Cartuchin</h1>
       <p>Emulador de GBA com o save na nuvem. Jogue no celular, continue no PC, no tablet ou na TV.</p>
     </div>
-    <button class="btn primary" id="addRomBtn" type="button">Adicionar ROM</button>
+    <div class="top-actions">
+      <button class="btn" id="screenBtn" type="button">Usar como tela</button>
+      <button class="btn primary" id="addRomBtn" type="button">Adicionar ROM</button>
+    </div>
   </header>
   <div id="notice" hidden></div>
 
@@ -214,9 +231,31 @@ body { margin: 0; }
     <span class="name" id="pName"></span>
     <span class="speed pix" id="pSpeed" hidden title="Velocidade da emulação"></span>
     <span class="chip" id="pChip"><span class="dot"></span><span id="pChipText">Carregando…</span></span>
+    <button class="btn small" id="castBtn" type="button">Jogar na TV</button>
     <button class="btn small" id="saveNowBtn" type="button">Enviar save</button>
   </div>
   <div id="game"></div>
+</section>
+
+<section id="screen" hidden>
+  <video id="scrVideo" autoplay playsinline hidden></video>
+  <div id="scrWait" class="scr-wait">
+    <div class="scr-card">
+      <h2>Esta tela está pronta</h2>
+      <p>No celular, abra o Cartuchin, entre num jogo e toque em <b>Jogar na TV</b>. Ou escaneie o QR com a câmera do celular.</p>
+      <div class="scr-row">
+        <div id="scrQr" class="qr"></div>
+        <div class="scr-code-box">
+          <span class="scr-label">Código</span>
+          <div id="scrCode" class="pair-code"></div>
+          <p id="scrStatus" role="status">Esperando o celular…</p>
+        </div>
+      </div>
+      <p class="scr-small">O jogo roda no celular, que também vira o controle. Um controle ligado nesta TV ou as setas do controle remoto também funcionam. Os dois aparelhos precisam estar no mesmo Wi-Fi.</p>
+      <button class="btn small ghost" id="scrExit" type="button">Sair do modo tela</button>
+    </div>
+  </div>
+  <button class="btn primary scr-tap" id="scrTap" type="button" hidden>Toque para ligar o som</button>
 </section>
 
 <div id="dialogRoot"></div>

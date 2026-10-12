@@ -960,6 +960,7 @@ async function play(key) {
     if (start.upload) flush();
     player.timer = setInterval(flush, 15000);
     startSpeedMeter();
+    if (cast.pending) { const c = cast.pending; cast.pending = null; setTimeout(() => castTo(c), 500); }
   });
 }
 
@@ -988,6 +989,306 @@ window.fetch = (input, init) => {
   return realFetch(input, init);
 };
 
+/* ---------------- console mode: the phone plays, the TV only shows ----------------
+   The TV opens "Usar como tela" and shows a code. The phone (running the game) sends
+   a WebRTC offer, encrypted with a key from that code, through ntfy.sh; the TV answers
+   the same way. After that, video, audio and the TV's controller travel straight
+   between the two devices over the home network (UDP), with no server in the middle. */
+const RTC_CONFIG = { iceServers: [{ urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] }] };
+const STREAM_W = 720, STREAM_H = 480; // 3x the GBA screen
+
+async function sealJson(key, obj) {
+  const raw = utf8.enc(JSON.stringify(obj));
+  const gz = new Uint8Array(await new Response(new Blob([raw]).stream().pipeThrough(new CompressionStream("gzip"))).arrayBuffer());
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, gz));
+  const out = new Uint8Array(12 + ct.length); out.set(iv); out.set(ct, 12);
+  return b64(out);
+}
+async function openJson(key, text) {
+  const raw = unb64(text.trim());
+  const gz = new Uint8Array(await crypto.subtle.decrypt({ name: "AES-GCM", iv: raw.subarray(0, 12) }, key, raw.subarray(12)));
+  const plain = new Uint8Array(await new Response(new Blob([gz]).stream().pipeThrough(new DecompressionStream("gzip"))).arrayBuffer());
+  return JSON.parse(utf8.dec(plain));
+}
+async function signal(code) {
+  const { topic, key } = await pairMaterial("TELA" + normCode(code));
+  return {
+    async send(kind, obj) {
+      const r = await fetch(`https://ntfy.sh/${topic}-${kind}`, { method: "POST", body: await sealJson(key, obj) });
+      if (!r.ok) throw new Error("ntfy " + r.status);
+    },
+    listen(kind, onMsg) {
+      const since = Math.floor(Date.now() / 1000) - 2;
+      const es = new EventSource(`https://ntfy.sh/${topic}-${kind}/sse?since=${since}`);
+      const seen = new Set();
+      es.onmessage = async (ev) => {
+        try {
+          const m = JSON.parse(ev.data); if (m.event !== "message" || !m.message) return;
+          const id = m.id || m.message.slice(0, 40); if (seen.has(id)) return; seen.add(id);
+          onMsg(await openJson(key, m.message));
+        } catch (e) {}
+      };
+      return () => es.close();
+    },
+  };
+}
+function iceDone(pc, ms = 2500) {
+  if (pc.iceGatheringState === "complete") return Promise.resolve();
+  return new Promise((res) => {
+    const t = setTimeout(res, ms);
+    pc.addEventListener("icegatheringstatechange", () => { if (pc.iceGatheringState === "complete") { clearTimeout(t); res(); } });
+  });
+}
+let wakeLock = null;
+async function keepAwake() { try { if (navigator.wakeLock && !wakeLock) { wakeLock = await navigator.wakeLock.request("screen"); wakeLock.addEventListener("release", () => { wakeLock = null; }); } } catch (e) {} }
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && (cast.pc || tvScreen.active)) keepAwake(); });
+
+/* Every WebGL canvas keeps its last frame so the stream copier can read it, and
+   every sound that would reach the speakers also goes through a tap the stream can carry. */
+(() => {
+  const gc = HTMLCanvasElement.prototype.getContext;
+  HTMLCanvasElement.prototype.getContext = function (type, attrs) {
+    if (/webgl/.test(type) && guessDevice() !== "TV") attrs = Object.assign({}, attrs, { preserveDrawingBuffer: true });
+    return gc.call(this, type, attrs);
+  };
+  if (!window.AudioNode) return;
+  const connect = AudioNode.prototype.connect;
+  const taps = new WeakMap();
+  window.__audioTaps = [];
+  AudioNode.prototype.connect = function (dest, ...rest) {
+    if (window.AudioDestinationNode && dest instanceof AudioDestinationNode) {
+      const ctx = dest.context;
+      let t = taps.get(ctx);
+      if (!t) {
+        const local = ctx.createGain(); connect.call(local, dest);
+        const out = ctx.createMediaStreamDestination ? ctx.createMediaStreamDestination() : null;
+        t = { ctx, local, out }; taps.set(ctx, t); window.__audioTaps.push(t);
+      }
+      if (t.out) connect.call(this, t.out);
+      return connect.call(this, t.local);
+    }
+    return connect.call(this, dest, ...rest);
+  };
+})();
+
+/* RetroPad indexes EmulatorJS understands, and how a standard controller maps onto them */
+const PAD = { B: 0, SELECT: 2, START: 3, UP: 4, DOWN: 5, LEFT: 6, RIGHT: 7, A: 8, L: 10, R: 11 };
+const PAD_BITS = ["B", "SELECT", "START", "UP", "DOWN", "LEFT", "RIGHT", "A", "L", "R"];
+function readPad() {
+  let pad = null;
+  try { pad = navigator.getGamepads ? [...navigator.getGamepads()].find(Boolean) : null; } catch (e) {}
+  const s = {};
+  if (pad) {
+    const b = (i) => !!(pad.buttons[i] && pad.buttons[i].pressed), ax = pad.axes || [];
+    s.A = b(1); s.B = b(0); s.L = b(4) || b(6); s.R = b(5) || b(7); s.SELECT = b(8); s.START = b(9);
+    s.UP = b(12) || ax[1] < -0.5; s.DOWN = b(13) || ax[1] > 0.5; s.LEFT = b(14) || ax[0] < -0.5; s.RIGHT = b(15) || ax[0] > 0.5;
+  }
+  for (const k of PAD_BITS) if (keysDown.has(k)) s[k] = true;
+  let mask = 0; PAD_BITS.forEach((k, i) => { if (s[k]) mask |= 1 << i; });
+  return mask;
+}
+/* TV remotes send arrow keys, Enter and Back: they work as a controller too */
+const keysDown = new Set();
+const KEYMAP = { ArrowUp: "UP", ArrowDown: "DOWN", ArrowLeft: "LEFT", ArrowRight: "RIGHT", Enter: "A", " ": "A", Backspace: "B", Escape: "B",
+  GoBack: "B", BrowserBack: "B", MediaPlayPause: "START", ColorF0Red: "L", ColorF1Green: "R", ColorF2Yellow: "SELECT", ColorF3Blue: "START" };
+const KEYCODES = { 10009: "B", 415: "START", 19: "START", 403: "L", 404: "R", 405: "SELECT", 406: "START" };
+
+/* ---------- phone side ---------- */
+const cast = window.__cast = { pc: null, dc: null, code: null, pending: null, copier: null, lastMask: 0 };
+
+function gameRect(c) {
+  const W = c.width, H = c.height, ar = 3 / 2;
+  if (W / H > ar) { const w = H * ar; return [(W - w) / 2, 0, w, H]; }
+  return [0, 0, W, W / ar];   // portrait: the emulator pins the picture to the top
+}
+function startCopier(src) {
+  const out = document.createElement("canvas"); out.width = STREAM_W; out.height = STREAM_H;
+  const g = out.getContext("2d", { alpha: false }); g.imageSmoothingEnabled = false;
+  let on = true;
+  const draw = () => {
+    if (!on) return;
+    try { const [x, y, w, h] = gameRect(src); g.drawImage(src, x, y, w, h, 0, 0, STREAM_W, STREAM_H); } catch (e) {}
+    requestAnimationFrame(draw);
+  };
+  requestAnimationFrame(draw);
+  return { canvas: out, stop: () => { on = false; } };
+}
+function applyRemote(mask) {
+  const gm = player.emu && player.emu.gameManager; if (!gm) return;
+  PAD_BITS.forEach((k, i) => {
+    const now = (mask >> i) & 1, was = (cast.lastMask >> i) & 1;
+    if (now !== was) try { gm.simulateInput(0, PAD[k], now); } catch (e) {}
+  });
+  cast.lastMask = mask;
+}
+function setCastUi(state) {
+  const b = $("#castBtn");
+  b.textContent = state === "on" ? "Na TV ●" : state === "wait" ? "Conectando…" : "Jogar na TV";
+  b.classList.toggle("primary", state === "on");
+}
+function stopCast(msg) {
+  if (cast.copier) cast.copier.stop();
+  try { cast.pc && cast.pc.close(); } catch (e) {}
+  cast.pc = null; cast.dc = null; cast.copier = null;
+  applyRemote(0);
+  for (const t of window.__audioTaps || []) t.local.gain.value = 1;
+  setCastUi("off");
+  if (msg) toast(msg, 3500);
+}
+async function castTo(code) {
+  const emu = player.emu;
+  if (!emu || !emu.started || !emu.canvas) { cast.pending = code; return; }
+  stopCast();
+  setCastUi("wait");
+  try {
+    const sig = await signal(code);
+    const pc = new RTCPeerConnection(RTC_CONFIG); cast.pc = pc;
+    cast.copier = startCopier(emu.canvas);
+    const stream = cast.copier.canvas.captureStream(60);
+    const vtrack = stream.getVideoTracks()[0];
+    try { vtrack.contentHint = "motion"; } catch (e) {}
+    const vt = pc.addTransceiver(vtrack, { direction: "sendonly", streams: [stream] });
+    try {
+      const caps = RTCRtpSender.getCapabilities && RTCRtpSender.getCapabilities("video");
+      if (caps && vt.setCodecPreferences) {
+        const pref = [...caps.codecs.filter((c) => /h264/i.test(c.mimeType)), ...caps.codecs.filter((c) => !/h264/i.test(c.mimeType))];
+        vt.setCodecPreferences(pref);
+      }
+    } catch (e) {}
+    const tap = (window.__audioTaps || [])[0];
+    if (tap && tap.out) { const at = tap.out.stream.getAudioTracks()[0]; if (at) pc.addTrack(at, stream); }
+    const dc = pc.createDataChannel("controle", { ordered: false, maxRetransmits: 0 }); cast.dc = dc;
+    dc.onmessage = (e) => { const m = Number(e.data); if (!Number.isNaN(m)) applyRemote(m); };
+    pc.onconnectionstatechange = () => {
+      if (pc !== cast.pc) return;
+      if (pc.connectionState === "connected") {
+        setCastUi("on"); keepAwake();
+        for (const t of window.__audioTaps || []) t.local.gain.value = 0;
+        toast("Jogando na TV. Mantenha esta tela aberta.", 4000);
+        const send = vt.sender, p = send.getParameters();
+        p.encodings = (p.encodings && p.encodings.length ? p.encodings : [{}]).map((e) => ({ ...e, maxBitrate: 6_000_000, maxFramerate: 60 }));
+        p.degradationPreference = "maintain-framerate";
+        send.setParameters(p).catch(() => {});
+      } else if (pc.connectionState === "failed") stopCast("Não deu para conectar com a TV. Os dois aparelhos estão na mesma rede Wi-Fi?");
+      else if (pc.connectionState === "disconnected" || pc.connectionState === "closed") { if (cast.pc === pc) stopCast("A TV desconectou."); }
+    };
+    await pc.setLocalDescription(await pc.createOffer());
+    await iceDone(pc);
+    const offerId = rid();
+    const stopListen = sig.listen("resposta", async (msg) => {
+      if (!msg.sdp || msg.re !== offerId || pc !== cast.pc || pc.signalingState !== "have-local-offer") return;
+      stopListen();
+      try { await pc.setRemoteDescription(msg.sdp); } catch (e) { stopCast("A TV respondeu de um jeito inesperado. Tente de novo."); }
+    });
+    await sig.send("oferta", { id: offerId, sdp: pc.localDescription.toJSON(), from: device.name });
+    setTimeout(() => { if (pc === cast.pc && pc.connectionState !== "connected") { stopListen(); stopCast("A TV não respondeu. Confira o código e se ela está na tela de espera."); } }, 25000);
+  } catch (e) { stopCast("Não deu para começar a transmissão."); }
+}
+function askCastCode() {
+  if (cast.pc) { stopCast("Transmissão encerrada."); return; }
+  const root = $("#dialogRoot");
+  const input = el("input", { id: "castInput", type: "text", maxlength: "9", autocomplete: "off", autocapitalize: "characters", placeholder: "ABCD 1234", class: "code-input" });
+  const close = () => root.replaceChildren();
+  root.replaceChildren(el("div", { class: "scrim" }, el("form", { class: "dialog", onsubmit: (e) => {
+      e.preventDefault(); const c = normCode(input.value); if (c.length !== 8) { input.focus(); return; } close(); castTo(c);
+    } },
+    el("h2", {}, "Jogar na TV"),
+    el("p", {}, "Na TV, abra o Cartuchin e escolha \"Usar como tela\". Digite aqui o código que aparecer. Os dois precisam estar no mesmo Wi-Fi."),
+    input,
+    el("button", { class: "btn primary", type: "submit" }, "Transmitir"),
+    el("button", { class: "btn", type: "button", onclick: close }, "Cancelar"))));
+  input.focus();
+}
+$("#castBtn").addEventListener("click", askCastCode);
+function handleScreenLink() {
+  const m = location.hash.match(/^#tela-([A-Za-z0-9]{8})$/);
+  if (!m) return;
+  try { history.replaceState(null, "", location.pathname); } catch (e) {}
+  cast.pending = normCode(m[1]);
+  $("#notice").dataset.sticky = "1";
+  notice("TV pronta! Escolha o jogo: ele roda aqui e aparece na TV. Este celular vira o controle.");
+}
+
+/* ---------- TV side ---------- */
+const tvScreen = { active: false, code: null, pc: null, dc: null, stopListen: null, padTimer: null, lastSent: -1 };
+async function startScreen() {
+  tvScreen.active = true;
+  $("#library").hidden = true; $("#screen").hidden = false;
+  keepAwake();
+  try { await document.documentElement.requestFullscreen(); } catch (e) {}
+  tvScreen.code = newPairCode();
+  const link = location.origin + location.pathname + "#tela-" + tvScreen.code;
+  $("#scrCode").textContent = tvScreen.code.slice(0, 4) + " " + tvScreen.code.slice(4);
+  try { const qr = window.qrcode(0, "M"); qr.addData(link); qr.make(); $("#scrQr").innerHTML = qr.createSvgTag({ cellSize: 4, margin: 2, scalable: true }); } catch (e) {}
+  showWaiting(true);
+  const sig = await signal(tvScreen.code);
+  const handled = new Set();
+  tvScreen.stopListen = sig.listen("oferta", async (msg) => {
+    if (!msg.sdp || !msg.id || handled.has(msg.id)) return;
+    handled.add(msg.id);
+    try { tvScreen.pc && tvScreen.pc.close(); } catch (e) {}
+    const pc = new RTCPeerConnection(RTC_CONFIG); tvScreen.pc = pc;
+    $("#scrStatus").textContent = `Conectando com ${msg.from || "o celular"}…`;
+    pc.ontrack = (e) => {
+      const v = $("#scrVideo");
+      if (v.srcObject !== e.streams[0]) v.srcObject = e.streams[0];
+      try { e.receiver.jitterBufferTarget = 0; } catch (x) {}
+      try { e.receiver.playoutDelayHint = 0; } catch (x) {}
+      v.play().catch(() => { $("#scrTap").hidden = false; });
+    };
+    pc.ondatachannel = (e) => { tvScreen.dc = e.channel; };
+    pc.onconnectionstatechange = () => {
+      if (pc !== tvScreen.pc) return;
+      if (pc.connectionState === "connected") showWaiting(false);
+      else if (["failed", "disconnected", "closed"].includes(pc.connectionState)) {
+        showWaiting(true); $("#scrStatus").textContent = "O celular desconectou. Esperando de novo…";
+      }
+    };
+    try {
+      await pc.setRemoteDescription(msg.sdp);
+      await pc.setLocalDescription(await pc.createAnswer());
+      await iceDone(pc);
+      await sig.send("resposta", { re: msg.id, sdp: pc.localDescription.toJSON() });
+    } catch (e) { $("#scrStatus").textContent = "Não deu para conectar. Tente de novo no celular."; }
+  });
+  clearInterval(tvScreen.padTimer);
+  let lastBeat = 0;
+  const tick = () => {
+    if (!tvScreen.active) return;
+    requestAnimationFrame(tick);
+    const dc = tvScreen.dc; if (!dc || dc.readyState !== "open") return;
+    const mask = readPad(), now = performance.now();
+    if (mask !== tvScreen.lastSent || now - lastBeat > 200) { try { dc.send(String(mask)); } catch (e) {} tvScreen.lastSent = mask; lastBeat = now; }
+  };
+  requestAnimationFrame(tick);
+}
+function showWaiting(on) {
+  $("#scrWait").hidden = !on; $("#scrVideo").hidden = on;
+  if (on) $("#scrStatus").textContent = "Esperando o celular…";
+}
+function stopScreen() {
+  tvScreen.active = false;
+  try { tvScreen.stopListen && tvScreen.stopListen(); } catch (e) {}
+  try { tvScreen.pc && tvScreen.pc.close(); } catch (e) {}
+  try { if (document.fullscreenElement) document.exitFullscreen(); } catch (e) {}
+  location.reload();
+}
+$("#screenBtn").addEventListener("click", startScreen);
+$("#scrExit").addEventListener("click", stopScreen);
+$("#scrTap").addEventListener("click", () => { $("#scrVideo").play().catch(() => {}); $("#scrTap").hidden = true; });
+window.addEventListener("keydown", (e) => {
+  if (!tvScreen.active) return;
+  const k = KEYMAP[e.key] || KEYCODES[e.keyCode];
+  if (!k) return;
+  if (k === "B" && !$("#scrWait").hidden) { stopScreen(); return; }
+  keysDown.add(k); e.preventDefault();
+});
+window.addEventListener("keyup", (e) => {
+  const k = KEYMAP[e.key] || KEYCODES[e.keyCode];
+  if (k) keysDown.delete(k);
+});
+
 /* ---------------- controller in the library (TV) ----------------
    D-pad or left stick moves between buttons, A presses, B cancels a dialog. */
 (() => {
@@ -1004,7 +1305,7 @@ window.fetch = (input, init) => {
   }
   function tick(t) {
     requestAnimationFrame(tick);
-    if (!$("#player").hidden || t - last < 60) return;
+    if (!$("#player").hidden || !$("#screen").hidden || t - last < 60) return;
     last = t;
     let pad = null;
     try { pad = navigator.getGamepads ? [...navigator.getGamepads()].find(Boolean) : null; } catch (e) {}
@@ -1025,6 +1326,7 @@ window.fetch = (input, init) => {
 /* ---------------- boot ---------------- */
 $("#connectBtn").addEventListener("click", () => { showConnect(); $("#connect").scrollIntoView({ behavior: "smooth" }); });
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
+handleScreenLink();
 (async () => {
   await loadRoms();
   await connect();
