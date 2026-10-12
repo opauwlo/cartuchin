@@ -1013,6 +1013,12 @@ const ICONS = {
   edit: '<path d="M4 20h4L19 9l-4-4L4 16z"/>',
   cloud: '<path d="M7 18a4 4 0 0 1-.6-8A6 6 0 0 1 18 9a4.5 4.5 0 0 1-.5 9z"/><path d="M12 11v6M9.5 13.5 12 11l2.5 2.5"/>',
   trash: '<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>',
+  pause: '<path d="M8 5v14M16 5v14"/>',
+  play: '<path d="M7 5l12 7-12 7z"/>',
+  sound: '<path d="M4 9h4l5-4v14l-5-4H4z"/><path d="M17 9a4 4 0 0 1 0 6"/>',
+  mute: '<path d="M4 9h4l5-4v14l-5-4H4z"/><path d="m17 10 4 4M21 10l-4 4"/>',
+  sliders: '<path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/>',
+  restart: '<path d="M4 4v6h6"/><path d="M5.5 15a8 8 0 1 0 1-8.5L4 10"/>',
 };
 function sheetAction(icon, label, fn, danger) {
   const b = el("button", { class: "gs-action" + (danger ? " danger" : ""), type: "button", onclick: fn });
@@ -1046,6 +1052,49 @@ function fillGameSheet(key) {
       el("div", { class: "gs-head" }, coverEl(g), el("div", {}, el("h2", { class: "gs-title", id: "gsTitle" }, g.title), el("p", { class: "gs-sub" }, [g.sys, g.code].filter(Boolean).join(" · ")))),
       el("div", { class: "gs-play" }, playBtn), status, acts));
 }
+
+/* ---------------- game menu (speed, pause, sound, emulator options) ----------------
+   The emulator's own menu bar is hidden while our controller is on screen, so the
+   things people reach for while playing live here instead. */
+const ffState = { ratio: 1, last: Number(ls.get("cartucho.ff") || 2) };
+function setSpeed(r) {
+  const gm = player.emu && player.emu.gameManager; if (!gm) return;
+  r = Number(r) || 1;
+  try {
+    if (r > 1) { gm.setFastForwardRatio(r); gm.toggleFastForward(1); ffState.last = r; ls.set("cartucho.ff", String(r)); }
+    else gm.toggleFastForward(0);
+  } catch (e) {}
+  ffState.ratio = r;
+  const ff = $("#padFF");
+  ff.textContent = (r > 1 ? r : ffState.last) + "x"; ff.setAttribute("aria-pressed", r > 1 ? "true" : "false");
+  for (const b of document.querySelectorAll("#ffModes button")) b.classList.toggle("primary", Number(b.dataset.ff) === r);
+}
+$("#padFF").addEventListener("click", () => setSpeed(ffState.ratio > 1 ? 1 : ffState.last));
+$("#ffModes").addEventListener("click", (e) => { const b = e.target.closest("button[data-ff]"); if (b) { setSpeed(b.dataset.ff); fillGameMenu(); } });
+function fillGameMenu() {
+  const emu = player.emu, acts = $("#gmActions");
+  acts.replaceChildren(
+    sheetAction(emu && emu.paused ? "play" : "pause", emu && emu.paused ? "Continuar o jogo" : "Pausar", () => { try { emu.paused ? emu.play() : emu.pause(); } catch (e) {} fillGameMenu(); }),
+    sheetAction(emu && emu.muted ? "sound" : "mute", emu && emu.muted ? "Ligar o som" : "Tirar o som", () => { try { emu.muted ? (emu.muted = false, emu.setVolume(emu.volume || 0.5)) : (emu.muted = true, emu.setVolume(0)); } catch (e) {} fillGameMenu(); }),
+    sheetAction("save", "Salvar progresso na nuvem", () => { closeSheets(); $("#saveNowBtn").click(); }),
+    sheetAction("download", "Carregar o save da nuvem", () => { closeSheets(); $("#pullBtn").click(); }),
+    sheetAction("sliders", $("#player").classList.contains("show-ejs") ? "Esconder opções do emulador" : "Opções avançadas do emulador", () => {
+      const on = !$("#player").classList.contains("show-ejs");
+      $("#player").classList.toggle("show-ejs", on); closeSheets();
+      if (on) toast("As opções do emulador aparecem na barra embaixo da imagem do jogo", 3500);
+    }),
+    sheetAction("restart", "Reiniciar o jogo", async () => {
+      closeSheets();
+      const ok = await dialog("Reiniciar o jogo?", "O jogo volta para a tela de título. O que não foi salvo dentro do jogo se perde.",
+        [{ label: "Reiniciar", value: true, cls: "primary" }, { label: "Cancelar", value: false }]);
+      if (ok) try { emu.gameManager.restart(); } catch (e) {}
+    }, true));
+  setSpeed(ffState.ratio);
+}
+function openGameMenu() { if (!player.emu) return; fillGameMenu(); openSheet("gameMenu"); }
+$("#padMenu").addEventListener("click", openGameMenu);
+$("#menuBtn").addEventListener("click", openGameMenu);
+$("#gmClose").addEventListener("click", closeSheets);
 
 /* ---------------- rename and cover ---------------- */
 async function setGameMeta(key, patch) {
@@ -1960,7 +2009,7 @@ window.addEventListener("resize", layoutPad);
 if (window.ResizeObserver) new ResizeObserver(() => { if (padState.mode === "local") layoutPad(); }).observe(document.documentElement);
 (() => {
   const pad = $("#pad");
-  const isUi = (e) => e.target.closest(".pad-top");
+  const isUi = (e) => e.target.closest(".pad-top, .pad-extra");
   const down = (e) => {
     if (isUi(e)) return;
     if (!padTouches.size) padState.geo = null;

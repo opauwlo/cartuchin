@@ -322,9 +322,21 @@ button { cursor: pointer; }
 .empty .btn { justify-self: start; }
 
 /* ---- sheets ---- */
-.sheet-scrim { position: fixed; inset: 0; background: rgba(8, 10, 18, 0.5); z-index: 40; }
+.sheet-scrim { position: fixed; inset: 0; background: rgba(8, 10, 18, 0.5); z-index: 200000; }
 .sheet { position: fixed; left: 0; right: 0; bottom: 0; z-index: 41; margin: 0 auto; max-width: 560px; max-height: 88vh; overflow: auto; background: var(--surface); color: var(--ink);
-  border-radius: 20px 20px 0 0; padding: 8px 18px calc(18px + env(safe-area-inset-bottom, 0px)); box-shadow: 0 -10px 30px rgba(0,0,0,0.25); }
+  border-radius: 20px 20px 0 0; padding: 8px 18px calc(18px + env(safe-area-inset-bottom, 0px)); box-shadow: 0 -10px 30px rgba(0,0,0,0.25); z-index: 200001; }
+.speed-seg .btn { min-width: 64px; }
+.pad-extra { grid-area: extra; display: flex; justify-content: center; align-items: center; gap: 10px; }
+.pad-extra .pad-pill { min-width: 74px; padding: 8px 12px; }
+#pad .pad-ff[aria-pressed="true"] { background: #7c8bff; color: #0d1020; }
+#pad { grid-template-areas: "top top top" "l extra r" "dpad . ab" "meta meta meta"; }
+#pad.wide { grid-template-areas: "top top top" "l extra r" "dpad meta ab"; }
+#pad.local.port { grid-template-rows: var(--game-h) auto auto 1fr auto; grid-template-areas: "game game" "l r" "extra extra" "dpad ab" "meta meta"; }
+#pad.local.land { grid-template-rows: auto 1fr auto auto; grid-template-areas: "l game r" "dpad game ab" "sel game start" "ext game ext2"; }
+#pad.local.land .pad-extra { display: contents; }
+#pad.local.land .pad-ff { grid-area: ext; justify-self: center; }
+#pad.local.land #padMenu { grid-area: ext2; justify-self: center; }
+#player.show-ejs .ejs_menu_bar { display: flex !important; }
 @media (prefers-reduced-motion: no-preference) { .sheet:not([hidden]) { animation: sheet-up 0.22s ease-out; } @keyframes sheet-up { from { transform: translateY(40px); opacity: 0.4; } } }
 .sheet-grip { width: 40px; height: 4px; border-radius: 2px; background: var(--line); margin: 4px auto 12px; }
 .sheet-body { display: grid; gap: 16px; }
@@ -425,38 +437,6 @@ body { margin: 0; }
     </section>
   </section>
 
-  <div class="sheet-scrim" id="sheetScrim" hidden></div>
-  <section class="sheet" id="gameSheet" role="dialog" aria-modal="true" aria-labelledby="gsTitle" hidden></section>
-  <section class="sheet" id="settingsSheet" role="dialog" aria-modal="true" aria-label="Conta e ajustes" hidden>
-    <div class="sheet-grip" aria-hidden="true"></div>
-    <div class="sheet-body">
-      <div class="set-group">
-        <h3>Conta</h3>
-        <p id="connText" class="set-line"></p>
-        <div class="seg">
-          <button class="btn small primary" id="connectBtn" type="button" hidden>Entrar com Google</button>
-          <button class="btn small" id="pairOtherBtn" type="button" hidden>Conectar outro aparelho</button>
-          <button class="btn small ghost" id="disconnectBtn" type="button" hidden>Sair da conta</button>
-        </div>
-      </div>
-      <div class="set-group perf">
-        <h3>Desempenho neste aparelho</h3>
-        <div class="seg" id="perfModes" role="group" aria-label="Desempenho">
-          <button class="btn small" type="button" data-mode="auto">Automático</button>
-          <button class="btn small" type="button" data-mode="light">Leve</button>
-        </div>
-        <p id="perfHint" class="set-line"></p>
-        <div class="seg"><button class="btn small" id="diagBtn" type="button">Testar velocidade</button><button class="btn small ghost" id="resetEmuBtn" type="button">Restaurar o emulador</button></div>
-      </div>
-      <div class="set-group">
-        <h3>Este aparelho</h3>
-        <label class="field" for="deviceName">Nome que aparece nos saves<input id="deviceName" type="text" maxlength="40" autocomplete="off"></label>
-      </div>
-      <p class="small-note">Feito com <a href="https://github.com/EmulatorJS/EmulatorJS" target="_blank" rel="noopener">EmulatorJS</a> e <a href="https://mgba.io" target="_blank" rel="noopener">mGBA</a>. <a href="privacidade.html">Privacidade</a> e <a href="termos.html">Termos</a>.</p>
-      <button class="btn" id="settingsClose" type="button">Fechar</button>
-    </div>
-  </section>
-
   <input id="romInput" type="file" accept=".gba,.gb,.gbc,.zip" hidden>
   <input id="savInput" type="file" accept=".sav,.srm,.sa1,.fla,.eep" hidden>
   <input id="coverInput" type="file" accept="image/*" hidden>
@@ -471,6 +451,7 @@ body { margin: 0; }
     <button class="btn small" id="castBtn" type="button"><span class="long">Jogar na </span>TV</button>
     <button class="btn small" id="pullBtn" type="button" title="Carregar o save mais recente da nuvem">Carregar</button>
     <button class="btn small" id="saveNowBtn" type="button" title="Enviar o save e o progresso para a nuvem">Salvar</button>
+    <button class="btn small" id="menuBtn" type="button" aria-label="Menu do jogo">Menu</button>
   </div>
   <div id="game"></div>
   <div id="pad" hidden>
@@ -485,6 +466,10 @@ body { margin: 0; }
       <span class="pad-msg" id="padMsg" role="status"></span>
     </div>
     <div class="pad-game" aria-hidden="true"></div>
+    <div class="pad-extra">
+      <button type="button" class="pad-pill pad-ff" id="padFF" aria-pressed="false">2x</button>
+      <button type="button" class="pad-pill" id="padMenu">Menu</button>
+    </div>
     <button type="button" data-btn="L" class="pad-sh l">L</button>
     <button type="button" data-btn="R" class="pad-sh r">R</button>
     <div class="pad-dpad" aria-label="Direcional">
@@ -532,11 +517,61 @@ body { margin: 0; }
   <button class="btn primary scr-tap" id="scrTap" type="button" hidden>Toque para ligar o som</button>
 </section>
 
+  <div class="sheet-scrim" id="sheetScrim" hidden></div>
+  <section class="sheet" id="gameSheet" role="dialog" aria-modal="true" aria-labelledby="gsTitle" hidden></section>
+  <section class="sheet" id="settingsSheet" role="dialog" aria-modal="true" aria-label="Conta e ajustes" hidden>
+    <div class="sheet-grip" aria-hidden="true"></div>
+    <div class="sheet-body">
+      <div class="set-group">
+        <h3>Conta</h3>
+        <p id="connText" class="set-line"></p>
+        <div class="seg">
+          <button class="btn small primary" id="connectBtn" type="button" hidden>Entrar com Google</button>
+          <button class="btn small" id="pairOtherBtn" type="button" hidden>Conectar outro aparelho</button>
+          <button class="btn small ghost" id="disconnectBtn" type="button" hidden>Sair da conta</button>
+        </div>
+      </div>
+      <div class="set-group perf">
+        <h3>Desempenho neste aparelho</h3>
+        <div class="seg" id="perfModes" role="group" aria-label="Desempenho">
+          <button class="btn small" type="button" data-mode="auto">Automático</button>
+          <button class="btn small" type="button" data-mode="light">Leve</button>
+        </div>
+        <p id="perfHint" class="set-line"></p>
+        <div class="seg"><button class="btn small" id="diagBtn" type="button">Testar velocidade</button><button class="btn small ghost" id="resetEmuBtn" type="button">Restaurar o emulador</button></div>
+      </div>
+      <div class="set-group">
+        <h3>Este aparelho</h3>
+        <label class="field" for="deviceName">Nome que aparece nos saves<input id="deviceName" type="text" maxlength="40" autocomplete="off"></label>
+      </div>
+      <p class="small-note">Feito com <a href="https://github.com/EmulatorJS/EmulatorJS" target="_blank" rel="noopener">EmulatorJS</a> e <a href="https://mgba.io" target="_blank" rel="noopener">mGBA</a>. <a href="privacidade.html">Privacidade</a> e <a href="termos.html">Termos</a>.</p>
+      <button class="btn" id="settingsClose" type="button">Fechar</button>
+    </div>
+  </section>
+
+  <section class="sheet" id="gameMenu" role="dialog" aria-modal="true" aria-label="Menu do jogo" hidden>
+    <div class="sheet-grip" aria-hidden="true"></div>
+    <div class="sheet-body">
+      <div class="set-group">
+        <h3>Velocidade</h3>
+        <div class="seg speed-seg" id="ffModes" role="group" aria-label="Velocidade do jogo">
+          <button class="btn small" type="button" data-ff="1">Normal</button>
+          <button class="btn small" type="button" data-ff="2">2x</button>
+          <button class="btn small" type="button" data-ff="3">3x</button>
+          <button class="btn small" type="button" data-ff="4">4x</button>
+        </div>
+        <p class="set-line">Depende do aparelho: num celular mais simples, 2x pode ser o máximo.</p>
+      </div>
+      <div class="gs-actions" id="gmActions"></div>
+      <button class="btn" id="gmClose" type="button">Voltar ao jogo</button>
+    </div>
+  </section>
+
 <div id="dialogRoot"></div>
 
-<script src="config.js?v=20261012134400"></script>
-<script src="vendor/lang-pt-BR.js?v=20261012134400"></script>
+<script src="config.js?v=20261012135211"></script>
+<script src="vendor/lang-pt-BR.js?v=20261012135211"></script>
 <script src="vendor/qrcode.js"></script>
-<script src="app.js?v=20261012134400"></script>
+<script src="app.js?v=20261012135211"></script>
 </body>
 </html>
