@@ -2061,8 +2061,8 @@ function showPad(on) {
   else padState.mode = (player.key || padState.forceLocal) && touchDevice() ? "local" : "off";
   pad.hidden = padState.mode === "off";
   pad.classList.toggle("local", padState.mode === "local");
-  // while the phone is a controller the game is under an opaque pad: hiding it saves the
-  // browser from compositing a picture nobody sees (the stream still captures every frame)
+  // the game stays rendered under the opaque pad while casting: a hidden canvas can stop
+  // producing frames for the stream on some phones
   $("#player").classList.toggle("casting", padState.mode === "cast");
   $("#player").classList.toggle("touch-pad", padState.mode === "local");
   layoutPad();
@@ -2138,7 +2138,18 @@ async function startScreen() {
     pc.ondatachannel = (e) => { tvScreen.dc = e.channel; };
     pc.onconnectionstatechange = () => {
       if (pc !== tvScreen.pc) return;
-      if (pc.connectionState === "connected") showWaiting(false);
+      if (pc.connectionState === "connected") {
+        showWaiting(false);
+        const v = $("#scrVideo"); let last = -1, still = 0;
+        clearInterval(tvScreen.watch);
+        tvScreen.watch = setInterval(() => {
+          if (pc !== tvScreen.pc || pc.connectionState !== "connected") { clearInterval(tvScreen.watch); return; }
+          const q = v.getVideoPlaybackQuality ? v.getVideoPlaybackQuality().totalVideoFrames : v.currentTime;
+          still = q === last ? still + 1 : 0; last = q;
+          if (still >= 3) { showWaiting(true); $("#scrStatus").textContent = "O celular está conectado, mas a imagem não chega. No celular, toque em Sair e conecte de novo."; }
+          else if (still === 0 && !$("#scrWait").hidden) showWaiting(false);
+        }, 1500);
+      }
       else if (["failed", "disconnected", "closed"].includes(pc.connectionState)) {
         showWaiting(true); $("#scrStatus").textContent = "O celular desconectou. Esperando de novo…";
       }
