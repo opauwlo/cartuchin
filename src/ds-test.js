@@ -12,6 +12,9 @@ const $ = (s) => document.querySelector(s);
 const DS_FPS = 59.83;
 const CORES = {
   melonds: { label: "melonDS", file: "melonds_libretro", save: "sav" },
+  // the 3D renderer on a second core; needs SharedArrayBuffer (see sw.js)
+  "melonds-thread": { label: "melonDS com threads", file: "melonds_thread_libretro", save: "sav", threads: true,
+    options: { melonds_threaded_renderer: "enabled" } },
   desmume2015: { label: "DeSmuME 2015", file: "desmume2015_libretro", save: "dsv" },
 };
 
@@ -60,7 +63,7 @@ function loadScript(src) {
 function patchEmulator(core) {
   const EJS = window.EmulatorJS;
   EJS.prototype.downloadGameCore = function () {
-    this.extensions = ["nds"]; this.coreName = coreKey; this.defaultCoreOpts = {};
+    this.extensions = ["nds"]; this.coreName = coreKey.replace("-thread", ""); this.defaultCoreOpts = {};
     this.saveFileExt = core.save; this.webgl2Enabled = false; this.enableMouseLock = false;
     this.downloadFile(`cores/${core.file}.wasm`, () => {}, false, { responseType: "arraybuffer", method: "GET" }).then((res) => {
       if (res === -1 || !res.data) { this.startGameError("Erro de rede"); return; }
@@ -74,6 +77,8 @@ function patchEmulator(core) {
       print: () => {}, printErr: () => {}, totalDependencies: 0, wasmBinary: bytes,
       locateFile: (f) => (f.endsWith(".wasm") ? URL.createObjectURL(new Blob([bytes], { type: "application/wasm" })) : f),
       getSavExt: () => "." + core.save,
+      // emulator threads start as Workers running this same script
+      mainScriptUrlOrBlob: new URL(`vendor/${core.file}.js`, location.href).href,
     }).then((m) => { this.Module = m; this.downloadFiles(); }).catch(() => this.startGameError("Falhou ao iniciar"));
   };
 }
@@ -89,7 +94,8 @@ async function start() {
   patchEmulator(core);
   emu = new window.EmulatorJS("#game", {
     gameUrl: romFile, dataPath: "ejs/", system: coreKey, gameName: "teste-ds",
-    startOnLoad: true, threads: false, forceLegacyCores: true, cacheLimit: 0, backgroundColor: "#000000",
+    defaultOptions: core.options || {},
+    startOnLoad: true, threads: !!core.threads, forceLegacyCores: true, cacheLimit: 0, backgroundColor: "#000000",
     buttonOpts: { netplay: false, saveSavFiles: false, loadSavFiles: false, cacheManager: false, exitEmulation: false },
   });
   emu.on("start", () => {
@@ -146,4 +152,16 @@ for (const b of document.querySelectorAll("[data-core]")) {
   });
 }
 $("#startBtn").addEventListener("click", start);
+
+/* the threads option needs this page to be "cross-origin isolated": the service worker
+   adds the headers, but only from the second load, so the page reloads itself once */
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").then(async () => {
+  if (window.crossOriginIsolated) return;
+  await navigator.serviceWorker.ready;
+  if (navigator.serviceWorker.controller && !sessionStorage.getItem("cartucho.coi")) { sessionStorage.setItem("cartucho.coi", "1"); location.reload(); }
+  else if (!navigator.serviceWorker.controller && !sessionStorage.getItem("cartucho.coi")) { sessionStorage.setItem("cartucho.coi", "1"); setTimeout(() => location.reload(), 300); }
+}).catch(() => {});
+const threadBtn = /** @type {HTMLButtonElement} */ ($('[data-core="melonds-thread"]'));
+threadBtn.disabled = !window.crossOriginIsolated;
+$("#isoNote").textContent = window.crossOriginIsolated ? "" : "melonDS com threads: preparando… (a página recarrega sozinha uma vez)";
 $("#measure").addEventListener("click", runMeasure);

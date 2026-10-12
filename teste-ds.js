@@ -50,6 +50,14 @@
   var DS_FPS = 59.83;
   var CORES = {
     melonds: { label: "melonDS", file: "melonds_libretro", save: "sav" },
+    // the 3D renderer on a second core; needs SharedArrayBuffer (see sw.js)
+    "melonds-thread": {
+      label: "melonDS com threads",
+      file: "melonds_thread_libretro",
+      save: "sav",
+      threads: true,
+      options: { melonds_threaded_renderer: "enabled" }
+    },
     desmume2015: { label: "DeSmuME 2015", file: "desmume2015_libretro", save: "dsv" }
   };
   var romFile = null;
@@ -97,7 +105,7 @@
     const EJS = window.EmulatorJS;
     EJS.prototype.downloadGameCore = function() {
       this.extensions = ["nds"];
-      this.coreName = coreKey;
+      this.coreName = coreKey.replace("-thread", "");
       this.defaultCoreOpts = {};
       this.saveFileExt = core.save;
       this.webgl2Enabled = false;
@@ -128,7 +136,9 @@
         totalDependencies: 0,
         wasmBinary: bytes,
         locateFile: (f) => f.endsWith(".wasm") ? URL.createObjectURL(new Blob([bytes], { type: "application/wasm" })) : f,
-        getSavExt: () => "." + core.save
+        getSavExt: () => "." + core.save,
+        // emulator threads start as Workers running this same script
+        mainScriptUrlOrBlob: new URL(`vendor/${core.file}.js`, location.href).href
       }).then((m) => {
         this.Module = m;
         this.downloadFiles();
@@ -149,8 +159,9 @@
       dataPath: "ejs/",
       system: coreKey,
       gameName: "teste-ds",
+      defaultOptions: core.options || {},
       startOnLoad: true,
-      threads: false,
+      threads: !!core.threads,
       forceLegacyCores: true,
       cacheLimit: 0,
       backgroundColor: "#000000",
@@ -221,5 +232,23 @@
     });
   }
   $("#startBtn").addEventListener("click", start);
+  if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").then(async () => {
+    if (window.crossOriginIsolated) return;
+    await navigator.serviceWorker.ready;
+    if (navigator.serviceWorker.controller && !sessionStorage.getItem("cartucho.coi")) {
+      sessionStorage.setItem("cartucho.coi", "1");
+      location.reload();
+    } else if (!navigator.serviceWorker.controller && !sessionStorage.getItem("cartucho.coi")) {
+      sessionStorage.setItem("cartucho.coi", "1");
+      setTimeout(() => location.reload(), 300);
+    }
+  }).catch(() => {
+  });
+  var threadBtn = (
+    /** @type {HTMLButtonElement} */
+    $('[data-core="melonds-thread"]')
+  );
+  threadBtn.disabled = !window.crossOriginIsolated;
+  $("#isoNote").textContent = window.crossOriginIsolated ? "" : "melonDS com threads: preparando… (a página recarrega sozinha uma vez)";
   $("#measure").addEventListener("click", runMeasure);
 })();
