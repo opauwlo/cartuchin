@@ -231,8 +231,9 @@ button { cursor: pointer; }
 .diag-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .diag-pre { margin: 0; font-size: 0.75rem; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--muted); max-height: 140px; overflow: auto; }
 #screen { position: fixed; inset: 0; background: #000; z-index: 15; display: grid; place-items: center; }
-#scrVideo { position: absolute; width: 2px; height: 2px; opacity: 0; pointer-events: none; }
-#scrCanvas { width: min(100vw, 150vh); height: auto; aspect-ratio: 3 / 2; image-rendering: pixelated; image-rendering: crisp-edges; background: #000; }
+/* the picture is the video itself, visible and full screen: the simplest path, the one every TV browser plays */
+#scrVideo { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000; image-rendering: pixelated; }
+.scr-info { position: absolute; left: 16px; bottom: 16px; max-width: calc(100% - 32px); padding: 10px 14px; border-radius: 10px; background: rgba(0, 0, 0, 0.78); color: #e9ebf2; font: 600 16px/1.4 system-ui, sans-serif; white-space: pre-line; z-index: 3; }
 .scr-wait { position: absolute; inset: 0; display: grid; place-items: center; padding: 24px; background: var(--bg); overflow: auto; }
 .scr-card { max-width: 760px; width: 100%; display: grid; gap: 16px; }
 .scr-card h2 { font-family: var(--font-display); font-size: clamp(1.6rem, 4vw, 2.6rem); margin: 0; }
@@ -495,8 +496,7 @@ body { margin: 0; }
 </section>
 
 <section id="screen" hidden>
-  <video id="scrVideo" autoplay playsinline></video>
-  <canvas id="scrCanvas" width="240" height="160" hidden></canvas>
+  <video id="scrVideo" autoplay playsinline muted></video>
   <div id="scrWait" class="scr-wait">
     <div class="scr-card">
       <h2>Esta tela está pronta</h2>
@@ -514,6 +514,7 @@ body { margin: 0; }
     </div>
   </div>
   <button class="btn primary scr-tap" id="scrTap" type="button" hidden>Toque para ligar o som</button>
+  <div id="scrInfo" class="scr-info" role="status" hidden></div>
 </section>
 
   <div class="sheet-scrim" id="sheetScrim" hidden></div>
@@ -568,9 +569,9 @@ body { margin: 0; }
 
 <div id="dialogRoot"></div>
 
-<script src="config.js?v=20261012135740"></script>
-<script src="vendor/lang-pt-BR.js?v=20261012135740"></script>
+<script src="config.js?v=20261012141132"></script>
+<script src="vendor/lang-pt-BR.js?v=20261012141132"></script>
 <script src="vendor/qrcode.js"></script>
-<script src="app.js?v=20261012135740"></script>
+<script src="app.js?v=20261012141132"></script>
 </body>
 </html>

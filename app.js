@@ -1815,6 +1815,7 @@ function setCastUi(state) {
   b.classList.toggle("primary", state === "on");
 }
 function stopCast(msg) {
+  clearInterval(cast.watch);
   try { cast.pc && cast.pc.close(); } catch (e) {}
   // closing the connection does not stop the canvas capture: left running, every old
   // capture keeps copying each frame of the game, and they pile up on every reconnect
@@ -1864,6 +1865,7 @@ async function castTo(code) {
         p.encodings = (p.encodings && p.encodings.length ? p.encodings : [{}]).map((e) => ({ ...e, maxBitrate: 2_500_000, maxFramerate: 60, scaleResolutionDownBy: 1, priority: "high", networkPriority: "high" }));
         p.degradationPreference = "maintain-framerate";
         send.setParameters(p).catch(() => {});
+        watchCast(pc, send, dc, emu);
       } else if (pc.connectionState === "failed") stopCast("Não deu para conectar com a TV. Os dois aparelhos estão na mesma rede Wi-Fi?");
       else if (pc.connectionState === "disconnected" || pc.connectionState === "closed") { if (cast.pc === pc) stopCast("A TV desconectou."); }
     };
@@ -1878,6 +1880,35 @@ async function castTo(code) {
     await sig.send("oferta", { id: offerId, sdp: pc.localDescription.toJSON(), from: device.name });
     setTimeout(() => { if (pc === cast.pc && pc.connectionState !== "connected") { stopListen(); stopCast("A TV não respondeu. Confira o código e se ela está na tela de espera."); } }, 25000);
   } catch (e) { stopCast("Não deu para começar a transmissão."); }
+}
+/* Every 2 s: tells the TV what this phone is sending (the TV shows it next to its own
+   numbers), and if no new frame has left for a while although the game is running,
+   restarts the canvas capture once, then warns. */
+function watchCast(pc, sender, dc, emu) {
+  let last = -1, still = 0, recaptured = false;
+  clearInterval(cast.watch);
+  cast.watch = setInterval(async () => {
+    if (pc !== cast.pc || pc.connectionState !== "connected") { clearInterval(cast.watch); return; }
+    let tx = null;
+    try { (await pc.getStats()).forEach((x) => { if (x.type === "outbound-rtp" && (x.kind || x.mediaType) === "video") tx = x; }); } catch (e) {}
+    const tr = sender.track;
+    const st = { sent: tx ? tx.framesSent || 0 : 0, w: (tx && tx.frameWidth) || 0, h: (tx && tx.frameHeight) || 0, lim: (tx && tx.qualityLimitationReason) || "",
+      cw: emu.canvas ? emu.canvas.width : 0, ch: emu.canvas ? emu.canvas.height : 0, track: tr ? tr.readyState + (tr.muted ? " (sem quadros)" : "") : "sem trilha" };
+    if (dc.readyState === "open") { try { dc.send(JSON.stringify({ st })); } catch (e) {} }
+    if (emu.paused) { still = 0; last = st.sent; return; }
+    still = st.sent === last ? still + 1 : 0; last = st.sent;
+    if (still === 2 && !recaptured) {
+      recaptured = true;
+      try {
+        const ns = emu.canvas.captureStream(60), nt = ns.getVideoTracks()[0];
+        try { nt.contentHint = "motion"; } catch (e) {}
+        await sender.replaceTrack(nt);
+        if (cast.stream) for (const t of cast.stream.getVideoTracks()) t.stop();
+        cast.stream = ns;
+      } catch (e) {}
+    }
+    if (still === 4) toast(`A imagem não está saindo deste celular (${st.sent} quadros enviados). Toque em "TV" para sair e conecte de novo.`, 6000);
+  }, 2000);
 }
 /* ---------- the phone as a controller ----------
    A touchscreen can't tell a resting finger from a pressing one, so the rule is
@@ -2117,13 +2148,13 @@ async function startScreen() {
     $("#scrStatus").textContent = `Conectando com ${msg.from || "o celular"}…`;
     pc.ontrack = (e) => {
       const v = $("#scrVideo"), st = e.streams[0];
-      // the picture is drawn from a muted video (muted video always autoplays);
+      // the picture is a muted video (muted video always autoplays);
       // the sound goes through Web Audio, which was unlocked by the "Usar como tela" click
       v.muted = true;
       if (v.srcObject !== st) v.srcObject = st;
       try { e.receiver.jitterBufferTarget = 30; } catch (x) {}
       try { e.receiver.playoutDelayHint = 0; } catch (x) {}
-      v.play().catch(() => {});
+      playScreenVideo();
       if (e.track.kind === "audio") {
         const ac = tvScreen.ac;
         if (ac) {
@@ -2135,23 +2166,16 @@ async function startScreen() {
         } else { v.muted = false; v.play().catch(() => { $("#scrTap").hidden = false; }); }
       }
     };
-    pc.ondatachannel = (e) => { tvScreen.dc = e.channel; };
+    pc.ondatachannel = (e) => {
+      tvScreen.dc = e.channel; tvScreen.phoneStats = null;
+      // the phone reports what it is sending, so the TV can show both ends in one place
+      e.channel.onmessage = (m) => { try { const d = JSON.parse(m.data); if (d && d.st) tvScreen.phoneStats = d.st; } catch (x) {} };
+    };
     pc.onconnectionstatechange = () => {
       if (pc !== tvScreen.pc) return;
-      if (pc.connectionState === "connected") {
-        showWaiting(false);
-        const v = $("#scrVideo"); let last = -1, still = 0;
-        clearInterval(tvScreen.watch);
-        tvScreen.watch = setInterval(() => {
-          if (pc !== tvScreen.pc || pc.connectionState !== "connected") { clearInterval(tvScreen.watch); return; }
-          const q = v.getVideoPlaybackQuality ? v.getVideoPlaybackQuality().totalVideoFrames : v.currentTime;
-          still = q === last ? still + 1 : 0; last = q;
-          if (still >= 3) { showWaiting(true); $("#scrStatus").textContent = "O celular está conectado, mas a imagem não chega. No celular, toque em Sair e conecte de novo."; }
-          else if (still === 0 && !$("#scrWait").hidden) showWaiting(false);
-        }, 1500);
-      }
+      if (pc.connectionState === "connected") { showWaiting(false); playScreenVideo(); watchScreen(pc); }
       else if (["failed", "disconnected", "closed"].includes(pc.connectionState)) {
-        showWaiting(true); $("#scrStatus").textContent = "O celular desconectou. Esperando de novo…";
+        showWaiting(true); $("#scrInfo").hidden = true; $("#scrStatus").textContent = "O celular desconectou. Esperando de novo…";
       }
     };
     try {
@@ -2168,6 +2192,7 @@ async function startScreen() {
     requestAnimationFrame(tick);
     const dc = tvScreen.dc; if (!dc || dc.readyState !== "open") return;
     const mask = readPad(), now = performance.now();
+    if ((mask & 128) && $("#scrVideo").paused && $("#scrVideo").srcObject) { $("#scrVideo").play().catch(() => {}); $("#scrTap").hidden = true; }
     // the channel never resends lost packets (that would add delay), so every change is
     // sent three times in quick succession and the current state is repeated 10x a second
     const send = () => { try { dc.send(String(tvScreen.lastSent)); } catch (e) {} };
@@ -2176,25 +2201,51 @@ async function startScreen() {
   };
   requestAnimationFrame(tick);
 }
-/* The stream arrives at the GBA's own 240x160. Drawing each frame into a canvas of
-   that size, then letting CSS enlarge it with pixelated scaling, keeps the pixels
-   sharp on any TV (videos are always smoothed when scaled). */
-let scrDrawing = false;
-function startScreenDraw() {
-  if (scrDrawing) return; scrDrawing = true;
-  const v = $("#scrVideo"), c = $("#scrCanvas"), g = c.getContext("2d", { alpha: false });
-  const draw = () => {
-    if (!tvScreen.active) { scrDrawing = false; return; }
-    if (v.videoWidth && (c.width !== v.videoWidth || c.height !== v.videoHeight)) { c.width = v.videoWidth; c.height = v.videoHeight; g.imageSmoothingEnabled = false; }
-    try { if (v.readyState >= 2) g.drawImage(v, 0, 0, c.width, c.height); } catch (e) {}
-    if (v.requestVideoFrameCallback) v.requestVideoFrameCallback(draw); else requestAnimationFrame(draw);
+function playScreenVideo() {
+  const v = $("#scrVideo");
+  const p = v.play();
+  if (p && p.catch) p.catch(() => { $("#scrTap").textContent = "Toque para mostrar o jogo"; $("#scrTap").hidden = false; });
+}
+/* Checks every 2 s that the picture is really arriving and playing. It never hides the
+   picture: when something is off it only shows, in a corner, what each end is doing
+   (frames the phone sent, frames this TV received and decoded, video state), so a
+   photo of the TV says where it stops. It also shows for the first seconds. */
+function watchScreen(pc) {
+  const v = $("#scrVideo"), info = $("#scrInfo"), t0 = performance.now();
+  let lastDec = -1, still = 0;
+  clearInterval(tvScreen.watch);
+  const check = async () => {
+    if (pc !== tvScreen.pc || pc.connectionState !== "connected" || !tvScreen.active) { clearInterval(tvScreen.watch); info.hidden = true; return; }
+    let rx = null, codec = "";
+    try {
+      const stats = await pc.getStats(), all = new Map();
+      stats.forEach((x) => { all.set(x.id, x); if (x.type === "inbound-rtp" && (x.kind || x.mediaType) === "video") rx = x; });
+      if (rx && rx.codecId && all.get(rx.codecId)) codec = (all.get(rx.codecId).mimeType || "").replace("video/", "");
+    } catch (e) {}
+    const dec = rx ? rx.framesDecoded || 0 : 0;
+    still = dec === lastDec ? still + 1 : 0; lastDec = dec;
+    const shown = v.getVideoPlaybackQuality ? v.getVideoPlaybackQuality().totalVideoFrames : "?";
+    if (v.paused && dec > 0) playScreenVideo();
+    let problem = "";
+    if (still >= 2) problem = dec === 0 ? "A imagem não está chegando do celular." : "A imagem parou de chegar do celular.";
+    else if (v.paused) problem = "A imagem chega, mas o vídeo está parado. Toque no botão ou aperte A.";
+    else if (v.readyState < 2) problem = "A imagem chega, mas a TV ainda não começou a mostrar.";
+    const ph = tvScreen.phoneStats;
+    const lines = [
+      problem || "Conectado. Se a imagem não aparecer, mande uma foto desta tela.",
+      ph ? `Celular: enviou ${ph.sent} quadros${ph.w ? ` (${ph.w}x${ph.h})` : ""}${ph.lim && ph.lim !== "none" ? `, limitado por ${ph.lim}` : ""}${ph.cw ? ` · jogo ${ph.cw}x${ph.ch}` : ""}${ph.track && ph.track !== "live" ? ` · captura ${ph.track}` : ""}`
+         : "Celular: sem relatório ainda",
+      `TV: recebeu ${rx ? rx.framesReceived || 0 : 0}, decodificou ${dec}${codec ? ` · ${codec}` : ""}${rx && rx.frameWidth ? ` · ${rx.frameWidth}x${rx.frameHeight}` : ""}`,
+      `Vídeo: ${v.paused ? "parado" : "tocando"} · ${v.videoWidth}x${v.videoHeight} · estado ${v.readyState} · exibidos ${shown}`,
+    ];
+    info.textContent = lines.join("\n");
+    info.hidden = !(problem || performance.now() - t0 < 12000);
   };
-  g.imageSmoothingEnabled = false;
-  if (v.requestVideoFrameCallback) v.requestVideoFrameCallback(draw); else requestAnimationFrame(draw);
+  tvScreen.watch = setInterval(check, 2000);
+  setTimeout(check, 500);
 }
 function showWaiting(on) {
-  $("#scrWait").hidden = !on; $("#scrCanvas").hidden = on;
-  if (!on) startScreenDraw();
+  $("#scrWait").hidden = !on;
   if (on) $("#scrStatus").textContent = "Esperando o celular…";
 }
 function stopScreen() {
@@ -2207,7 +2258,8 @@ function stopScreen() {
 $("#screenBtn").addEventListener("click", startScreen);
 $("#scrExit").addEventListener("click", stopScreen);
 $("#scrTap").addEventListener("click", () => {
-  if (tvScreen.ac) tvScreen.ac.resume().catch(() => {}); else { $("#scrVideo").muted = false; $("#scrVideo").play().catch(() => {}); }
+  if (tvScreen.ac) tvScreen.ac.resume().catch(() => {}); else $("#scrVideo").muted = false;
+  $("#scrVideo").play().catch(() => {});
   $("#scrTap").hidden = true;
 });
 window.addEventListener("keydown", () => { if (tvScreen.ac && tvScreen.ac.state !== "running") tvScreen.ac.resume().then(() => { $("#scrTap").hidden = true; }, () => {}); }, true);
