@@ -120,8 +120,35 @@ button { cursor: pointer; }
 #ghMsg:empty { display: none; }
 .perf { display: grid; gap: 6px; }
 .top-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+/* ---------- phone controller (console mode) ---------- */
+#pad { position: absolute; inset: 0; z-index: 100000; background: #14161f; color: #e9ebf2; display: grid;
+  grid-template-rows: auto auto 1fr auto; gap: 8px; padding: 10px 16px; padding-top: calc(10px + env(safe-area-inset-top, 0px)); padding-bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+  touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
+#pad button { -webkit-tap-highlight-color: transparent; touch-action: none; font-family: var(--font-pixel); color: inherit; }
+.pad-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.pad-live { display: inline-flex; align-items: center; gap: 6px; font-size: 0.85rem; color: #9aa1b4; }
+#padStop { background: transparent; color: #e9ebf2; border-color: #3a3f55; }
+.pad-shoulders { display: flex; justify-content: space-between; gap: 16px; }
+.pad-sh { width: min(38vw, 180px); height: 46px; border-radius: 10px 10px 22px 22px; border: 0; background: #2a2f43; font-size: 1rem; }
+.pad-main { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 0; }
+.pad-dpad { position: relative; width: min(46vw, 46vh, 230px); aspect-ratio: 1; flex: none; }
+.pad-dpad .arm, .pad-dpad .hub { position: absolute; background: #2a2f43; }
+.pad-dpad .arm.up, .pad-dpad .arm.down { left: 33.3%; width: 33.4%; height: 36%; }
+.pad-dpad .arm.left, .pad-dpad .arm.right { top: 33.3%; height: 33.4%; width: 36%; }
+.pad-dpad .arm.up { top: 0; border-radius: 10px 10px 0 0; } .pad-dpad .arm.down { bottom: 0; border-radius: 0 0 10px 10px; }
+.pad-dpad .arm.left { left: 0; border-radius: 10px 0 0 10px; } .pad-dpad .arm.right { right: 0; border-radius: 0 10px 10px 0; }
+.pad-dpad .hub { left: 33%; top: 33%; width: 34%; height: 34%; }
+.pad-dpad[data-dir~="UP"] .arm.up, .pad-dpad[data-dir~="DOWN"] .arm.down, .pad-dpad[data-dir~="LEFT"] .arm.left, .pad-dpad[data-dir~="RIGHT"] .arm.right { background: #7c8bff; }
+.pad-ab { position: relative; width: min(42vw, 44vh, 210px); aspect-ratio: 1; flex: none; }
+.pad-face { position: absolute; width: 46%; aspect-ratio: 1; border-radius: 50%; border: 0; background: #3b4bd8; font-size: 1.3rem; }
+.pad-face.a { right: 0; top: 8%; } .pad-face.b { left: 0; bottom: 8%; }
+.pad-meta { display: flex; justify-content: center; gap: 22px; }
+.pad-pill { padding: 10px 18px; border-radius: 999px; border: 0; background: #2a2f43; font-size: 0.72rem; letter-spacing: 0.08em; min-width: 92px; }
+#pad .on { background: #7c8bff !important; color: #0d1020; transform: scale(0.96); }
+@media (orientation: landscape) { #pad { grid-template-rows: auto auto 1fr auto; } .pad-dpad { width: min(30vw, 58vh, 240px); } .pad-ab { width: min(28vw, 54vh, 220px); } }
 #screen { position: fixed; inset: 0; background: #000; z-index: 15; display: grid; place-items: center; }
-#scrVideo { width: 100%; height: 100%; object-fit: contain; background: #000; image-rendering: pixelated; }
+#scrVideo { position: absolute; width: 2px; height: 2px; opacity: 0; pointer-events: none; }
+#scrCanvas { width: min(100vw, 150vh); height: auto; aspect-ratio: 3 / 2; image-rendering: pixelated; image-rendering: crisp-edges; background: #000; }
 .scr-wait { position: absolute; inset: 0; display: grid; place-items: center; padding: 24px; background: var(--bg); overflow: auto; }
 .scr-card { max-width: 760px; width: 100%; display: grid; gap: 16px; }
 .scr-card h2 { font-family: var(--font-display); font-size: clamp(1.6rem, 4vw, 2.6rem); margin: 0; }
@@ -235,10 +262,34 @@ body { margin: 0; }
     <button class="btn small" id="saveNowBtn" type="button">Enviar save</button>
   </div>
   <div id="game"></div>
+  <div id="pad" hidden>
+    <div class="pad-top">
+      <span class="pad-live"><span class="dot ok"></span>Na TV</span>
+      <button class="btn small" id="padStop" type="button">Encerrar</button>
+    </div>
+    <div class="pad-shoulders">
+      <button type="button" data-btn="L" class="pad-sh">L</button>
+      <button type="button" data-btn="R" class="pad-sh">R</button>
+    </div>
+    <div class="pad-main">
+      <div class="pad-dpad" aria-label="Direcional">
+        <span class="arm up"></span><span class="arm down"></span><span class="arm left"></span><span class="arm right"></span><span class="hub"></span>
+      </div>
+      <div class="pad-ab">
+        <button type="button" data-btn="B" class="pad-face b">B</button>
+        <button type="button" data-btn="A" class="pad-face a">A</button>
+      </div>
+    </div>
+    <div class="pad-meta">
+      <button type="button" data-btn="SELECT" class="pad-pill">SELECT</button>
+      <button type="button" data-btn="START" class="pad-pill">START</button>
+    </div>
+  </div>
 </section>
 
 <section id="screen" hidden>
-  <video id="scrVideo" autoplay playsinline hidden></video>
+  <video id="scrVideo" autoplay playsinline></video>
+  <canvas id="scrCanvas" width="240" height="160" hidden></canvas>
   <div id="scrWait" class="scr-wait">
     <div class="scr-card">
       <h2>Esta tela está pronta</h2>

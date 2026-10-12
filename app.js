@@ -861,7 +861,14 @@ const CANVAS_CAP = 960;
 (() => {
   const RO = window.ResizeObserver;
   if (!RO || RO.__cartucho) return;
-  const factorFor = (w, h) => { if (!perfLight()) return 1; const big = Math.max(w, h); return big > CANVAS_CAP ? CANVAS_CAP / big : 1; };
+  const factorFor = (w, h) => {
+    // while streaming, size the canvas so the game lands at exactly 2x (480x320):
+    // halving it for the stream then keeps every pixel intact
+    if (window.__castCap) return w / h > 1.5 ? 320 / h : 480 / w;
+    const cap = perfLight() ? CANVAS_CAP : 0;
+    if (!cap) return 1;
+    const big = Math.max(w, h); return big > cap ? cap / big : 1;
+  };
   const scaleEntry = (e) => {
     if (!(e.target instanceof HTMLCanvasElement)) return e;
     const dpr = window.devicePixelRatio || 1;
@@ -995,7 +1002,7 @@ window.fetch = (input, init) => {
    the same way. After that, video, audio and the TV's controller travel straight
    between the two devices over the home network (UDP), with no server in the middle. */
 const RTC_CONFIG = { iceServers: [{ urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] }] };
-const STREAM_W = 720, STREAM_H = 480; // 3x the GBA screen
+const STREAM_W = 240, STREAM_H = 160; // the GBA's own resolution: tiny to encode, the TV scales it up pixel-perfect
 
 async function sealJson(key, obj) {
   const raw = utf8.enc(JSON.stringify(obj));
@@ -1095,7 +1102,7 @@ const KEYMAP = { ArrowUp: "UP", ArrowDown: "DOWN", ArrowLeft: "LEFT", ArrowRight
 const KEYCODES = { 10009: "B", 415: "START", 19: "START", 403: "L", 404: "R", 405: "SELECT", 406: "START" };
 
 /* ---------- phone side ---------- */
-const cast = window.__cast = { pc: null, dc: null, code: null, pending: null, copier: null, lastMask: 0 };
+const cast = window.__cast = { pc: null, dc: null, code: null, pending: null, copier: null, lastMask: 0, localMask: 0, remoteMask: 0 };
 
 function gameRect(c) {
   const W = c.width, H = c.height, ar = 3 / 2;
@@ -1114,14 +1121,16 @@ function startCopier(src) {
   requestAnimationFrame(draw);
   return { canvas: out, stop: () => { on = false; } };
 }
-function applyRemote(mask) {
+function applyInput() {
   const gm = player.emu && player.emu.gameManager; if (!gm) return;
+  const mask = (cast.localMask | cast.remoteMask) >>> 0;
   PAD_BITS.forEach((k, i) => {
     const now = (mask >> i) & 1, was = (cast.lastMask >> i) & 1;
     if (now !== was) try { gm.simulateInput(0, PAD[k], now); } catch (e) {}
   });
   cast.lastMask = mask;
 }
+function applyRemote(mask) { cast.remoteMask = mask; applyInput(); }
 function setCastUi(state) {
   const b = $("#castBtn");
   b.textContent = state === "on" ? "Na TV ●" : state === "wait" ? "Conectando…" : "Jogar na TV";
@@ -1131,9 +1140,11 @@ function stopCast(msg) {
   if (cast.copier) cast.copier.stop();
   try { cast.pc && cast.pc.close(); } catch (e) {}
   cast.pc = null; cast.dc = null; cast.copier = null;
-  applyRemote(0);
+  cast.localMask = 0; applyRemote(0);
   for (const t of window.__audioTaps || []) t.local.gain.value = 1;
   setCastUi("off");
+  showPad(false);
+  if (window.__castCap) { window.__castCap = 0; window.dispatchEvent(new Event("resize")); }
   if (msg) toast(msg, 3500);
 }
 async function castTo(code) {
@@ -1144,6 +1155,7 @@ async function castTo(code) {
   try {
     const sig = await signal(code);
     const pc = new RTCPeerConnection(RTC_CONFIG); cast.pc = pc;
+    window.__castCap = 480; window.dispatchEvent(new Event("resize"));
     cast.copier = startCopier(emu.canvas);
     const stream = cast.copier.canvas.captureStream(60);
     const vtrack = stream.getVideoTracks()[0];
@@ -1152,7 +1164,7 @@ async function castTo(code) {
     try {
       const caps = RTCRtpSender.getCapabilities && RTCRtpSender.getCapabilities("video");
       if (caps && vt.setCodecPreferences) {
-        const pref = [...caps.codecs.filter((c) => /h264/i.test(c.mimeType)), ...caps.codecs.filter((c) => !/h264/i.test(c.mimeType))];
+        const pref = [...caps.codecs.filter((c) => /vp8/i.test(c.mimeType)), ...caps.codecs.filter((c) => !/vp8/i.test(c.mimeType))];
         vt.setCodecPreferences(pref);
       }
     } catch (e) {}
@@ -1163,11 +1175,11 @@ async function castTo(code) {
     pc.onconnectionstatechange = () => {
       if (pc !== cast.pc) return;
       if (pc.connectionState === "connected") {
-        setCastUi("on"); keepAwake();
+        setCastUi("on"); keepAwake(); showPad(true);
         for (const t of window.__audioTaps || []) t.local.gain.value = 0;
-        toast("Jogando na TV. Mantenha esta tela aberta.", 4000);
+        toast("Jogando na TV. Este celular agora é o controle.", 3500);
         const send = vt.sender, p = send.getParameters();
-        p.encodings = (p.encodings && p.encodings.length ? p.encodings : [{}]).map((e) => ({ ...e, maxBitrate: 6_000_000, maxFramerate: 60 }));
+        p.encodings = (p.encodings && p.encodings.length ? p.encodings : [{}]).map((e) => ({ ...e, maxBitrate: 2_500_000, maxFramerate: 60, scaleResolutionDownBy: 1, priority: "high", networkPriority: "high" }));
         p.degradationPreference = "maintain-framerate";
         send.setParameters(p).catch(() => {});
       } else if (pc.connectionState === "failed") stopCast("Não deu para conectar com a TV. Os dois aparelhos estão na mesma rede Wi-Fi?");
@@ -1185,6 +1197,59 @@ async function castTo(code) {
     setTimeout(() => { if (pc === cast.pc && pc.connectionState !== "connected") { stopListen(); stopCast("A TV não respondeu. Confira o código e se ela está na tela de espera."); } }, 25000);
   } catch (e) { stopCast("Não deu para começar a transmissão."); }
 }
+/* ---------- the phone as a controller ----------
+   Every finger is tracked; what is under it decides which buttons are held, so you
+   can slide from B to A or roll around the D-pad without lifting. */
+const padTouches = new Map();
+function padMaskAt(x, y) {
+  const target = document.elementFromPoint(x, y);
+  if (!target) return 0;
+  const dpad = target.closest(".pad-dpad");
+  if (dpad) {
+    const r = dpad.getBoundingClientRect();
+    const dx = (x - (r.left + r.width / 2)) / (r.width / 2), dy = (y - (r.top + r.height / 2)) / (r.height / 2);
+    if (Math.hypot(dx, dy) < 0.22) return 0;
+    const a = Math.atan2(dy, dx) * 180 / Math.PI;   // 0 = right, 90 = down
+    let m = 0;
+    if (a > -67.5 && a < 67.5) m |= 1 << PAD_BITS.indexOf("RIGHT");
+    if (a > 22.5 && a < 157.5) m |= 1 << PAD_BITS.indexOf("DOWN");
+    if (a > 112.5 || a < -112.5) m |= 1 << PAD_BITS.indexOf("LEFT");
+    if (a > -157.5 && a < -22.5) m |= 1 << PAD_BITS.indexOf("UP");
+    return m;
+  }
+  const btn = target.closest("[data-btn]");
+  return btn ? 1 << PAD_BITS.indexOf(btn.dataset.btn) : 0;
+}
+function padUpdate() {
+  let m = 0;
+  for (const p of padTouches.values()) m |= padMaskAt(p.x, p.y);
+  const pressed = m & ~cast.localMask;
+  if (pressed && navigator.vibrate) try { navigator.vibrate(12); } catch (e) {}
+  cast.localMask = m;
+  for (const b of document.querySelectorAll("#pad [data-btn]")) b.classList.toggle("on", !!(m & (1 << PAD_BITS.indexOf(b.dataset.btn))));
+  const dirs = ["UP", "DOWN", "LEFT", "RIGHT"].filter((k) => m & (1 << PAD_BITS.indexOf(k)));
+  $("#pad .pad-dpad").dataset.dir = dirs.join(" ");
+  applyInput();
+}
+(() => {
+  const pad = $("#pad");
+  const down = (e) => { e.preventDefault(); try { pad.setPointerCapture(e.pointerId); } catch (x) {} padTouches.set(e.pointerId, { x: e.clientX, y: e.clientY }); padUpdate(); };
+  const move = (e) => { if (!padTouches.has(e.pointerId)) return; e.preventDefault(); padTouches.set(e.pointerId, { x: e.clientX, y: e.clientY }); padUpdate(); };
+  const up = (e) => { if (!padTouches.delete(e.pointerId)) return; padUpdate(); };
+  pad.addEventListener("pointerdown", down);
+  pad.addEventListener("pointermove", move);
+  pad.addEventListener("pointerup", up);
+  pad.addEventListener("pointercancel", up);
+  pad.addEventListener("contextmenu", (e) => e.preventDefault());
+  $("#padStop").addEventListener("pointerdown", (e) => e.stopPropagation());
+  $("#padStop").addEventListener("click", () => stopCast("Transmissão encerrada."));
+})();
+function showPad(on) {
+  $("#pad").hidden = !on;
+  if (!on) { padTouches.clear(); cast.localMask = 0; }
+  if (on) { try { screen.orientation && screen.orientation.lock && screen.orientation.lock("landscape").catch(() => {}); } catch (e) {} }
+}
+
 function askCastCode() {
   if (cast.pc) { stopCast("Transmissão encerrada."); return; }
   const root = $("#dialogRoot");
@@ -1263,8 +1328,25 @@ async function startScreen() {
   };
   requestAnimationFrame(tick);
 }
+/* The stream arrives at the GBA's own 240x160. Drawing each frame into a canvas of
+   that size, then letting CSS enlarge it with pixelated scaling, keeps the pixels
+   sharp on any TV (videos are always smoothed when scaled). */
+let scrDrawing = false;
+function startScreenDraw() {
+  if (scrDrawing) return; scrDrawing = true;
+  const v = $("#scrVideo"), c = $("#scrCanvas"), g = c.getContext("2d", { alpha: false });
+  const draw = () => {
+    if (!tvScreen.active) { scrDrawing = false; return; }
+    if (v.videoWidth && (c.width !== v.videoWidth || c.height !== v.videoHeight)) { c.width = v.videoWidth; c.height = v.videoHeight; g.imageSmoothingEnabled = false; }
+    try { if (v.readyState >= 2) g.drawImage(v, 0, 0, c.width, c.height); } catch (e) {}
+    if (v.requestVideoFrameCallback) v.requestVideoFrameCallback(draw); else requestAnimationFrame(draw);
+  };
+  g.imageSmoothingEnabled = false;
+  if (v.requestVideoFrameCallback) v.requestVideoFrameCallback(draw); else requestAnimationFrame(draw);
+}
 function showWaiting(on) {
-  $("#scrWait").hidden = !on; $("#scrVideo").hidden = on;
+  $("#scrWait").hidden = !on; $("#scrCanvas").hidden = on;
+  if (!on) startScreenDraw();
   if (on) $("#scrStatus").textContent = "Esperando o celular…";
 }
 function stopScreen() {
