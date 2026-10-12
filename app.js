@@ -746,6 +746,7 @@ function startSpeedMeter() {
         tag.textContent = Math.round(Math.min(avg, 1) * 100) + "%";
         tag.className = "speed pix " + (avg >= 0.95 ? "ok" : avg >= 0.8 ? "warn" : "bad");
         tag.hidden = false;
+        $("#padSpeed").textContent = "· " + tag.textContent; $("#padSpeed").className = tag.className;
         if (perf.mode === "auto" && !perf.learned && now - speed.since > 8000 && speed.samples.length >= 3 && avg < 0.92) {
           perf.learned = true; ls.set(PERF_KEY + ".learned", "light");
           try { gm.setVariable("mgba_frameskip", "auto"); gm.setVariable("mgba_frameskip_threshold", "33"); } catch (e) {}
@@ -858,13 +859,11 @@ function loadEmulator() {
    In light mode the observer reports a smaller size: the emulator renders at most
    CANVAS_CAP pixels wide and the browser stretches the result, pixel-perfect. */
 const CANVAS_CAP = 960;
+const STREAM_W = 240, STREAM_H = 160; // the GBA's own resolution: tiny to encode, the TV scales it up pixel-perfect
 (() => {
   const RO = window.ResizeObserver;
   if (!RO || RO.__cartucho) return;
   const factorFor = (w, h) => {
-    // while streaming, size the canvas so the game lands at exactly 2x (480x320):
-    // halving it for the stream then keeps every pixel intact
-    if (window.__castCap) return w / h > 1.5 ? 320 / h : 480 / w;
     const cap = perfLight() ? CANVAS_CAP : 0;
     if (!cap) return 1;
     const big = Math.max(w, h); return big > cap ? cap / big : 1;
@@ -872,11 +871,17 @@ const CANVAS_CAP = 960;
   const scaleEntry = (e) => {
     if (!(e.target instanceof HTMLCanvasElement)) return e;
     const dpr = window.devicePixelRatio || 1;
-    const pw = e.devicePixelContentBoxSize ? e.devicePixelContentBoxSize[0].inlineSize : e.contentRect.width * dpr;
-    const ph = e.devicePixelContentBoxSize ? e.devicePixelContentBoxSize[0].blockSize : e.contentRect.height * dpr;
-    const f = factorFor(pw, ph);
-    if (f === 1) return e;
-    const w = Math.round(pw * f), h = Math.round(ph * f);
+    let w, h;
+    if (window.__castCap) {
+      // streaming: the canvas becomes exactly the GBA screen, 240x160, and is sent as is
+      w = STREAM_W; h = STREAM_H;
+    } else {
+      const pw = e.devicePixelContentBoxSize ? e.devicePixelContentBoxSize[0].inlineSize : e.contentRect.width * dpr;
+      const ph = e.devicePixelContentBoxSize ? e.devicePixelContentBoxSize[0].blockSize : e.contentRect.height * dpr;
+      const f = factorFor(pw, ph);
+      if (f === 1) return e;
+      w = Math.round(pw * f); h = Math.round(ph * f);
+    }
     return { target: e.target, contentRect: { width: w / dpr, height: h / dpr, x: 0, y: 0, top: 0, left: 0 },
       devicePixelContentBoxSize: [{ inlineSize: w, blockSize: h }], contentBoxSize: [{ inlineSize: w / dpr, blockSize: h / dpr }], borderBoxSize: e.borderBoxSize };
   };
@@ -1002,7 +1007,6 @@ window.fetch = (input, init) => {
    the same way. After that, video, audio and the TV's controller travel straight
    between the two devices over the home network (UDP), with no server in the middle. */
 const RTC_CONFIG = { iceServers: [{ urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] }] };
-const STREAM_W = 240, STREAM_H = 160; // the GBA's own resolution: tiny to encode, the TV scales it up pixel-perfect
 
 async function sealJson(key, obj) {
   const raw = utf8.enc(JSON.stringify(obj));
@@ -1051,14 +1055,8 @@ let wakeLock = null;
 async function keepAwake() { try { if (navigator.wakeLock && !wakeLock) { wakeLock = await navigator.wakeLock.request("screen"); wakeLock.addEventListener("release", () => { wakeLock = null; }); } } catch (e) {} }
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && (cast.pc || tvScreen.active)) keepAwake(); });
 
-/* Every WebGL canvas keeps its last frame so the stream copier can read it, and
-   every sound that would reach the speakers also goes through a tap the stream can carry. */
+/* Every sound that would reach the speakers also goes through a tap the stream can carry. */
 (() => {
-  const gc = HTMLCanvasElement.prototype.getContext;
-  HTMLCanvasElement.prototype.getContext = function (type, attrs) {
-    if (/webgl/.test(type) && guessDevice() !== "TV") attrs = Object.assign({}, attrs, { preserveDrawingBuffer: true });
-    return gc.call(this, type, attrs);
-  };
   if (!window.AudioNode) return;
   const connect = AudioNode.prototype.connect;
   const taps = new WeakMap();
@@ -1102,25 +1100,8 @@ const KEYMAP = { ArrowUp: "UP", ArrowDown: "DOWN", ArrowLeft: "LEFT", ArrowRight
 const KEYCODES = { 10009: "B", 415: "START", 19: "START", 403: "L", 404: "R", 405: "SELECT", 406: "START" };
 
 /* ---------- phone side ---------- */
-const cast = window.__cast = { pc: null, dc: null, code: null, pending: null, copier: null, lastMask: 0, localMask: 0, remoteMask: 0 };
+const cast = window.__cast = { pc: null, dc: null, code: null, pending: null, lastMask: 0, localMask: 0, remoteMask: 0 };
 
-function gameRect(c) {
-  const W = c.width, H = c.height, ar = 3 / 2;
-  if (W / H > ar) { const w = H * ar; return [(W - w) / 2, 0, w, H]; }
-  return [0, 0, W, W / ar];   // portrait: the emulator pins the picture to the top
-}
-function startCopier(src) {
-  const out = document.createElement("canvas"); out.width = STREAM_W; out.height = STREAM_H;
-  const g = out.getContext("2d", { alpha: false }); g.imageSmoothingEnabled = false;
-  let on = true;
-  const draw = () => {
-    if (!on) return;
-    try { const [x, y, w, h] = gameRect(src); g.drawImage(src, x, y, w, h, 0, 0, STREAM_W, STREAM_H); } catch (e) {}
-    requestAnimationFrame(draw);
-  };
-  requestAnimationFrame(draw);
-  return { canvas: out, stop: () => { on = false; } };
-}
 function applyInput() {
   const gm = player.emu && player.emu.gameManager; if (!gm) return;
   const mask = (cast.localMask | cast.remoteMask) >>> 0;
@@ -1137,9 +1118,8 @@ function setCastUi(state) {
   b.classList.toggle("primary", state === "on");
 }
 function stopCast(msg) {
-  if (cast.copier) cast.copier.stop();
   try { cast.pc && cast.pc.close(); } catch (e) {}
-  cast.pc = null; cast.dc = null; cast.copier = null;
+  cast.pc = null; cast.dc = null;
   cast.localMask = 0; applyRemote(0);
   for (const t of window.__audioTaps || []) t.local.gain.value = 1;
   setCastUi("off");
@@ -1155,9 +1135,10 @@ async function castTo(code) {
   try {
     const sig = await signal(code);
     const pc = new RTCPeerConnection(RTC_CONFIG); cast.pc = pc;
-    window.__castCap = 480; window.dispatchEvent(new Event("resize"));
-    cast.copier = startCopier(emu.canvas);
-    const stream = cast.copier.canvas.captureStream(60);
+    window.__castCap = 1; window.dispatchEvent(new Event("resize"));
+    await sleep(150);
+    // capture the emulator's own canvas: no copy, no readback from the GPU
+    const stream = emu.canvas.captureStream(60);
     const vtrack = stream.getVideoTracks()[0];
     try { vtrack.contentHint = "motion"; } catch (e) {}
     const vt = pc.addTransceiver(vtrack, { direction: "sendonly", streams: [stream] });
