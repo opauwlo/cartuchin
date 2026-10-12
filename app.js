@@ -324,6 +324,8 @@ function gisClient() {
     callback: (resp) => {
       const ws = gauth.waiters.splice(0);
       if (!resp || resp.error || !resp.access_token) { ws.forEach((w) => w.rej(new Error((resp && resp.error) || "denied"))); return; }
+      const o2 = google.accounts.oauth2;
+      if (o2.hasGrantedAllScopes && !o2.hasGrantedAllScopes(resp, DRIVE_SCOPE)) { ws.forEach((w) => w.rej(new Error("scope"))); return; }
       cloud.auth = { ...(isGoogle() ? cloud.auth : {}), kind: "google", token: resp.access_token, exp: Date.now() + (Number(resp.expires_in) || 3600) * 1000 };
       saveAuth(cloud.auth);
       ws.forEach((w) => w.res(cloud.auth.token));
@@ -333,13 +335,13 @@ function gisClient() {
   return gauth.client;
 }
 /* must be called straight from a tap, before any await, or the browser blocks the window */
-function askGoogleToken(first) {
+function askGoogleToken(first, consent) {
   const c = gisClient();
   if (!c) return Promise.reject(new Error("gis-not-ready"));
   gauth.lastAsk = Date.now();
   return new Promise((res, rej) => {
     gauth.waiters.push({ res, rej });
-    c.requestAccessToken({ prompt: first ? "select_account" : "", hint: (cloud.auth && cloud.auth.email) || undefined });
+    c.requestAccessToken({ prompt: consent ? "consent" : first ? "select_account" : "", hint: (cloud.auth && cloud.auth.email) || undefined });
   });
 }
 function needToken() { const e = new Error("google-token"); e.status = 401; e.token = true; return e; }
@@ -423,10 +425,8 @@ const drive = {
     return j.id;
   },
   async whoami() {
-    try {
-      const j = await (await this.api(`${DRIVE}/about?fields=user(displayName,emailAddress)`)).json();
-      return (j.user && (j.user.emailAddress || j.user.displayName)) || "";
-    } catch (e) { return ""; }
+    const j = await (await this.api(`${DRIVE}/about?fields=user(displayName,emailAddress)`)).json();
+    return (j.user && (j.user.emailAddress || j.user.displayName)) || "";
   },
 };
 
@@ -497,9 +497,30 @@ async function connectGoogle() {
   } catch (e) {
     cloud.db = false;
     if (e.token) googleNeedsTap(true);
-    else { $("#notice").dataset.sticky = "1"; notice("Sem conexão com o Google Drive agora. Dá para jogar o que já está neste aparelho; o save sobe quando a internet voltar."); }
+    else driveProblem(e);
   }
   cloud.ready = true; render();
+}
+function driveReason(e) {
+  try { const j = JSON.parse(e.detail || "{}").error || {}; return { reason: ((j.errors && j.errors[0] && j.errors[0].reason) || j.status || "") + " " + ((j.details || []).map((d) => d.reason).join(" ")), message: j.message || "" }; }
+  catch (x) { return { reason: "", message: "" }; }
+}
+function driveProblem(e) {
+  const n = $("#notice"), { reason, message } = driveReason(e);
+  n.dataset.sticky = "1"; n.className = "notice err"; n.hidden = false;
+  if (/accessNotConfigured|SERVICE_DISABLED/i.test(reason) || /has not been used|is disabled/i.test(message)) {
+    const proj = (message.match(/project (\d+)/) || [])[1];
+    n.replaceChildren(el("span", {}, "A API do Google Drive não está ativada no projeto do app no Google Cloud. "),
+      proj ? el("a", { href: `https://console.developers.google.com/apis/api/drive.googleapis.com/overview?project=${proj}`, target: "_blank", rel: "noopener" }, "Ativar a API do Drive") : "",
+      el("span", {}, " Depois de ativar, espere um minuto e recarregue a página."));
+  } else if (/insufficient|SCOPE/i.test(reason)) {
+    n.replaceChildren(el("span", {}, "O Google não deu acesso à pasta do app no Drive. Entre de novo e deixe marcada a permissão do Google Drive. "),
+      el("button", { class: "btn small", type: "button", onclick: () => askGoogleToken(false, true).then(() => location.reload(), () => {}) }, "Entrar de novo"));
+  } else if (e.status) {
+    n.replaceChildren(el("span", {}, `O Google Drive respondeu com erro ${e.status}${message ? ": " + message : ""}. Dá para jogar o que já está neste aparelho.`));
+  } else {
+    n.textContent = "Sem conexão com o Google Drive agora. Dá para jogar o que já está neste aparelho; o save sobe quando a internet voltar.";
+  }
 }
 /* The Google token expired: show a one-tap way back. Any tap on the page outside the
    game counts too, so most of the time the player never sees this. */
@@ -666,7 +687,9 @@ $("#googleBtn").addEventListener("click", () => {
   const msg = $("#googleMsg");
   if (!gisClient()) { msg.textContent = "Carregando o login do Google… toque de novo em um instante."; loadGis().then(gisClient).catch(() => {}); return; }
   askGoogleToken(true).then(() => { msg.textContent = "Conectado! Abrindo sua biblioteca…"; location.reload(); },
-    (e) => { msg.textContent = /popup/.test(e.message) ? "O navegador bloqueou a janela do Google. Libere pop-ups para este site e tente de novo." : "Não deu para entrar. Tente de novo."; });
+    (e) => { msg.textContent = /popup/.test(e.message) ? "O navegador bloqueou a janela do Google. Libere pop-ups para este site e tente de novo."
+      : e.message === "scope" ? "Para guardar seus jogos, deixe marcada a permissão do Google Drive na tela do Google e tente de novo."
+      : "Não deu para entrar. Tente de novo."; });
 });
 $("#disconnectBtn").addEventListener("click", async () => {
   const ok = await dialog("Desconectar este aparelho?", `Os jogos que já estão aqui continuam, mas o save para de subir para o ${cloudName()} até você conectar de novo.`,
