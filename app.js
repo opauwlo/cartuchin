@@ -21,6 +21,13 @@ const ls = {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const rid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
 
+function actionToast(msg, label, fn, ms = 9000) {
+  const btn = el("button", { class: "toast-btn", type: "button" }, label);
+  const t = el("div", { class: "toast toast-action", role: "status" }, el("span", {}, msg), btn);
+  btn.addEventListener("click", () => { t.remove(); fn(); });
+  document.body.append(t);
+  setTimeout(() => t.remove(), ms);
+}
 function toast(msg, ms = 2600) {
   const t = el("div", { class: "toast", role: "status" }, msg);
   document.body.append(t);
@@ -829,6 +836,60 @@ async function flush(opts = {}) {
   }
 }
 
+/* ---------------- continue where you left off ----------------
+   Besides the game's own save, the app keeps a snapshot of the whole console
+   (a save state) in states/<game>.json. It is taken when you leave the game, when
+   you tap save, and every two minutes. Opening the game on any device then picks
+   up at that exact moment, as long as the snapshot belongs to the same in-game
+   save that is being loaded (otherwise the two would disagree). */
+const STATE_EVERY = 120000;
+const stateShas = new Map();
+const isBlankSave = (u8) => { const f = u8[0]; if (f !== 0xff && f !== 0) return false; for (let i = 0; i < u8.length; i++) if (u8[i] !== f) return false; return true; };
+async function getStateDoc(key) {
+  const r = await readJson("states/" + key + ".json");
+  if (!r) { stateShas.delete(key); return null; }
+  stateShas.set(key, r.sha); return r.data;
+}
+async function uploadState(opts = {}) {
+  const emu = player.emu;
+  if (!emu || !emu.started || !emu.gameManager || !player.key || player.stateBusy) return false;
+  const gm = emu.gameManager;
+  const frames = Number(gm.getFrameNum());
+  if (!opts.force && player.stateFrames && frames - player.stateFrames < 600) return false;   // under ~10 s of play since the last one
+  let st; try { st = gm.getState(); } catch (e) { return false; }
+  player.stateBusy = true;
+  try {
+    let sav = null; try { sav = new Uint8Array(gm.getSaveFile()); } catch (e) {}
+    const packed = await pack(st);
+    const doc = { game: player.key, enc: packed.enc, data: packed.data, size: st.length, at: Date.now(), device: device.name, saveSha: sav && !isBlankSave(sav) ? await sha(sav) : null };
+    await idb.put("pend", "state:" + player.key, doc).catch(() => {});
+    player.stateFrames = frames;
+    if (!cloud.db) return true;
+    const body = b64(utf8.enc(JSON.stringify(doc)));
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        stateShas.set(player.key, await putFile("states/" + player.key + ".json", body, stateShas.get(player.key), `Progresso: ${player.meta.title} (${device.name})`, opts.keepalive));
+        return true;
+      } catch (e) {
+        if (e.status !== 409 && e.status !== 422) throw e;
+        const r = await readJson("states/" + player.key + ".json").catch(() => null);
+        if (r) stateShas.set(player.key, r.sha); else stateShas.delete(player.key);
+      }
+    }
+    return false;
+  } catch (e) { return false; } finally { player.stateBusy = false; }
+}
+async function findResumeState(key, start) {
+  let best = await idb.get("pend", "state:" + key);
+  if (cloud.db) {
+    try { const remote = await getStateDoc(key); if (remote && (!best || remote.at > best.at)) best = remote; } catch (e) {}
+  }
+  if (!best || !best.data) return null;
+  const startSha = start.sav && !isBlankSave(start.sav) ? start.sha : null;
+  if ((best.saveSha || null) !== startSha) return null;   // taken with a different in-game save
+  return best;
+}
+
 async function chooseStartSave(key) {
   const pend = await idb.get("pend", key);
   let remote = null;
@@ -966,6 +1027,7 @@ async function play(key) {
   if (!rom) return;
   const start = await chooseStartSave(key);
   if (start === null) return;
+  const resume = await findResumeState(key, start);
   player.key = key; player.meta = { title: rom.title, system: rom.system, code: rom.code };
   player.lastSha = start.upload ? null : start.sha; player.baseRev = start.baseRev;
   $("#pName").textContent = rom.title;
@@ -983,6 +1045,17 @@ async function play(key) {
     if (start.sav) {
       try { writeSav(gm, start.sav); gm.loadSaveFiles(); gm.restart(); } catch (e) { console.warn("save load", e); }
     }
+    if (resume) {
+      await sleep(300);
+      try {
+        gm.loadState(await unpack(resume));
+        player.stateFrames = Number(gm.getFrameNum());
+        const msg = `Continuando de onde parou (${resume.device || "outro aparelho"}, ${ago(resume.at)})`;
+        if (!$("#pad").hidden) padMsg(msg);
+        else actionToast(msg, "Ir para a tela de título", () => { try { gm.restart(); } catch (e) {} });
+      } catch (e) { console.warn("state load", e); }
+    }
+    player.stateTimer = setInterval(() => uploadState(), STATE_EVERY);
     await sleep(1500);
     if (start.upload) flush();
     player.timer = setInterval(flush, 15000);
@@ -1018,12 +1091,14 @@ $("#pullBtn").addEventListener("click", () => pullSave((m) => m && toast(m)));
 $("#padPull").addEventListener("click", () => pullSave((m) => m && padMsg(m)));
 
 $("#saveNowBtn").addEventListener("click", async () => {
-  const before = player.lastSha; await flush();
+  const before = player.lastSha; await flush(); uploadState({ force: true });
   if (player.state === "ok") toast(player.lastSha === before ? "O save já está na nuvem" : "Save enviado");
   else if (player.state === "none") toast("Ainda não há save. Salve dentro do jogo primeiro.");
 });
 $("#backBtn").addEventListener("click", async () => {
   await flush();
+  toast("Guardando o progresso…");
+  await uploadState({ force: true });
   if (player.state === "up" || player.state === "pending") {
     const ok = await dialog("O save ainda não subiu", "Ele ficou guardado neste aparelho e vai subir na próxima vez que você abrir o jogo aqui.",
       [{ label: "Voltar mesmo assim", value: true, cls: "primary" }, { label: "Continuar jogando", value: false }]);
@@ -1031,8 +1106,10 @@ $("#backBtn").addEventListener("click", async () => {
   }
   location.reload();
 });
-document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") flush({ leaving: true }); });
-window.addEventListener("pagehide", () => { flush({ leaving: true }); });
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") { flush({ leaving: true }); uploadState({ force: true, keepalive: true }); }
+});
+window.addEventListener("pagehide", () => { flush({ leaving: true }); uploadState({ force: true, keepalive: true }); });
 
 /* keep EmulatorJS from calling its own CDN for update checks */
 const realFetch = window.fetch.bind(window);
@@ -1361,7 +1438,7 @@ window.addEventListener("resize", layoutPad);
   $("#padSave").addEventListener("click", async () => {
     vib(PAD_VIB.press);
     padMsg("Enviando o save…");
-    const before = player.lastSha; await flush();
+    const before = player.lastSha; await flush(); uploadState({ force: true });
     if (player.state === "ok") { padMsg(player.lastSha === before ? "O save já estava na nuvem" : "Save enviado"); try { navigator.vibrate && navigator.vibrate([12, 70, 12]); } catch (e) {} }
     else if (player.state === "none") padMsg("Ainda não há save. Salve dentro do jogo primeiro.");
     else if (player.state === "local") padMsg("Save guardado neste celular (sem GitHub conectado)");
