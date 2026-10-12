@@ -185,8 +185,8 @@ const idb = (() => {
   let p = null;
   function open() {
     if (!p) p = new Promise((res, rej) => {
-      let r; try { r = indexedDB.open("cartucho", 1); } catch (e) { rej(e); return; }
-      r.onupgradeneeded = () => { const d = r.result; for (const s of ["roms", "pend", "sync"]) if (!d.objectStoreNames.contains(s)) d.createObjectStore(s); };
+      let r; try { r = indexedDB.open("cartucho", 2); } catch (e) { rej(e); return; }
+      r.onupgradeneeded = () => { const d = r.result; for (const s of ["roms", "pend", "sync", "covers"]) if (!d.objectStoreNames.contains(s)) d.createObjectStore(s); };
       r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
     });
     return p;
@@ -286,8 +286,8 @@ async function listDir(dir) {
   try { const r = await gh(contents(dir)); return Array.isArray(r) ? r.map((f) => ({ name: f.name })) : []; }
   catch (e) { if (e.status === 404) return []; throw e; }
 }
-async function putBinary(path, bytes, message) {
-  if (isGoogle()) return drive.put(path, bytes, "application/gzip");
+async function putBinary(path, bytes, message, type = "application/gzip") {
+  if (isGoogle()) return drive.put(path, bytes, type);
   let sha;
   try { const ex = await gh(contents(path)); sha = ex && ex.sha; } catch (e) { if (e.status !== 404) throw e; }
   return putFile(path, b64(bytes), sha, message);
@@ -576,7 +576,8 @@ async function uploadRom(rom) {
     const path = "roms/" + rom.key + ".gz";
     await putBinary(path, gz, `ROM: ${rom.title}`);
     await updateIndex((d) => {
-      d.games[rom.key] = { ...(d.games[rom.key] || {}), title: rom.title, system: rom.system, code: rom.code || "", ext: rom.ext,
+      const prev = d.games[rom.key] || {};
+      d.games[rom.key] = { ...prev, title: prev.title || rom.title, cover: prev.cover !== undefined ? prev.cover : (rom.cover || null), system: rom.system, code: rom.code || "", ext: rom.ext,
         fileName: rom.fileName || "", size: raw.length, rom: path, romAt: Date.now(), romDevice: device.name };
     }, `Biblioteca: ${rom.title}`);
     cloud.roms.set(rom.key, { game: rom.key, ...cloud.index.games[rom.key] });
@@ -631,7 +632,6 @@ function defaultRepo() {
 }
 
 function showConnect() {
-  $("#connect").hidden = false;
   $("#googleBox").hidden = !googleAvailable();
   if (!googleAvailable()) $("#ghAdv").open = true;
   else loadGis().then(gisClient).catch(() => { $("#googleMsg").textContent = "Não deu para carregar o login do Google. Confira a internet."; });
@@ -660,7 +660,8 @@ $("#ghForm").addEventListener("submit", async (e) => {
       : "Não deu para falar com o GitHub agora. Confira a internet.";
   }
 });
-$("#localOnlyBtn").addEventListener("click", () => { $("#connect").hidden = true; render(); });
+$("#localOnlyBtn").addEventListener("click", () => { ls.set("cartucho.localOnly", "1"); render(); });
+$("#emptyAddBtn").addEventListener("click", pickRom);
 $("#googleBtn").addEventListener("click", () => {
   const msg = $("#googleMsg");
   if (!gisClient()) { msg.textContent = "Carregando o login do Google… toque de novo em um instante."; loadGis().then(gisClient).catch(() => {}); return; }
@@ -778,57 +779,294 @@ function notice(msg, kind) {
   n.textContent = msg; n.hidden = false;
 }
 
+/* ---------------- game identity: name and cover ----------------
+   db/<system>.json (built from the No-Intro lists used by RetroArch) maps a ROM's CRC32
+   to its official name and says whether a box art exists on thumbnails.libretro.com.
+   ROM hacks are not in it: they get a clean name from the file, a box art when the
+   libretro collection has one for that hack, or a generated cover. */
+const APP_V = (() => { try { return new URL(document.currentScript.src).searchParams.get("v") || ""; } catch (e) { return ""; } })();
+const gameDbs = {};
+function gameDb(sys) { return gameDbs[sys] || (gameDbs[sys] = fetch(`db/${sys}.json?v=${APP_V}`).then((r) => (r.ok ? r.json() : null)).catch(() => null)); }
+const thumbName = (n) => n.replace(/[&*/:`<>?\\|"]/g, "_");
+function artUrls(c) {
+  const f = encodeURIComponent(thumbName(c.name)) + ".png";
+  return [`https://thumbnails.libretro.com/${encodeURIComponent(c.dir)}/Named_Boxarts/${f}`,
+    `https://raw.githubusercontent.com/libretro-thumbnails/${c.dir.replace(/ /g, "_")}/master/Named_Boxarts/${f}`];
+}
+function prettyName(n) {
+  let t = n.replace(/\s*[([][^)\]]*[)\]]/g, "").trim();
+  t = t.replace(/^(.*?), (The|A|An)(?= - |$)/, "$2 $1");
+  t = t.replace(/\s+-\s+/g, ": ").replace(/\bPokemon\b/g, "Pokémon");
+  t = t.replace(/^Pokémon: (.+?) Version$/, "Pokémon $1").replace(/^Pokémon: /, "Pokémon ");
+  return t;
+}
+function cleanTitle(raw) {
+  let t = (raw || "").replace(/\.(gba|gbc|gb|zip)$/i, "").replace(/_+/g, " ").replace(/\s*[([][^)\]]*[)\]]/g, " ");
+  t = t.replace(/\s+(v|ver|version|vesion|versao|versão|rev)\.?\s*\d[\d.]*\s*$/i, "").replace(/\s+v?\d+(\.\d+)+\s*$/i, "");
+  t = t.replace(/\s+/g, " ").trim();
+  const letters = t.replace(/[^A-Za-z]/g, "");
+  if (letters && (letters === letters.toUpperCase() || letters === letters.toLowerCase())) t = titleCase(t.toLowerCase());
+  return t.replace(/\bpok[eé]mon\b/gi, "Pokémon") || "Jogo";
+}
+const normTitle = (t) => t.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/\(hack\)|\bpokemon\b|\bversion\b/g, "").replace(/[^a-z0-9]/g, "");
+async function identifyRom(bytes, info, fileName) {
+  const crc = crc32(bytes).toString(16).toUpperCase().padStart(8, "0");
+  const systems = info.system === "gba" ? ["gba"] : ["gbc", "gb"];
+  for (const sys of systems) {
+    const db = await gameDb(sys); if (!db) continue;
+    const i = db.crc[crc];
+    if (i != null) { const name = db.names[i]; return { title: prettyName(name), cover: db.art[i] === "1" ? { dir: db.dir, name } : null }; }
+  }
+  const title = cleanTitle(fileName || info.title);
+  const want = normTitle(title);
+  for (const sys of systems) {
+    const db = await gameDb(sys); if (!db) continue;
+    const h = (db.hacks || []).find((n) => normTitle(n) === want);
+    if (h) return { title: prettyName(h), cover: { dir: db.dir, name: h } };
+  }
+  return { title, cover: null };
+}
+/* older ROMs on this device get a name and a cover in the background, one at a time */
+let identifying = false;
+async function identifyOldRoms() {
+  if (identifying) return; identifying = true;
+  try {
+    for (const rom of [...roms.values()]) {
+      if (rom.ident || !rom.blob) continue;
+      const id = await identifyRom(new Uint8Array(await rom.blob.arrayBuffer()), rom, rom.fileName);
+      const upd = { ...rom, ident: true, cover: rom.cover !== undefined && rom.cover !== null ? rom.cover : id.cover, title: rom.titleSet ? rom.title : id.title };
+      await idb.put("roms", rom.key, upd).catch(() => {});
+      roms.set(rom.key, upd);
+      const ix = cloud.index && cloud.index.games && cloud.index.games[rom.key];
+      if (cloud.db && ix && (!ix.titleSet || ix.cover === undefined)) {
+        await updateIndex((d) => { const g = d.games[rom.key]; if (!g) return; if (!g.titleSet) g.title = upd.title; if (g.cover === undefined || g.cover === null) g.cover = upd.cover; }, `Biblioteca: ${upd.title}`).catch(() => {});
+      }
+      render();
+    }
+  } finally { identifying = false; }
+}
+
+/* everything the library knows about one game, from this device and the cloud */
+function gameInfo(key) {
+  const rom = roms.get(key), save = cloud.docs.get(key), crom = cloud.roms.get(key);
+  const ix = (cloud.index && cloud.index.games && cloud.index.games[key]) || null;
+  const title = (ix && ix.title) || (rom && rom.title) || (save && save.title) || (crom && crom.title) || key;
+  const cover = ix && ix.cover !== undefined && ix.cover !== null ? ix.cover : (rom && rom.cover) || null;
+  const coverRev = (ix && ix.coverRev) || (rom && rom.coverRev) || "";
+  const system = (rom && rom.system) || (save && save.system) || (crom && crom.system) || "gba";
+  const code = (rom && rom.code) || (save && save.code) || (crom && crom.code) || "";
+  return { key, rom, save, crom, ix, title, cover, coverRev, system, code, sys: system === "gba" ? "GBA" : (rom && rom.ext === "gbc") ? "GBC" : "GB", playable: !!(rom || crom) };
+}
+
+/* custom covers: kept in IndexedDB and, with a cloud, in covers/<key>.jpg */
+const coverUrls = new Map(), coverLoading = new Set();
+async function customCoverUrl(key, rev) {
+  const id = key + ":" + rev;
+  if (coverUrls.has(id)) return coverUrls.get(id);
+  if (coverLoading.has(id)) return null;
+  coverLoading.add(id);
+  try {
+    let rec = await idb.get("covers", key);
+    if ((!rec || rec.rev !== rev) && cloud.db) {
+      const r = await getBinary("covers/" + key + ".jpg");
+      rec = { rev, blob: new Blob([await r.arrayBuffer()], { type: "image/jpeg" }) };
+      await idb.put("covers", key, rec).catch(() => {});
+    }
+    if (!rec) return null;
+    const url = URL.createObjectURL(rec.blob);
+    coverUrls.set(id, url);
+    return url;
+  } catch (e) { return null; } finally { coverLoading.delete(id); }
+}
+function hueOf(t) { let h = 0; for (const c of t) h = (h * 31 + c.charCodeAt(0)) >>> 0; return h % 360; }
+function genCover(g) {
+  return el("div", { class: "gen-cover", style: `--h:${hueOf(g.title)}` }, el("span", { class: "gen-title" }, g.title), el("span", { class: "gen-sys" }, [g.sys, g.code].filter(Boolean).join(" ")));
+}
+function coverEl(g) {
+  const box = el("div", { class: "cover" });
+  if (g.cover === "custom") {
+    const id = g.key + ":" + g.coverRev;
+    if (coverUrls.has(id)) box.append(el("img", { src: coverUrls.get(id), alt: "", loading: "lazy" }));
+    else { box.append(genCover(g)); customCoverUrl(g.key, g.coverRev).then((u) => { if (u) render(); }); }
+  } else if (g.cover && g.cover.name) {
+    const [main, mirror] = artUrls(g.cover);
+    const img = el("img", { src: main, alt: "", loading: "lazy", decoding: "async" });
+    img.addEventListener("error", () => {
+      if (img.dataset.alt !== "1") { img.dataset.alt = "1"; img.src = mirror; }
+      else img.replaceWith(genCover(g));
+    });
+    box.append(img);
+  } else box.append(genCover(g));
+  return box;
+}
+function saveLine(g) {
+  const working = busy.get(g.key);
+  if (working) return [el("span", { class: "tile-busy" }, working)];
+  if (g.save) return [el("span", { class: "dot ok" }), el("span", {}, `Salvo ${ago(g.save.at)}`)];
+  if (!g.playable) return [el("span", { class: "dot warn" }), el("span", {}, "Falta a ROM neste aparelho")];
+  if (g.rom && !g.crom && cloud.db) return [el("span", { class: "dot" }), el("span", {}, "Só neste aparelho")];
+  return [el("span", { class: "dot" }), el("span", {}, "Ainda sem save")];
+}
+function tile(g) {
+  return el("button", { class: "tile", type: "button", onclick: () => openGameSheet(g.key), "aria-label": g.title },
+    coverEl(g), el("span", { class: "tile-title" }, g.title), el("span", { class: "tile-meta" }, saveLine(g)));
+}
+function addTile() {
+  const plus = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  plus.setAttribute("viewBox", "0 0 24 24"); plus.innerHTML = '<path d="M12 5v14M5 12h14"/>';
+  return el("button", { class: "tile add-tile", type: "button", onclick: pickRom }, el("div", { class: "cover" }, plus), el("span", { class: "tile-title" }, "Adicionar jogo"));
+}
+function continueHero(g) {
+  const sec = $("#continue");
+  sec.replaceChildren(coverEl(g),
+    el("div", { class: "continue-body" },
+      el("p", { class: "continue-kicker" }, "Continuar jogando"),
+      el("h2", { class: "continue-title" }, g.title),
+      el("p", { class: "continue-meta" }, `Salvo ${ago(g.save.at)} no ${g.save.device || "outro aparelho"}`),
+      el("button", { class: "btn primary", type: "button", onclick: () => play(g.key) }, busy.get(g.key) || "Continuar")));
+  sec.hidden = false;
+}
+
+/* ---------------- screens ---------------- */
+const localOnly = () => ls.get("cartucho.localOnly") === "1";
+function showWelcome() { closeSheets(); ls.set("cartucho.localOnly", ""); $("#connect").hidden = false; $("#home").hidden = true; $("#notice").hidden = true; if (typeof showConnect === "function") showConnect(); }
+
 function render() {
   if (!cloud.ready) return;
-  if ($("#notice").dataset.sticky !== "1") notice(cloud.auth || !$("#connect").hidden ? "" : "Este aparelho não está conectado à nuvem: o save fica só aqui.");
+  const welcome = !cloud.auth && !localOnly();
+  $("#connect").hidden = !welcome; $("#home").hidden = welcome;
+  $("#accountBtn").hidden = welcome;
+  // account
+  const letter = cloud.auth && cloud.auth.email ? cloud.auth.email[0].toUpperCase() : cloud.auth && cloud.auth.owner ? cloud.auth.owner[0].toUpperCase() : "?";
+  $("#avatarLetter").textContent = letter;
   $("#connText").textContent = isGoogle()
-    ? (cloud.db ? `Google Drive${cloud.auth.email ? " · " + cloud.auth.email : ""}` : "Google Drive: reconecte para sincronizar")
-    : cloud.db ? `Conectado a ${cloud.auth.owner}/${cloud.auth.repo}` : cloud.auth ? "GitHub indisponível agora" : "Não conectado à nuvem";
+    ? (cloud.db ? `Google Drive${cloud.auth.email ? ": " + cloud.auth.email : ""}` : "Google Drive: reconecte para sincronizar")
+    : cloud.db ? `GitHub: ${cloud.auth.owner}/${cloud.auth.repo}` : cloud.auth ? "GitHub indisponível agora" : "Sem conta: os jogos ficam só neste aparelho.";
   $("#pairOtherBtn").hidden = !cloud.db || isGoogle(); $("#disconnectBtn").hidden = !cloud.auth; $("#connectBtn").hidden = !!cloud.auth;
+  const n = $("#notice");
+  if (n.dataset.sticky !== "1") {
+    if (!welcome && !cloud.auth && googleAvailable()) {
+      n.className = "notice"; n.hidden = false;
+      n.replaceChildren(el("span", {}, "Seus jogos estão só neste aparelho. "), el("button", { class: "btn small", type: "button", onclick: showWelcome }, "Entrar com Google"));
+    } else n.hidden = true;
+  }
+  if (welcome) return;
+  // library
   const keys = new Set([...roms.keys(), ...cloud.docs.keys(), ...cloud.roms.keys()]);
-  const list = [...keys].map((k) => ({ key: k, rom: roms.get(k), save: cloud.docs.get(k) }))
-    .sort((a, b) => ((b.save && b.save.at) || 0) - ((a.save && a.save.at) || 0) || (a.key < b.key ? -1 : 1));
+  const games = [...keys].map(gameInfo)
+    .sort((a, b) => ((b.save && b.save.at) || 0) - ((a.save && a.save.at) || 0) || a.title.localeCompare(b.title, "pt"));
+  const recent = games.find((g) => g.save && g.playable);
+  if (recent) continueHero(recent); else $("#continue").hidden = true;
   const box = $("#games"); box.replaceChildren();
-  $("#empty").hidden = list.length > 0;
-  for (const g of list) box.append(card(g));
+  $("#empty").hidden = games.length > 0;
+  box.hidden = games.length === 0;
+  for (const g of games) box.append(tile(g));
+  if (games.length) box.append(addTile());
+  if (sheetKey) fillGameSheet(sheetKey);
 }
 
-function card({ key, rom, save }) {
-  const crom = cloud.roms.get(key);
-  const title = (rom && rom.title) || (save && save.title) || (crom && crom.title) || key;
-  const code = (rom && rom.code) || (save && save.code) || (crom && crom.code) || "";
-  const sys = ((rom && rom.system) || (save && save.system) || "gba") === "gba" ? "GBA" : "GB";
-  let line;
-  if (save) line = [el("span", { class: "dot ok" }), `Save na nuvem ${ago(save.at)} · ${save.device || "outro aparelho"}`, el("span", { class: "pix" }, fmtSize(save.size || 0))];
-  else if (cloud.db) line = [el("span", { class: "dot" }), "Ainda sem save na nuvem"];
-  else line = [el("span", { class: "dot warn" }), "Save só neste aparelho"];
+/* ---------------- sheets ---------------- */
+let sheetKey = null;
+function openSheet(id) {
+  $("#sheetScrim").hidden = false;
+  for (const sh of document.querySelectorAll(".sheet")) sh.hidden = sh.id !== id;
+  const first = $("#" + id).querySelector("button"); if (first) setTimeout(() => first.focus(), 30);
+}
+function closeSheets() {
+  sheetKey = null; $("#sheetScrim").hidden = true;
+  for (const sh of document.querySelectorAll(".sheet")) sh.hidden = true;
+}
+$("#sheetScrim").addEventListener("click", closeSheets);
+window.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("#sheetScrim").hidden) closeSheets(); });
+$("#accountBtn").addEventListener("click", () => openSheet("settingsSheet"));
+$("#settingsClose").addEventListener("click", closeSheets);
 
-  const romLine = crom
-    ? [el("span", { class: "dot ok" }), "ROM na nuvem, abre em qualquer aparelho"]
-    : rom ? [el("span", { class: "dot" }), "ROM só neste aparelho"] : null;
+const ICONS = {
+  save: '<path d="M5 4h11l3 3v13H5z"/><path d="M8 4v5h7V4M8 20v-6h8v6"/>',
+  upload: '<path d="M12 16V4M7 9l5-5 5 5"/><path d="M5 20h14"/>',
+  download: '<path d="M12 4v12M7 11l5 5 5-5"/><path d="M5 20h14"/>',
+  back: '<path d="M9 14 4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/>',
+  image: '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="m21 17-5-5-9 8"/>',
+  edit: '<path d="M4 20h4L19 9l-4-4L4 16z"/>',
+  cloud: '<path d="M7 18a4 4 0 0 1-.6-8A6 6 0 0 1 18 9a4.5 4.5 0 0 1-.5 9z"/><path d="M12 11v6M9.5 13.5 12 11l2.5 2.5"/>',
+  trash: '<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>',
+};
+function sheetAction(icon, label, fn, danger) {
+  const b = el("button", { class: "gs-action" + (danger ? " danger" : ""), type: "button", onclick: fn });
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 24"); svg.innerHTML = ICONS[icon];
+  b.append(svg, el("span", {}, label));
+  return b;
+}
+function openGameSheet(key) { sheetKey = key; fillGameSheet(key); openSheet("gameSheet"); }
+function fillGameSheet(key) {
+  const g = gameInfo(key), sh = $("#gameSheet");
+  const status = el("div", { class: "gs-status" },
+    el("div", { class: "sync-line" }, g.save ? [el("span", { class: "dot ok" }), `Save na nuvem ${ago(g.save.at)}, do ${g.save.device || "outro aparelho"}`]
+      : cloud.db ? [el("span", { class: "dot" }), "Ainda sem save na nuvem"] : [el("span", { class: "dot warn" }), "Save só neste aparelho"]),
+    el("div", { class: "sync-line" }, g.crom ? [el("span", { class: "dot ok" }), "ROM na nuvem, abre em qualquer aparelho"]
+      : g.rom ? [el("span", { class: "dot" }), cloud.db ? "ROM só neste aparelho" : "ROM neste aparelho"] : [el("span", { class: "dot warn" }), "A ROM não está neste aparelho"]));
   const working = busy.get(key);
-
-  const actions = el("div", { class: "actions" });
-  if (working) actions.append(el("button", { class: "btn primary", type: "button", disabled: true }, working));
-  else if (rom || crom) actions.append(el("button", { class: "btn primary", type: "button", onclick: () => play(key) }, "Jogar"));
-  else actions.append(el("button", { class: "btn primary", type: "button", onclick: () => pickRom() }, "Adicionar a ROM neste aparelho"));
-
-  const more = el("div", { class: "more" });
-  if (cloud.db) more.append(el("button", { class: "btn small", type: "button", onclick: () => pickSav(key, { title, system: sys === "GBA" ? "gba" : "gb", code }) }, "Enviar arquivo .sav"));
-  if (save && cloud.downloads) more.append(el("button", { class: "btn small", type: "button", onclick: () => downloadSave(save) }, "Baixar save"));
-  if (save && save.prev) more.append(el("button", { class: "btn small", type: "button", onclick: () => confirmRestore(key, save) }, "Voltar à versão anterior"));
-  if (rom && !crom && cloud.db && !working) more.append(el("button", { class: "btn small", type: "button", onclick: () => uploadRom(rom) }, `Guardar ROM no ${cloudName()}`));
-  if (rom && !crom) more.append(el("button", { class: "btn small ghost", type: "button", onclick: () => confirmRemoveRom(key, title) }, "Tirar ROM daqui"));
-
-  return el("article", { class: "cart" },
-    el("div", { class: "cart-label" },
-      el("span", { class: "cart-code" }, [sys, code].filter(Boolean).join(" · ")),
-      el("span", { class: "cart-title" }, title)),
-    el("div", { class: "cart-body" },
-      el("div", { class: "sync-line" }, line),
-      romLine ? el("div", { class: "sync-line" }, romLine) : null,
-      actions, more.childNodes.length ? more : null));
+  const playBtn = working ? el("button", { class: "btn primary", type: "button", disabled: true }, working)
+    : g.playable ? el("button", { class: "btn primary", type: "button", onclick: () => { closeSheets(); play(key); } }, g.save ? "Continuar" : "Jogar")
+    : el("button", { class: "btn primary", type: "button", onclick: () => { closeSheets(); pickRom(); } }, "Adicionar a ROM neste aparelho");
+  const acts = el("div", { class: "gs-actions" });
+  if (g.rom && !g.crom && cloud.db && !working) acts.append(sheetAction("cloud", `Guardar a ROM no ${cloudName()}`, () => uploadRom(g.rom)));
+  acts.append(sheetAction("image", "Trocar capa", () => pickCover(key)));
+  acts.append(sheetAction("edit", "Renomear", () => renameGame(key)));
+  if (cloud.db) acts.append(sheetAction("upload", "Enviar arquivo .sav", () => pickSav(key, { title: g.title, system: g.system, code: g.code })));
+  if (g.save) acts.append(sheetAction("download", "Baixar o save", () => downloadSave(g.save)));
+  if (g.save && g.save.prev) acts.append(sheetAction("back", "Voltar à versão anterior do save", () => confirmRestore(key, g.save)));
+  if (g.rom && !g.crom) acts.append(sheetAction("trash", "Tirar a ROM deste aparelho", () => confirmRemoveRom(key, g.title), true));
+  sh.replaceChildren(el("div", { class: "sheet-grip", "aria-hidden": "true" }),
+    el("div", { class: "sheet-body" },
+      el("div", { class: "gs-head" }, coverEl(g), el("div", {}, el("h2", { class: "gs-title", id: "gsTitle" }, g.title), el("p", { class: "gs-sub" }, [g.sys, g.code].filter(Boolean).join(" · ")))),
+      el("div", { class: "gs-play" }, playBtn), status, acts));
 }
+
+/* ---------------- rename and cover ---------------- */
+async function setGameMeta(key, patch) {
+  const rom = roms.get(key);
+  if (rom) { const upd = { ...rom, ...patch, ident: true }; await idb.put("roms", key, upd).catch(() => {}); roms.set(key, upd); }
+  if (cloud.db) {
+    try { await updateIndex((d) => { d.games[key] = { ...(d.games[key] || {}), ...patch }; }, `Biblioteca: ${patch.title || gameInfo(key).title}`); }
+    catch (e) { toast("Mudou neste aparelho, mas não deu para salvar na nuvem agora."); }
+  } else if (cloud.index && cloud.index.games && cloud.index.games[key]) Object.assign(cloud.index.games[key], patch);
+  render();
+}
+function renameGame(key) {
+  const g = gameInfo(key), root = $("#dialogRoot");
+  const input = el("input", { id: "renameInput", class: "rename-input", type: "text", maxlength: "60", value: g.title, autocomplete: "off" });
+  const close = () => root.replaceChildren();
+  root.replaceChildren(el("div", { class: "scrim" }, el("form", { class: "dialog", onsubmit: (e) => {
+      e.preventDefault(); const t = input.value.trim().replace(/\s+/g, " "); if (!t) { input.focus(); return; } close();
+      setGameMeta(key, { title: t, titleSet: true }).then(() => toast("Nome atualizado"));
+    } },
+    el("h2", {}, "Renomear"), input,
+    el("button", { class: "btn primary", type: "submit" }, "Salvar nome"),
+    el("button", { class: "btn", type: "button", onclick: close }, "Cancelar"))));
+  input.focus(); input.select();
+}
+let coverTarget = null;
+function pickCover(key) { coverTarget = key; const i = $("#coverInput"); i.value = ""; i.click(); }
+async function squareJpeg(file, size = 400) {
+  const bmp = await createImageBitmap(file);
+  const s = Math.min(bmp.width, bmp.height), c = document.createElement("canvas");
+  c.width = c.height = size;
+  c.getContext("2d").drawImage(bmp, (bmp.width - s) / 2, (bmp.height - s) / 2, s, s, 0, 0, size, size);
+  return new Promise((res) => c.toBlob(res, "image/jpeg", 0.86));
+}
+$("#coverInput").addEventListener("change", async (e) => {
+  const f = e.target.files && e.target.files[0], key = coverTarget; coverTarget = null;
+  if (!f || !key) return;
+  try {
+    const blob = await squareJpeg(f), rev = rid();
+    await idb.put("covers", key, { rev, blob });
+    if (cloud.db) await putBinary("covers/" + key + ".jpg", new Uint8Array(await blob.arrayBuffer()), "Capa", "image/jpeg");
+    await setGameMeta(key, { cover: "custom", coverRev: rev });
+    toast("Capa trocada");
+  } catch (err) { toast("Não deu para usar essa imagem."); }
+});
 
 /* ---------------- dialogs ---------------- */
 function dialog(title, text, buttons) {
@@ -894,9 +1132,10 @@ $("#romInput").addEventListener("change", async (e) => {
     const info = parseRom(bytes, name);
     if (!info) { toast("Esse arquivo não parece uma ROM de GBA ou GB."); return; }
     const ext = info.system === "gba" ? "gba" : (/\.gbc$/i.test(name) ? "gbc" : "gb");
-    await idb.put("roms", info.key, { ...info, ext, fileName: name, size: bytes.length, addedAt: Date.now(), blob: new Blob([bytes]) });
+    const id = await identifyRom(bytes, info, name).catch(() => ({ title: info.title, cover: null }));
+    await idb.put("roms", info.key, { ...info, title: id.title, cover: id.cover, ident: true, ext, fileName: name, size: bytes.length, addedAt: Date.now(), blob: new Blob([bytes]) });
     await loadRoms(); render();
-    toast(cloud.docs.has(info.key) ? `${info.title}: o save da nuvem já está pronto` : `${info.title} adicionado`);
+    toast(cloud.docs.has(info.key) ? `${gameInfo(info.key).title}: o save da nuvem já está pronto` : `${gameInfo(info.key).title} adicionado`);
     if (cloud.assets && cloud.db && !cloud.roms.has(info.key)) uploadRom(roms.get(info.key));
   } catch (err) {
     toast("Não consegui ler esse arquivo.");
@@ -2079,7 +2318,7 @@ if (ls.get("cartucho.reset.v1") !== "done") { resetEmulatorSettings(); ls.set("c
 (() => {
   let was = {}, last = 0;
   function targets() {
-    const root = $("#dialogRoot").firstElementChild || $("#library");
+    const root = $("#dialogRoot").firstElementChild || [...document.querySelectorAll(".sheet")].find((x) => !x.hidden) || $("#library");
     return [...root.querySelectorAll("button:not([disabled]), input[type=text]")].filter((n) => n.offsetParent !== null);
   }
   function move(step) {
@@ -2109,7 +2348,7 @@ if (ls.get("cartucho.reset.v1") !== "done") { resetEmulatorSettings(); ls.set("c
 })();
 
 /* ---------------- boot ---------------- */
-$("#connectBtn").addEventListener("click", () => { showConnect(); $("#connect").scrollIntoView({ behavior: "smooth" }); });
+$("#connectBtn").addEventListener("click", () => { showWelcome(); window.scrollTo(0, 0); });
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js", { updateViaCache: "none" }).then((r) => r.update()).catch(() => {});
 handleScreenLink();
 { // #diagnostico runs the whole speed test; #diagnostico:touch,cast only those steps (used by the automated test to re-check)
@@ -2119,5 +2358,6 @@ handleScreenLink();
 (async () => {
   await loadRoms();
   await connect();
+  identifyOldRoms();
 })();
 })();

@@ -60,12 +60,17 @@ async function runDiagnostic(only) {
   return out;
 }
 const avg = (xs) => xs.reduce((a, x) => a + x, 0) / xs.length;
+// "Tudo junto" stacks two features (touches on the controller + the video stream),
+// so it gets both budgets: 1 - (1 - 15%)^2, about 28%
+const COMBINED = new Set(["all"]);
+const allowedCost = (id) => (COMBINED.has(id) ? 1 - (1 - maxCost) ** 2 : maxCost);
+const tooSlow = (r) => r.rel != null && r.rel < 1 - allowedCost(r.id);
 const drift = (bases) => avg(bases.slice(-2)) / avg(bases.slice(0, Math.ceil(bases.length / 2)));
 
 const first = await runDiagnostic(null);
 const rows = first.results.map((r) => ({ ...r, tries: r.rel == null ? [] : [r.rel] }));
 let driftValues = [drift(first.bases)];
-const slowIds = rows.filter((r) => r.rel != null && r.rel < 1 - maxCost).map((r) => r.id);
+const slowIds = rows.filter(tooSlow).map((r) => r.id);
 if (slowIds.length || driftValues[0] < 1 - maxCost) {
   console.log(`Medindo de novo: ${slowIds.join(", ") || "tudo (o emulador caiu ao longo do teste)"}`);
   const again = await runDiagnostic(driftValues[0] < 1 - maxCost ? null : slowIds);
@@ -83,9 +88,10 @@ const table = [
   `| Situação | Capacidade | Relativo ao normal | |`,
   `|---|---:|---:|---|`,
   ...rows.map((r) => {
-    const ok = r.rel == null || r.rel >= 1 - maxCost;
+    const ok = !tooSlow(r);
     const rel = r.rel == null ? "referência" : r.tries.map((t) => (t * 100).toFixed(0) + "%").join(" → ");
-    return `| ${r.label} | ${((r.fps / 59.7275) * 100).toFixed(0)}% | ${rel} | ${ok ? "ok" : "**lento demais**"} |`;
+    const label = COMBINED.has(r.id) ? `${r.label} (até ${Math.round(allowedCost(r.id) * 100)}%)` : r.label;
+    return `| ${label} | ${((r.fps / 59.7275) * 100).toFixed(0)}% | ${rel} | ${ok ? "ok" : "**lento demais**"} |`;
   }),
   `| O emulador sozinho manteve a velocidade até o fim | | ${driftValues.map((d) => (d * 100).toFixed(0) + "%").join(" → ")} | ${driftOk ? "ok" : "**caiu: algo ficou rodando**"} |`,
 ].join("\n");
@@ -93,7 +99,7 @@ const summary = `## Teste de velocidade (CPU ${slowdown}x mais lenta, custo máx
 console.log(summary);
 if (process.env.GITHUB_STEP_SUMMARY) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary);
 if (process.env.SUMMARY_FILE) fs.writeFileSync(process.env.SUMMARY_FILE, summary);
-const failed = rows.filter((r) => r.rel != null && r.rel < 1 - maxCost).map((r) => r.label);
+const failed = rows.filter(tooSlow).map((r) => r.label);
 if (!driftOk) failed.push("o emulador ficou mais lento ao longo do teste");
 if (failed.length) {
   console.error(`Falhou (lento nas duas medições): ${failed.join(", ")}.`);

@@ -251,35 +251,131 @@ button { cursor: pointer; }
 .speed.ok { color: var(--ok); } .speed.warn { color: var(--warn); } .speed.bad { color: var(--bad); }
 @media (max-width: 420px) { .pbar .chip #pChipText { display: none; } }
 
+
+/* ================= library redesign =================
+   One bold element: the tilted cartridge on the welcome screen. Everything else is
+   quiet: covers carry the colour, the chrome stays neutral. */
+#library { max-width: 980px; padding-block: 0 56px; gap: 18px; }
+.appbar { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 10; display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 12px 0; background: var(--bg); }
+.logo { display: inline-flex; align-items: center; gap: 10px; color: var(--ink); text-decoration: none; font-family: var(--font-display); font-weight: 800; font-size: 1.3rem; letter-spacing: -0.01em; }
+.logo img { border-radius: 8px; }
+.appbar-actions { display: flex; align-items: center; gap: 8px; }
+.iconbtn { display: inline-flex; align-items: center; gap: 8px; height: 38px; padding: 0 12px; border-radius: 19px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); font-weight: 600; font-size: 0.88rem; }
+.iconbtn svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
+@media (max-width: 400px) { .iconbtn span { display: none; } .iconbtn { width: 38px; padding: 0; justify-content: center; } }
+.avatar { width: 38px; height: 38px; border-radius: 50%; border: 0; background: var(--label); color: #f2f3fa; font-family: var(--font-display); font-weight: 800; font-size: 1rem; display: grid; place-items: center; }
+
+/* ---- welcome ---- */
+.welcome { max-width: 460px; width: 100%; margin: 4px auto 0; display: grid; gap: 14px; justify-items: start; }
+.welcome-art { width: 100%; height: 200px; display: grid; place-items: center; margin-bottom: 4px; }
+.cart-shell { position: relative; width: 168px; height: 188px; background: #2c3146; border-radius: 10px 10px 16px 16px; transform: rotate(-7deg);
+  box-shadow: inset 0 2px 0 rgba(255,255,255,0.12), 0 14px 0 -6px #1d2130, 0 22px 30px rgba(20, 24, 40, 0.28); }
+.cart-shell::before { content: ""; position: absolute; top: 0; right: 0; width: 34px; height: 22px; background: var(--bg); border-bottom-left-radius: 8px; }
+.cart-label-art { position: absolute; left: 14px; right: 14px; top: 30px; height: 112px; border-radius: 6px; background: var(--accent); overflow: hidden; display: grid; align-content: end; padding: 12px; }
+.cart-stripes { position: absolute; left: 0; right: 0; top: 10px; height: 18px; background: repeating-linear-gradient(90deg, rgba(255,255,255,0.32) 0 12px, transparent 12px 20px); }
+.cart-title-art { position: relative; color: #fff; font-family: var(--font-display); font-weight: 800; font-size: 1.25rem; line-height: 1.05; }
+.cart-pins { position: absolute; left: 22px; right: 22px; bottom: 10px; height: 14px; background: repeating-linear-gradient(90deg, #a6abbd 0 7px, transparent 7px 11px); opacity: 0.55; border-radius: 2px; }
+@media (prefers-reduced-motion: no-preference) { .cart-shell { animation: cart-in 0.7s cubic-bezier(.2,.9,.25,1.15) both; } @keyframes cart-in { from { transform: translateY(18px) rotate(4deg); opacity: 0; } } }
+.welcome-title { font-family: var(--font-display); font-weight: 800; font-size: clamp(2rem, 8vw, 2.7rem); line-height: 1.02; letter-spacing: -0.025em; margin: 0; text-wrap: balance; }
+.welcome-lead { margin: 0; color: var(--muted); font-size: 1.05rem; max-width: 40ch; }
+.welcome #googleBox { width: 100%; justify-items: stretch; }
+.welcome .google-btn { width: 100%; min-height: 52px; font-size: 1.02rem; }
+.welcome #localOnlyBtn { width: 100%; }
+.welcome-more { width: 100%; display: grid; gap: 12px; border-top: 1px solid var(--line); padding-top: 14px; margin-top: 4px; }
+.welcome .gh-adv { border-top: 0; padding-top: 0; }
+
+/* ---- continue playing ---- */
+#home { display: grid; gap: 22px; }
+.continue { display: grid; grid-template-columns: 116px 1fr; gap: 16px; align-items: center; background: var(--surface); border: 1px solid var(--line); border-radius: 16px; padding: 14px; }
+.continue .cover { width: 116px; }
+.continue-body { display: grid; gap: 4px; min-width: 0; }
+.continue-kicker { color: var(--muted); font-size: 0.85rem; margin: 0; }
+.continue-title { font-family: var(--font-display); font-weight: 800; font-size: 1.35rem; line-height: 1.1; margin: 0; text-wrap: balance; overflow-wrap: anywhere; }
+.continue-meta { color: var(--muted); font-size: 0.88rem; margin: 0 0 6px; }
+.continue .btn.primary { justify-self: start; min-width: 140px; }
+@media (min-width: 640px) { .continue { grid-template-columns: 168px 1fr; padding: 18px; gap: 22px; } .continue .cover { width: 168px; } .continue-title { font-size: 1.7rem; } }
+
+/* ---- shelf ---- */
+.shelf-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.shelf-title { font-family: var(--font-display); font-weight: 800; font-size: 1.3rem; margin: 0; }
+.shelf { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(46%, 150px), 1fr)); gap: 20px 14px; }
+.tile { display: grid; gap: 7px; align-content: start; text-align: left; background: none; border: 0; padding: 0; color: var(--ink); min-width: 0; }
+.tile:focus-visible { outline: none; } .tile:focus-visible .cover { outline: 3px solid var(--accent); outline-offset: 3px; }
+.tile-title { font-weight: 600; font-size: 0.95rem; line-height: 1.25; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.tile-meta { color: var(--muted); font-size: 0.8rem; margin-top: -3px; display: flex; align-items: center; gap: 5px; min-width: 0; }
+.tile-meta span:last-child { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tile-busy { color: var(--accent); }
+.cover { position: relative; width: 100%; aspect-ratio: 1; border-radius: 10px; overflow: hidden; background: #2c3146; box-shadow: 0 1px 0 rgba(255,255,255,0.06) inset, 0 8px 18px rgba(20, 24, 40, 0.16); }
+.cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.tile:active .cover { transform: scale(0.98); }
+/* generated cover for games without box art: a cartridge label in the game's own colour */
+.gen-cover { position: absolute; inset: 0; display: grid; grid-template-rows: auto 1fr auto; padding: 12% 10% 10%; background: hsl(var(--h) 42% 30%); color: #fff; }
+.gen-cover::before { content: ""; height: 9%; min-height: 8px; background: repeating-linear-gradient(90deg, rgba(255,255,255,0.3) 0 10px, transparent 10px 16px); border-radius: 2px; }
+.gen-cover .gen-title { align-self: end; font-family: var(--font-display); font-weight: 800; font-size: clamp(0.95rem, 11cqw, 1.9rem); line-height: 1.05; overflow-wrap: anywhere; text-wrap: balance; }
+.gen-cover .gen-sys { font-family: var(--font-pixel); font-size: 0.62rem; opacity: 0.75; margin-top: 6px; }
+.cover { container-type: inline-size; }
+.add-tile .cover { background: transparent; box-shadow: none; border: 2px dashed var(--line); display: grid; place-items: center; color: var(--muted); }
+.add-tile .cover svg { width: 34%; height: 34%; stroke: currentColor; stroke-width: 1.6; fill: none; stroke-linecap: round; }
+.empty { border-style: solid; }
+.empty p { margin: 0; color: var(--muted); max-width: 52ch; }
+.empty .btn { justify-self: start; }
+
+/* ---- sheets ---- */
+.sheet-scrim { position: fixed; inset: 0; background: rgba(8, 10, 18, 0.5); z-index: 40; }
+.sheet { position: fixed; left: 0; right: 0; bottom: 0; z-index: 41; margin: 0 auto; max-width: 560px; max-height: 88vh; overflow: auto; background: var(--surface); color: var(--ink);
+  border-radius: 20px 20px 0 0; padding: 8px 18px calc(18px + env(safe-area-inset-bottom, 0px)); box-shadow: 0 -10px 30px rgba(0,0,0,0.25); }
+@media (prefers-reduced-motion: no-preference) { .sheet:not([hidden]) { animation: sheet-up 0.22s ease-out; } @keyframes sheet-up { from { transform: translateY(40px); opacity: 0.4; } } }
+.sheet-grip { width: 40px; height: 4px; border-radius: 2px; background: var(--line); margin: 4px auto 12px; }
+.sheet-body { display: grid; gap: 16px; }
+.gs-head { display: grid; grid-template-columns: 112px 1fr; gap: 14px; align-items: center; }
+.gs-head .cover { width: 112px; }
+.gs-title { font-family: var(--font-display); font-weight: 800; font-size: 1.35rem; line-height: 1.1; margin: 0 0 4px; overflow-wrap: anywhere; text-wrap: balance; }
+.gs-sub { color: var(--muted); font-size: 0.85rem; margin: 0; }
+.gs-status { display: grid; gap: 6px; }
+.gs-actions { display: grid; gap: 2px; }
+.gs-action { display: flex; align-items: center; gap: 12px; width: 100%; text-align: left; background: none; border: 0; border-radius: 10px; padding: 11px 8px; color: var(--ink); font-weight: 500; }
+.gs-action:hover, .gs-action:focus-visible { background: var(--bg); }
+.gs-action svg { width: 20px; height: 20px; stroke: currentColor; fill: none; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; flex: none; color: var(--muted); }
+.gs-action.danger { color: var(--bad); } .gs-action.danger svg { color: var(--bad); }
+.gs-play { display: grid; grid-template-columns: 1fr; gap: 8px; }
+.gs-play .btn { min-height: 48px; font-size: 1rem; }
+.set-group { display: grid; gap: 8px; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+.set-group h3 { margin: 0; font-size: 1rem; }
+.set-line { margin: 0; color: var(--muted); font-size: 0.9rem; }
+.rename-input { width: 100%; font: inherit; font-size: 1.1rem; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
+
 body { margin: 0; }
 </style>
 </head>
 <body>
 <main id="library">
-  <header class="top">
-    <div class="brand">
-      <h1>Cartuchin</h1>
-      <p>Emulador de GBA com o save na nuvem. Jogue no celular, continue no PC, no tablet ou na TV.</p>
-    </div>
-    <div class="top-actions">
-      <button class="btn" id="screenBtn" type="button">Usar como tela</button>
-      <button class="btn primary" id="addRomBtn" type="button">Adicionar ROM</button>
+  <header class="appbar">
+    <a class="logo" href="./" aria-label="Cartuchin"><img src="icon.svg" alt="" width="30" height="30"><span>Cartuchin</span></a>
+    <div class="appbar-actions">
+      <button class="iconbtn" id="screenBtn" type="button" title="Usar esta tela como TV"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8 21h8M12 17v4"/></svg><span>Usar como tela</span></button>
+      <button class="avatar" id="accountBtn" type="button" aria-label="Conta e ajustes"><span id="avatarLetter">?</span></button>
     </div>
   </header>
   <div id="notice" hidden></div>
 
-  <section id="connect" class="panel" hidden>
-    <h2>Guarde seus jogos na nuvem</h2>
-    <p>Entre com o Google e seus jogos e saves ficam numa pasta oculta do seu Google Drive, só deste app. Em outro aparelho, é só entrar com a mesma conta.</p>
+  <section id="connect" class="welcome" hidden>
+    <div class="welcome-art" aria-hidden="true">
+      <div class="cart-shell"><div class="cart-label-art"><span class="cart-stripes"></span><span class="cart-title-art">Seus jogos</span></div><div class="cart-pins"></div></div>
+    </div>
+    <h1 class="welcome-title">Seus jogos de GBA em qualquer tela</h1>
+    <p class="welcome-lead">Jogue no celular e continue no tablet ou na TV. O save vai junto, guardado no seu Google Drive.</p>
     <div id="googleBox">
       <button class="btn primary google-btn" id="googleBtn" type="button">
         <svg viewBox="0 0 18 18" width="18" height="18" aria-hidden="true"><path fill="#4285F4" d="M17.64 9.2c0-.64-.06-1.25-.16-1.84H9v3.48h4.84a4.14 4.14 0 0 1-1.8 2.71v2.26h2.92a8.78 8.78 0 0 0 2.68-6.61z"/><path fill="#34A853" d="M9 18c2.43 0 4.47-.8 5.96-2.18l-2.92-2.26c-.8.54-1.83.86-3.04.86-2.34 0-4.32-1.58-5.03-3.7H.96v2.33A9 9 0 0 0 9 18z"/><path fill="#FBBC05" d="M3.97 10.72A5.41 5.41 0 0 1 3.68 9c0-.6.1-1.18.29-1.72V4.95H.96A9 9 0 0 0 0 9c0 1.45.35 2.83.96 4.05l3.01-2.33z"/><path fill="#EA4335" d="M9 3.58c1.32 0 2.5.45 3.44 1.35l2.58-2.59A9 9 0 0 0 .96 4.95l3.01 2.33C4.68 5.16 6.66 3.58 9 3.58z"/></svg>
         <span>Entrar com Google</span>
       </button>
-      <p class="small-note" id="googleMsg" role="status">O app só enxerga a própria pasta: não vê nenhum outro arquivo do seu Drive. <a href="privacidade.html">Privacidade</a> · <a href="termos.html">Termos</a></p>
+      <p class="small-note" id="googleMsg" role="status">O app só enxerga a pasta dele no seu Drive, nenhum outro arquivo.</p>
     </div>
-    <p class="small-note"><b>Na TV:</b> use <b>Usar como tela</b> lá em cima. A TV só mostra o jogo que roda no celular e não precisa entrar em conta nenhuma.</p>
-    <details class="gh-adv" id="ghAdv">
+    <button class="btn ghost" id="localOnlyBtn" type="button">Jogar sem conta</button>
+    <div class="welcome-more">
+      <p class="small-note">Na TV, toque em <b>Usar como tela</b> lá em cima. A TV mostra o jogo que roda no celular e não precisa de conta.</p>
+      <details class="gh-adv" id="ghAdv">
       <summary>Usar um repositório do GitHub (avançado)</summary>
     <div class="split">
       <div class="opt">
@@ -311,41 +407,59 @@ body { margin: 0; }
       </form>
     </div>
     </details>
-    <button class="btn ghost small" id="localOnlyBtn" type="button">Jogar sem nuvem por enquanto</button>
+      <p class="small-note"><a href="privacidade.html">Privacidade</a> e <a href="termos.html">Termos</a></p>
+    </div>
   </section>
 
-  <section id="games" class="games" aria-live="polite"></section>
-  <section id="empty" class="empty" hidden>
-    <h2>Nenhum jogo ainda</h2>
-    <ol>
-      <li>Adicione a ROM do jogo (.gba, .gb, .gbc ou .zip). Ela vai para a sua nuvem junto com o save.</li>
-      <li>Se tiver um save antigo, envie o arquivo .sav no cartão do jogo.</li>
-      <li>Salve dentro do jogo normalmente. O save sobe sozinho.</li>
-      <li>Em outro aparelho, entre com a mesma conta e toque em Jogar. Na TV, use <b>Usar como tela</b>.</li>
-    </ol>
+  <section id="home" hidden>
+    <section id="continue" class="continue" hidden></section>
+    <div class="shelf-head">
+      <h2 class="shelf-title">Biblioteca</h2>
+      <button class="btn small" id="addRomBtn" type="button">Adicionar jogo</button>
+    </div>
+    <section id="games" class="shelf" aria-live="polite"></section>
+    <section id="empty" class="empty" hidden>
+      <h2>Sua estante está vazia</h2>
+      <p>Adicione a ROM de um jogo seu (.gba, .gb, .gbc ou .zip). A capa e o nome aparecem sozinhos, e o jogo fica disponível em todos os seus aparelhos.</p>
+      <button class="btn primary" id="emptyAddBtn" type="button">Adicionar jogo</button>
+    </section>
   </section>
-  <footer class="foot">
-    <div class="conn">
-      <span id="connText"></span>
-      <button class="btn small" id="pairOtherBtn" type="button" hidden>Conectar outro aparelho</button>
-      <button class="btn small ghost" id="disconnectBtn" type="button" hidden>Desconectar</button>
-      <button class="btn small" id="connectBtn" type="button" hidden>Conectar à nuvem</button>
-    </div>
-    <div class="perf">
-      <span>Desempenho neste aparelho</span>
-      <div class="seg" id="perfModes" role="group" aria-label="Desempenho">
-        <button class="btn small" type="button" data-mode="auto">Automático</button>
-        <button class="btn small" type="button" data-mode="light">Leve</button>
+
+  <div class="sheet-scrim" id="sheetScrim" hidden></div>
+  <section class="sheet" id="gameSheet" role="dialog" aria-modal="true" aria-labelledby="gsTitle" hidden></section>
+  <section class="sheet" id="settingsSheet" role="dialog" aria-modal="true" aria-label="Conta e ajustes" hidden>
+    <div class="sheet-grip" aria-hidden="true"></div>
+    <div class="sheet-body">
+      <div class="set-group">
+        <h3>Conta</h3>
+        <p id="connText" class="set-line"></p>
+        <div class="seg">
+          <button class="btn small primary" id="connectBtn" type="button" hidden>Entrar com Google</button>
+          <button class="btn small" id="pairOtherBtn" type="button" hidden>Conectar outro aparelho</button>
+          <button class="btn small ghost" id="disconnectBtn" type="button" hidden>Sair da conta</button>
+        </div>
       </div>
-      <span id="perfHint"></span>
+      <div class="set-group perf">
+        <h3>Desempenho neste aparelho</h3>
+        <div class="seg" id="perfModes" role="group" aria-label="Desempenho">
+          <button class="btn small" type="button" data-mode="auto">Automático</button>
+          <button class="btn small" type="button" data-mode="light">Leve</button>
+        </div>
+        <p id="perfHint" class="set-line"></p>
+        <div class="seg"><button class="btn small" id="diagBtn" type="button">Testar velocidade</button><button class="btn small ghost" id="resetEmuBtn" type="button">Restaurar o emulador</button></div>
+      </div>
+      <div class="set-group">
+        <h3>Este aparelho</h3>
+        <label class="field" for="deviceName">Nome que aparece nos saves<input id="deviceName" type="text" maxlength="40" autocomplete="off"></label>
+      </div>
+      <p class="small-note">Feito com <a href="https://github.com/EmulatorJS/EmulatorJS" target="_blank" rel="noopener">EmulatorJS</a> e <a href="https://mgba.io" target="_blank" rel="noopener">mGBA</a>. <a href="privacidade.html">Privacidade</a> e <a href="termos.html">Termos</a>.</p>
+      <button class="btn" id="settingsClose" type="button">Fechar</button>
     </div>
-    <div class="seg"><button class="btn small" id="diagBtn" type="button">Testar velocidade deste aparelho</button><button class="btn small ghost" id="resetEmuBtn" type="button">Restaurar configurações do emulador</button></div>
-    <label for="deviceName">Este aparelho se chama <input id="deviceName" type="text" maxlength="40" autocomplete="off"></label>
-    <span>Save states do menu do emulador ficam só neste aparelho. O que sincroniza é o save feito dentro do jogo.</span>
-    <span>Feito com <a href="https://github.com/EmulatorJS/EmulatorJS" target="_blank" rel="noopener">EmulatorJS</a> e <a href="https://mgba.io" target="_blank" rel="noopener">mGBA</a>. <a href="privacidade.html">Privacidade</a> · <a href="termos.html">Termos</a></span>
-  </footer>
+  </section>
+
   <input id="romInput" type="file" accept=".gba,.gb,.gbc,.zip" hidden>
   <input id="savInput" type="file" accept=".sav,.srm,.sa1,.fla,.eep" hidden>
+  <input id="coverInput" type="file" accept="image/*" hidden>
 </main>
 
 <section id="player" hidden>
@@ -420,9 +534,9 @@ body { margin: 0; }
 
 <div id="dialogRoot"></div>
 
-<script src="config.js?v=20261012132233"></script>
-<script src="vendor/lang-pt-BR.js?v=20261012132233"></script>
+<script src="config.js?v=20261012133810"></script>
+<script src="vendor/lang-pt-BR.js?v=20261012133810"></script>
 <script src="vendor/qrcode.js"></script>
-<script src="app.js?v=20261012132233"></script>
+<script src="app.js?v=20261012133810"></script>
 </body>
 </html>
