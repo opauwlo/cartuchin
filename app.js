@@ -1075,6 +1075,7 @@ async function play(key) {
     await sleep(1500);
     if (start.upload) flush();
     player.timer = setInterval(flush, 30000);
+    if (!cast.pc) showPad(false);
     startSpeedMeter();
     if (cast.pending) { const c = cast.pending; cast.pending = null; setTimeout(() => castTo(c), 500); }
   });
@@ -1243,19 +1244,40 @@ const KEYCODES = { 10009: "B", 415: "START", 19: "START", 403: "L", 404: "R", 40
 /* ---------- phone side ---------- */
 const cast = window.__cast = { pc: null, dc: null, code: null, pending: null, lastMask: 0, localMask: 0, remoteMask: 0 };
 
+/* A GBA game reads the buttons once per frame (every 16.7 ms). A quick tap on glass
+   can begin and end between two reads, and then the game never sees it: that is the
+   "tapped and nothing happened". So every press is held for at least MIN_HOLD.
+   Directions are the exception: pressing a new direction releases the old one at
+   once, so a quick turn never sends two directions together. */
+const MIN_HOLD = 70;
+const DIR_MASK = ["UP", "DOWN", "LEFT", "RIGHT"].reduce((m, k) => m | (1 << PAD_BITS.indexOf(k)), 0);
+const pressedAt = new Array(PAD_BITS.length).fill(0);
+let releaseTimer = null;
 function applyInput() {
   const gm = player.emu && player.emu.gameManager; if (!gm) return;
-  const mask = (cast.localMask | cast.remoteMask) >>> 0;
+  const want = (cast.localMask | cast.remoteMask) >>> 0;
+  const now = performance.now();
+  let applied = cast.lastMask, wait = Infinity;
   PAD_BITS.forEach((k, i) => {
-    const now = (mask >> i) & 1, was = (cast.lastMask >> i) & 1;
-    if (now !== was) try { gm.simulateInput(0, PAD[k], now); } catch (e) {}
+    const bit = 1 << i, w = want & bit, h = applied & bit;
+    if (w && !h) {
+      try { gm.simulateInput(0, PAD[k], 1); } catch (e) {}
+      applied |= bit; pressedAt[i] = now;
+    } else if (!w && h) {
+      const turning = (bit & DIR_MASK) && (want & DIR_MASK & ~bit);
+      const left = turning ? 0 : pressedAt[i] + MIN_HOLD - now;
+      if (left <= 0) { try { gm.simulateInput(0, PAD[k], 0); } catch (e) {} applied &= ~bit; }
+      else wait = Math.min(wait, left);
+    }
   });
-  cast.lastMask = mask;
+  cast.lastMask = applied;
+  clearTimeout(releaseTimer);
+  if (wait < Infinity) releaseTimer = setTimeout(applyInput, wait + 1);
 }
 function applyRemote(mask) { cast.remoteMask = mask; applyInput(); }
 function setCastUi(state) {
   const b = $("#castBtn");
-  b.textContent = state === "on" ? "Na TV ●" : state === "wait" ? "Conectando…" : "Jogar na TV";
+  b.innerHTML = state === "on" ? "<span class=\"long\">Na </span>TV ●" : state === "wait" ? "Conectando…" : "<span class=\"long\">Jogar na </span>TV";
   b.classList.toggle("primary", state === "on");
 }
 function stopCast(msg) {
@@ -1342,30 +1364,46 @@ function padGeometry() {
   }
   return (padState.geo = geo);
 }
+/* Thumbs land a little off target. Every control accepts touches a bit outside its
+   drawing (the D-pad more than the rest); where two of those zones meet, the nearest
+   control wins. */
 function controlAt(x, y) {
+  let best = null, bestD = Infinity;
   for (const g of padGeometry()) {
-    if (x < g.l || x > g.r || y < g.t || y > g.b) continue;
-    if (g.round && Math.hypot(x - g.cx, y - g.cy) > g.rad) continue;
-    return g.id;
+    const w = (g.r - g.l) / 2, h = (g.b - g.t) / 2;
+    let d;
+    if (g.round) d = Math.hypot(x - g.cx, y - g.cy) / g.rad;                       // 1 = on the edge
+    else d = Math.max(Math.abs(x - g.cx) / w, Math.abs(y - g.cy) / h);
+    const reach = g.id === "dpad" ? 1.35 : g.round ? 1.3 : 1.15;
+    if (d <= reach && d < bestD) { best = g.id; bestD = d; }
   }
-  return null;
+  return best;
 }
-function dpadMask(x, y) {
+/* The D-pad is read as four 90-degree slices, so rolling the thumb from right to up
+   goes straight from "right" to "up". Before, each direction covered 135 degrees and
+   the overlap (up+right together) swallowed quick turns. Diagonals still exist, but
+   only in a thin 20-degree band right on the diagonal. */
+function dpadMask(x, y, prev) {
   const d = padGeometry().find((g) => g.id === "dpad"); if (!d) return 0;
   let dx = (x - d.cx) / ((d.r - d.l) / 2), dy = (y - d.cy) / ((d.b - d.t) / 2);
   if (padState.rot === 90) [dx, dy] = [dy, -dx];
   else if (padState.rot === -90) [dx, dy] = [-dy, dx];
-  if (Math.hypot(dx, dy) < 0.2) return 0;
+  if (Math.hypot(dx, dy) < 0.15) return 0;
+  const bit = (k) => 1 << PAD_BITS.indexOf(k);
   const a = Math.atan2(dy, dx) * 180 / Math.PI;   // 0 = right, 90 = down
-  let m = 0;
-  if (a > -67.5 && a < 67.5) m |= 1 << PAD_BITS.indexOf("RIGHT");
-  if (a > 22.5 && a < 157.5) m |= 1 << PAD_BITS.indexOf("DOWN");
-  if (a > 112.5 || a < -112.5) m |= 1 << PAD_BITS.indexOf("LEFT");
-  if (a > -157.5 && a < -22.5) m |= 1 << PAD_BITS.indexOf("UP");
-  return m;
+  const diag = [[45, "RIGHT", "DOWN"], [135, "DOWN", "LEFT"], [-135, "LEFT", "UP"], [-45, "UP", "RIGHT"]];
+  for (const [c, k1, k2] of diag) { let off = Math.abs(a - c); if (off > 180) off = 360 - off; if (off <= 10) return bit(k1) | bit(k2); }
+  const cards = [[0, "RIGHT"], [90, "DOWN"], [180, "LEFT"], [-90, "UP"]];
+  let best = null, bestOff = 999;
+  for (const [c, k] of cards) {
+    let off = Math.abs(a - c); if (off > 180) off = 360 - off;
+    if (prev & bit(k)) off -= 4;              // a little stickiness, so the border doesn't flicker
+    if (off < bestOff) { bestOff = off; best = k; }
+  }
+  return bit(best);
 }
 function touchMask(p) {
-  if (p.anchor === "dpad") return dpadMask(p.x, p.y);
+  if (p.anchor === "dpad") return dpadMask(p.x, p.y, p.mask);
   if (p.anchor && p.over === p.anchor) return 1 << PAD_BITS.indexOf(p.anchor);
   return 0;
 }
@@ -1399,6 +1437,20 @@ function padMsg(text) {
 function layoutPad() {
   const pad = $("#pad"); if (pad.hidden) return;
   padState.geo = null;
+  if (padState.mode === "local") {
+    padState.rot = 0;
+    pad.classList.remove("rot", "wide");
+    pad.style.width = pad.style.height = pad.style.transform = "";
+    const g = $("#game").getBoundingClientRect();
+    const upright = g.height > g.width;
+    pad.classList.toggle("port", upright); pad.classList.toggle("land", !upright);
+    pad.style.setProperty("--pad-top", g.top + "px");
+    pad.style.setProperty("--game-h", Math.round(Math.min(g.width / 1.5, g.height)) + "px");
+    pad.style.setProperty("--game-w", Math.round(Math.min(g.height * 1.5, g.width * 0.62)) + "px");
+    requestAnimationFrame(() => { padState.geo = null; });
+    return;
+  }
+  pad.classList.remove("port", "land");
   const pref = padState.forceOrient || ls.get("cartucho.pad.orient") || "h";      // h = landscape, hr = landscape the other way, v = portrait
   const portrait = innerHeight > innerWidth;
   padState.rot = pref === "v" || !portrait ? 0 : pref === "hr" ? -90 : 90;
@@ -1451,10 +1503,20 @@ window.addEventListener("resize", layoutPad);
     padMsg(next === "v" ? "Controle na vertical" : "Controle na horizontal");
   });
 })();
+/* The same controller is used when playing on the phone itself (instead of the
+   emulator's own touch buttons): the picture stays visible in its slot and the
+   controls sit below it (upright) or on both sides of it (sideways). */
+const touchDevice = () => matchMedia("(pointer: coarse)").matches && guessDevice() !== "TV";
+padState.mode = "off";   // off | local | cast
 function showPad(on) {
-  $("#pad").hidden = !on;
-  if (!on) { padTouches.clear(); cast.localMask = 0; }
-  else layoutPad();
+  const pad = $("#pad");
+  padTouches.clear(); cast.localMask = 0; applyInput();
+  if (on) padState.mode = "cast";
+  else padState.mode = player.key && touchDevice() ? "local" : "off";
+  pad.hidden = padState.mode === "off";
+  pad.classList.toggle("local", padState.mode === "local");
+  $("#player").classList.toggle("touch-pad", padState.mode === "local");
+  layoutPad();
 }
 
 function askCastCode() {
@@ -1546,7 +1608,11 @@ async function startScreen() {
     requestAnimationFrame(tick);
     const dc = tvScreen.dc; if (!dc || dc.readyState !== "open") return;
     const mask = readPad(), now = performance.now();
-    if (mask !== tvScreen.lastSent || now - lastBeat > 200) { try { dc.send(String(mask)); } catch (e) {} tvScreen.lastSent = mask; lastBeat = now; }
+    // the channel never resends lost packets (that would add delay), so every change is
+    // sent three times in quick succession and the current state is repeated 10x a second
+    const send = () => { try { dc.send(String(tvScreen.lastSent)); } catch (e) {} };
+    if (mask !== tvScreen.lastSent) { tvScreen.lastSent = mask; send(); setTimeout(send, 15); setTimeout(send, 40); lastBeat = now; }
+    else if (now - lastBeat > 100) { send(); lastBeat = now; }
   };
   requestAnimationFrame(tick);
 }
