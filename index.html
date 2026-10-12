@@ -91,13 +91,13 @@ button { cursor: pointer; }
 #game { flex: 1 1 auto; min-height: 0; width: 100%; padding-bottom: env(safe-area-inset-bottom, 0px); }
 
 /* ---------- dialog ---------- */
-.scrim { position: fixed; inset: 0; background: rgba(8, 10, 18, 0.6); display: grid; place-items: center; padding: 16px; z-index: 20; }
+.scrim { position: fixed; inset: 0; background: rgba(8, 10, 18, 0.6); display: grid; place-items: center; padding: 16px; z-index: 300000; }
 .dialog { background: var(--surface); color: var(--ink); border-radius: 14px; padding: 18px; max-width: 440px; width: 100%; display: grid; gap: 12px; }
 .dialog h2 { font-family: var(--font-display); font-size: 1.2rem; margin: 0; text-wrap: balance; }
 .dialog p { margin: 0; color: var(--muted); }
 .choice { text-align: left; display: grid; gap: 2px; justify-items: start; }
 .choice small { font-weight: 400; opacity: 0.85; }
-.toast { position: fixed; left: 50%; bottom: calc(18px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 9px 14px; border-radius: 10px; z-index: 30; max-width: calc(100% - 32px); font-size: 0.9rem; }
+.toast { position: fixed; left: 50%; bottom: calc(18px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 9px 14px; border-radius: 10px; z-index: 300001; max-width: calc(100% - 32px); font-size: 0.9rem; }
 @media (prefers-reduced-motion: no-preference) { .toast { animation: rise 0.18s ease-out; } @keyframes rise { from { transform: translate(-50%, 8px); opacity: 0; } } }
 
 /* ---------- connect ---------- */
@@ -136,6 +136,8 @@ button { cursor: pointer; }
 #pad button { -webkit-tap-highlight-color: transparent; touch-action: none; font-family: var(--font-pixel); color: var(--ink); cursor: default; }
 .pad-top { grid-area: top; display: flex; align-items: center; gap: 10px; min-width: 0; }
 .pad-live { display: inline-flex; align-items: center; gap: 6px; font-size: 0.8rem; color: #9aa1b4; white-space: nowrap; }
+.pad-save { margin-left: 8px; color: #9aa1b4; }
+.pad-save:empty { display: none; }
 .pad-msg { flex: 1 1 auto; min-width: 0; text-align: center; font-size: 0.8rem; color: var(--ink); opacity: 0; transition: opacity 0.2s; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pad-msg.show { opacity: 1; }
 .pad-tools { display: flex; gap: 6px; margin-left: auto; }
@@ -287,7 +289,7 @@ body { margin: 0; }
       </div>
       <span id="perfHint"></span>
     </div>
-    <div><button class="btn small" id="diagBtn" type="button">Testar velocidade deste aparelho</button></div>
+    <div class="seg"><button class="btn small" id="diagBtn" type="button">Testar velocidade deste aparelho</button><button class="btn small ghost" id="resetEmuBtn" type="button">Restaurar configurações do emulador</button></div>
     <label for="deviceName">Este aparelho se chama <input id="deviceName" type="text" maxlength="40" autocomplete="off"></label>
     <span>Save states do menu do emulador ficam só neste aparelho. O que sincroniza é o save feito dentro do jogo.</span>
     <span>Feito com <a href="https://github.com/EmulatorJS/EmulatorJS" target="_blank" rel="noopener">EmulatorJS</a> e <a href="https://mgba.io" target="_blank" rel="noopener">mGBA</a>.</span>
@@ -303,15 +305,17 @@ body { margin: 0; }
     <span class="speed pix" id="pSpeed" hidden title="Velocidade da emulação"></span>
     <span class="chip" id="pChip"><span class="dot"></span><span id="pChipText">Carregando…</span></span>
     <button class="btn small" id="castBtn" type="button">Jogar na TV</button>
+    <button class="btn small" id="pullBtn" type="button">Carregar da nuvem</button>
     <button class="btn small" id="saveNowBtn" type="button">Enviar save</button>
   </div>
   <div id="game"></div>
   <div id="pad" hidden>
     <div class="pad-top">
-      <span class="pad-live"><span class="dot ok"></span>Na TV <span id="padSpeed"></span></span>
+      <span class="pad-live"><span class="dot ok"></span>Na TV <span id="padSpeed"></span><span class="pad-save" id="padSaveState"></span></span>
       <span class="pad-msg" id="padMsg" role="status"></span>
       <div class="pad-tools">
         <button class="pad-tool" id="padSave" type="button">Salvar na nuvem</button>
+        <button class="pad-tool" id="padPull" type="button">Carregar</button>
         <button class="pad-tool" id="padRotate" type="button" aria-label="Girar o controle">Girar</button>
         <button class="pad-tool" id="padStop" type="button">Encerrar</button>
       </div>

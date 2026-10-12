@@ -240,7 +240,7 @@ async function gh(path, opts = {}, auth = cloud.auth) {
     "X-GitHub-Api-Version": "2022-11-28",
   };
   if (opts.body) headers["Content-Type"] = "application/json";
-  const r = await fetch(GH_API + path, { method: opts.method || "GET", body: opts.body, headers, cache: "no-store" });
+  const r = await fetch(GH_API + path, { method: opts.method || "GET", body: opts.body, headers, cache: "no-store", keepalive: !!opts.keepalive });
   if (!r.ok) { const e = new Error("github " + r.status); e.status = r.status; throw e; }
   if (opts.raw) return r;
   return r.status === 204 ? null : r.json();
@@ -254,10 +254,12 @@ async function readJson(p) {
     return { sha: r.sha, data: JSON.parse(utf8.dec(unb64((r.content || "").replace(/\s/g, "")))) };
   } catch (e) { if (e.status === 404) return null; throw e; }
 }
-async function putFile(p, base64, sha, message) {
+async function putFile(p, base64, sha, message, keepalive) {
   const body = { message, content: base64 };
   if (sha) body.sha = sha;
-  const r = await gh(contents(p), { method: "PUT", body: JSON.stringify(body) });
+  const json = JSON.stringify(body);
+  // keepalive lets the upload finish after the page is closed; browsers cap it at 64 KB
+  const r = await gh(contents(p), { method: "PUT", body: json, keepalive: !!keepalive && json.length < 60000 });
   return r && r.content ? r.content.sha : null;
 }
 
@@ -321,10 +323,11 @@ async function getSaveDoc(key) {
   return null;
 }
 
-async function writeCloud(key, meta, sav, savSha) {
+async function writeCloud(key, meta, sav, savSha, opts = {}) {
+  const packed = await pack(sav);
+  let cur = cloud.docs.get(key) || null, known = cloud.saveShas.has(key);
   for (let attempt = 0; attempt < 3; attempt++) {
-    const cur = await getSaveDoc(key);
-    const packed = await pack(sav);
+    if (!known) { cur = await getSaveDoc(key); known = true; }
     const doc = {
       game: key, title: meta.title, system: meta.system, code: meta.code || "",
       enc: packed.enc, data: packed.data, size: sav.length, sha: savSha,
@@ -336,10 +339,14 @@ async function writeCloud(key, meta, sav, savSha) {
     if (JSON.stringify(doc).length > MAX_DOC) doc.prev = null;
     try {
       const sha = await putFile("saves/" + key + ".json", b64(utf8.enc(JSON.stringify(doc))), cloud.saveShas.get(key),
-        `Save: ${meta.title} (${device.name})`);
+        `Save: ${meta.title} (${device.name})`, opts.keepalive);
       cloud.saveShas.set(key, sha); cloud.docs.set(key, doc); render();
       return doc;
-    } catch (e) { if (e.status !== 409 && e.status !== 422) throw e; await sleep(300 + Math.random() * 500); }
+    } catch (e) {
+      if (e.status !== 409 && e.status !== 422) throw e;
+      known = false;   // another device wrote first: read it, keep it as "previous", try again
+      await sleep(300 + Math.random() * 500);
+    }
   }
   throw new Error("save-conflict");
 }
@@ -778,6 +785,7 @@ function updateChip() {
   };
   const [cls, t] = map[player.state] || map.loading;
   dot.className = "dot " + cls; txt.textContent = t;
+  const ps = $("#padSaveState"); if (ps) ps.textContent = t;
 }
 setInterval(() => {
   if (player.key) { if (player.state === "ok") updateChip(); return; }
@@ -792,7 +800,7 @@ function writeSav(gm, sav) {
   gm.FS.writeFile(path, sav);
 }
 
-async function flush() {
+async function flush(opts = {}) {
   const emu = player.emu;
   if (!emu || !emu.started || !emu.gameManager || !player.key) return;
   if (player.busy) { player.again = true; return; }
@@ -808,11 +816,12 @@ async function flush() {
     if (!cloud.db) { player.lastSha = h; setChip("local"); return; }
     setChip("up");
     try {
-      const doc = await writeCloud(player.key, player.meta, sav, h);
+      const doc = await writeCloud(player.key, player.meta, sav, h, { keepalive: !!opts.leaving });
       player.lastSha = h; player.baseRev = doc.rev;
       await idb.del("pend", player.key);
       await idb.put("sync", player.key, { lastSha: h, baseRev: doc.rev }).catch(() => {});
       setChip("ok", doc.at);
+      if (!$("#pad").hidden && !opts.quiet) padMsg("Save enviado para a nuvem");
     } catch (e) { setChip("pending"); }
   } finally {
     player.busy = false;
@@ -976,11 +985,37 @@ async function play(key) {
     }
     await sleep(1500);
     if (start.upload) flush();
-    player.timer = setInterval(flush, 60000);
+    player.timer = setInterval(flush, 15000);
     startSpeedMeter();
     if (cast.pending) { const c = cast.pending; cast.pending = null; setTimeout(() => castTo(c), 500); }
   });
 }
+
+async function pullSave(report) {
+  if (!player.key || !player.emu || !player.emu.started) return;
+  if (!cloud.db) { report("Este aparelho não está conectado ao GitHub."); return; }
+  report("Buscando o save na nuvem…");
+  let remote;
+  try { remote = await getSaveDoc(player.key); } catch (e) { report("Não deu para falar com o GitHub agora."); return; }
+  if (!remote) { report("Ainda não há save deste jogo na nuvem."); return; }
+  const gm = player.emu.gameManager;
+  let cur = null; try { cur = new Uint8Array(gm.getSaveFile()); } catch (e) {}
+  if (cur && (await sha(cur)) === remote.sha) { report("Você já está com o save mais recente da nuvem."); return; }
+  const unsent = cur && player.lastSha && (await sha(cur)) !== player.lastSha;
+  const ok = await dialog("Carregar o save da nuvem?",
+    `Save de ${remote.device || "outro aparelho"}, ${ago(remote.at)}. O jogo reinicia na tela de título.` + (unsent ? " Este aparelho tem progresso que ainda não subiu: ele vai ser substituído." : ""),
+    [{ label: "Carregar e reiniciar", value: true, cls: "primary" }, { label: "Cancelar", value: false }]);
+  if (!ok) { report(""); return; }
+  try {
+    writeSav(gm, await unpack(remote)); gm.loadSaveFiles(); gm.restart();
+    player.lastSha = remote.sha; player.baseRev = remote.rev;
+    await idb.del("pend", player.key);
+    setChip("ok", remote.at);
+    report(`Save de ${remote.device || "outro aparelho"} carregado`);
+  } catch (e) { report("Não deu para carregar o save."); }
+}
+$("#pullBtn").addEventListener("click", () => pullSave((m) => m && toast(m)));
+$("#padPull").addEventListener("click", () => pullSave((m) => m && padMsg(m)));
 
 $("#saveNowBtn").addEventListener("click", async () => {
   const before = player.lastSha; await flush();
@@ -996,8 +1031,8 @@ $("#backBtn").addEventListener("click", async () => {
   }
   location.reload();
 });
-document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") flush(); });
-window.addEventListener("pagehide", () => { flush(); });
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") flush({ leaving: true }); });
+window.addEventListener("pagehide", () => { flush({ leaving: true }); });
 
 /* keep EmulatorJS from calling its own CDN for update checks */
 const realFetch = window.fetch.bind(window);
@@ -1083,6 +1118,13 @@ document.addEventListener("visibilitychange", () => { if (document.visibilitySta
   };
 })();
 
+function wakeAudio() {
+  for (const t of window.__audioTaps || []) {
+    try { if (t.ctx.state !== "running") t.ctx.resume().catch(() => {}); } catch (e) {}
+  }
+}
+for (const ev of ["pointerdown", "keydown", "touchend"]) window.addEventListener(ev, wakeAudio, true);
+
 /* RetroPad indexes EmulatorJS understands, and how a standard controller maps onto them */
 const PAD = { B: 0, SELECT: 2, START: 3, UP: 4, DOWN: 5, LEFT: 6, RIGHT: 7, A: 8, L: 10, R: 11 };
 const PAD_BITS = ["B", "SELECT", "START", "UP", "DOWN", "LEFT", "RIGHT", "A", "L", "R"];
@@ -1166,7 +1208,7 @@ async function castTo(code) {
     pc.onconnectionstatechange = () => {
       if (pc !== cast.pc) return;
       if (pc.connectionState === "connected") {
-        setCastUi("on"); keepAwake(); showPad(true);
+        setCastUi("on"); keepAwake(); showPad(true); wakeAudio();
         for (const t of window.__audioTaps || []) t.local.gain.value = 0;
         toast("Jogando na TV. Este celular agora é o controle.", 3500);
         const send = vt.sender, p = send.getParameters();
@@ -1367,6 +1409,8 @@ function handleScreenLink() {
 const tvScreen = { active: false, code: null, pc: null, dc: null, stopListen: null, padTimer: null, lastSent: -1 };
 async function startScreen() {
   tvScreen.active = true;
+  // created inside the click, so the TV browser lets it play sound later
+  try { tvScreen.ac = new (window.AudioContext || window.webkitAudioContext)(); tvScreen.ac.resume().catch(() => {}); } catch (e) { tvScreen.ac = null; }
   $("#library").hidden = true; $("#screen").hidden = false;
   keepAwake();
   try { await document.documentElement.requestFullscreen(); } catch (e) {}
@@ -1384,11 +1428,24 @@ async function startScreen() {
     const pc = new RTCPeerConnection(RTC_CONFIG); tvScreen.pc = pc;
     $("#scrStatus").textContent = `Conectando com ${msg.from || "o celular"}…`;
     pc.ontrack = (e) => {
-      const v = $("#scrVideo");
-      if (v.srcObject !== e.streams[0]) v.srcObject = e.streams[0];
+      const v = $("#scrVideo"), st = e.streams[0];
+      // the picture is drawn from a muted video (muted video always autoplays);
+      // the sound goes through Web Audio, which was unlocked by the "Usar como tela" click
+      v.muted = true;
+      if (v.srcObject !== st) v.srcObject = st;
       try { e.receiver.jitterBufferTarget = 30; } catch (x) {}
       try { e.receiver.playoutDelayHint = 0; } catch (x) {}
-      v.play().catch(() => { $("#scrTap").hidden = false; });
+      v.play().catch(() => {});
+      if (e.track.kind === "audio") {
+        const ac = tvScreen.ac;
+        if (ac) {
+          try { if (tvScreen.audioSrc) tvScreen.audioSrc.disconnect(); } catch (x) {}
+          tvScreen.audioSrc = ac.createMediaStreamSource(new MediaStream([e.track]));
+          tvScreen.audioSrc.connect(ac.destination);
+          if (ac.state !== "running") ac.resume().then(() => {}, () => { $("#scrTap").hidden = false; });
+          setTimeout(() => { if (ac.state !== "running") $("#scrTap").hidden = false; }, 1500);
+        } else { v.muted = false; v.play().catch(() => { $("#scrTap").hidden = false; }); }
+      }
     };
     pc.ondatachannel = (e) => { tvScreen.dc = e.channel; };
     pc.onconnectionstatechange = () => {
@@ -1446,7 +1503,11 @@ function stopScreen() {
 }
 $("#screenBtn").addEventListener("click", startScreen);
 $("#scrExit").addEventListener("click", stopScreen);
-$("#scrTap").addEventListener("click", () => { $("#scrVideo").play().catch(() => {}); $("#scrTap").hidden = true; });
+$("#scrTap").addEventListener("click", () => {
+  if (tvScreen.ac) tvScreen.ac.resume().catch(() => {}); else { $("#scrVideo").muted = false; $("#scrVideo").play().catch(() => {}); }
+  $("#scrTap").hidden = true;
+});
+window.addEventListener("keydown", () => { if (tvScreen.ac && tvScreen.ac.state !== "running") tvScreen.ac.resume().then(() => { $("#scrTap").hidden = true; }, () => {}); }, true);
 window.addEventListener("keydown", (e) => {
   if (!tvScreen.active) return;
   const k = KEYMAP[e.key] || KEYCODES[e.keyCode];
@@ -1599,6 +1660,27 @@ async function runDiagnostic() {
   $("#diagClose").addEventListener("click", () => location.reload());
 }
 $("#diagBtn").addEventListener("click", runDiagnostic);
+
+/* EmulatorJS keeps its menu settings (controls, video, core options) in localStorage
+   under "ejs-…" keys. Resetting removes those and the speed profile; the GitHub
+   connection, the device name and the saves are left alone. */
+function resetEmulatorSettings() {
+  let n = 0;
+  try {
+    for (const k of Object.keys(localStorage)) if (/^ejs-/.test(k) || /^cartucho\.perf\./.test(k)) { localStorage.removeItem(k); n++; }
+  } catch (e) {}
+  perf.mode = "auto"; perf.learned = guessDevice() === "TV"; renderPerf();
+  return n;
+}
+$("#resetEmuBtn").addEventListener("click", async () => {
+  const ok = await dialog("Restaurar as configurações do emulador?", "Controles, vídeo, som e as opções do menu do emulador voltam ao padrão, e o desempenho volta para Automático. Seus jogos, saves e a conexão com o GitHub continuam.",
+    [{ label: "Restaurar", value: true, cls: "primary" }, { label: "Cancelar", value: false }]);
+  if (!ok) return;
+  resetEmulatorSettings();
+  toast("Configurações do emulador restauradas");
+});
+/* one-time reset requested after the emulator menu got changed by accident */
+if (ls.get("cartucho.reset.v1") !== "done") { resetEmulatorSettings(); ls.set("cartucho.reset.v1", "done"); }
 
 /* ---------------- controller in the library (TV) ----------------
    D-pad or left stick moves between buttons, A presses, B cancels a dialog. */
