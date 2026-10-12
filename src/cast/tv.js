@@ -84,6 +84,9 @@ async function startScreen() {
       }
       tvScreen.dc = e.channel;
       tvScreen.phoneStats = null;
+      // first thing: tell the phone what this TV can decode, so it can pick the format
+      const hello = () => { try { e.channel.send(JSON.stringify({ hello: { vp8: !!window.VideoDecoder } })); } catch (x) {} };
+      if (e.channel.readyState === "open") hello(); else e.channel.onopen = hello;
       // the phone reports what it is sending, so the TV can show both ends in one place
       e.channel.onmessage = (m) => { try {
         const d = JSON.parse(m.data);
@@ -156,38 +159,64 @@ function brightness(src) {
     return Math.round(sum / (d.length / 4) / 3);
   } catch (e) { return -1; }
 }
-/* "quadros" mode on the TV: each message is one JPEG frame. Decoding is async, so
-   while one frame decodes the newest arrival waits and older ones are dropped. */
+/* "quadros" mode on the TV. Each message is one encoded frame (9-byte header: key
+   flag + timestamp, see packFrame). VP8 goes through a WebCodecs VideoDecoder; JPEG
+   through createImageBitmap. Decoding is async, so while one frame decodes the newest
+   arrival waits and older ones are dropped. After an error or a dropped delta frame,
+   the TV asks the phone for a key frame and skips everything until it comes. */
 function receiveFrames(channel) {
   const canvas = $("#scrCanvas"), g = canvas.getContext("2d", { alpha: false });
-  tvScreen.framesMode = true;
-  tvScreen.sharp = false;
-  canvas.hidden = false;
-  $("#scrVideo").hidden = true;
+  tvScreen.framesMode = true; tvScreen.sharp = false;
+  canvas.hidden = false; $("#scrVideo").hidden = true;
   channel.binaryType = "arraybuffer";
+
+  function show(img) {
+    const w = img.displayWidth || img.width, h = img.displayHeight || img.height;
+    if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+    g.drawImage(img, 0, 0);
+    if (img.close) img.close();
+    tvScreen.drawn++;
+  }
+  function askKeyFrame() {
+    if (tvScreen.dc && tvScreen.dc.readyState === "open") { try { tvScreen.dc.send(JSON.stringify({ key: 1 })); } catch (e) {} }
+  }
+
+  /** @type {any} */ let decoder = null;
+  let waitingKey = true;
+  function vp8Decoder() {
+    const d = new window.VideoDecoder({
+      output: show,
+      error: () => { waitingKey = true; decoder = null; askKeyFrame(); },
+    });
+    d.configure({ codec: "vp8", optimizeForLatency: true });
+    return d;
+  }
+  const isJpeg = (bytes) => bytes[0] === 0xff && bytes[1] === 0xd8;
+
   let pending = null, decoding = false;
   async function drawNext() {
     if (decoding || !pending) return;
-    const buf = pending;
-    pending = null;
-    decoding = true;
+    const buf = pending; pending = null; decoding = true;
     try {
-      const img = await createImageBitmap(new Blob([buf], { type: "image/jpeg" }));
-      if (canvas.width !== img.width || canvas.height !== img.height) {
-        canvas.width = img.width;
-        canvas.height = img.height;
+      const key = new Uint8Array(buf, 0, 1)[0] === 1;
+      const timestamp = new DataView(buf).getFloat64(1, true);
+      const data = new Uint8Array(buf, 9);
+      if (isJpeg(data)) {
+        show(await createImageBitmap(new Blob([data], { type: "image/jpeg" })));
+      } else if (window.VideoDecoder) {
+        if (waitingKey && !key) askKeyFrame();
+        else {
+          if (!decoder) decoder = vp8Decoder();
+          waitingKey = false;
+          decoder.decode(new window.EncodedVideoChunk({ type: key ? "key" : "delta", timestamp, data }));
+        }
       }
-      g.drawImage(img, 0, 0);
-      if (img.close) img.close();
-      tvScreen.drawn++;
-    } catch (e) {}
+    } catch (e) { waitingKey = true; askKeyFrame(); }
     decoding = false;
     drawNext();
   }
-  channel.onmessage = (m) => {
-    pending = m.data;
-    drawNext();
-  };
+  channel.onmessage = (m) => { pending = m.data; drawNext(); };
+  channel.onclose = () => { try { decoder && decoder.close(); } catch (e) {} };
 }
 /* The stream is the GBA's own 240x160. Drawn into a canvas of that size and enlarged by
    CSS with pixelated scaling, the pixels stay sharp (a <video> is always smoothed when
@@ -301,7 +330,7 @@ function watchScreen(pc) {
       ph ? `Celular: ${ph.ua || ""} · formato ${ph.mode || "?"} · enviou ${ph.sent} quadros, ${ph.pk || 0} pacotes${ph.w ? ` (${ph.w}x${ph.h})` : ""} · chaves ${ph.keys || 0} · PLI ${ph.pli || 0}${ph.enc ? ` · ${ph.enc}` : ""}${ph.lim && ph.lim !== "none" ? ` · limitado por ${ph.lim}` : ""}${ph.track && ph.track !== "live" ? ` · captura ${ph.track}` : ""}${ph.br != null && ph.br >= 0 ? ` · brilho ${ph.br}` : ""}`
          : "Celular: sem relatório ainda",
       `TV: ${chromeVer()} · pacotes de vídeo ${got}, de áudio ${arx ? arx.packetsReceived || 0 : 0} · recebeu ${rx ? rx.framesReceived || 0 : 0}, decodificou ${dec}${codec ? ` · ${codec}` : ""}${rx && rx.frameWidth ? ` · ${rx.frameWidth}x${rx.frameHeight}` : ""} · chaves ${rx ? rx.keyFramesDecoded || 0 : 0} · PLI ${rx ? rx.pliCount || 0 : 0}${rx && rx.decoderImplementation ? ` · ${rx.decoderImplementation}` : ""}`,
-      frames ? `Quadros pelo canal de dados: desenhados ${tvScreen.drawn} · brilho ${bright}` : `Vídeo: ${v.paused ? "parado" : "tocando"} · ${v.videoWidth}x${v.videoHeight} · estado ${v.readyState} · exibidos ${shown} · brilho ${bright} · ${tvScreen.sharp ? "nítido (canvas)" : "vídeo direto"} · na tela ${Math.round(box.width)}x${Math.round(box.height)} de ${innerWidth}x${innerHeight}`,
+      frames ? `Quadros pelo canal de dados (${window.VideoDecoder ? "WebCodecs" : "JPEG"}): desenhados ${tvScreen.drawn} · brilho ${bright}` : `Vídeo: ${v.paused ? "parado" : "tocando"} · ${v.videoWidth}x${v.videoHeight} · estado ${v.readyState} · exibidos ${shown} · brilho ${bright} · ${tvScreen.sharp ? "nítido (canvas)" : "vídeo direto"} · na tela ${Math.round(box.width)}x${Math.round(box.height)} de ${innerWidth}x${innerHeight}`,
     ];
     info.textContent = lines.join("\n");
     info.hidden = !(problem || warnNet || performance.now() - t0 < 12000);

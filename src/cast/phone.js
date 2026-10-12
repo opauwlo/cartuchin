@@ -1,6 +1,7 @@
 import { iceDone, keepAwake, signal, wakeAudio } from "./common.js";
 import { PAD, PAD_BITS, RTC_CONFIG, STREAM_H, STREAM_W } from "./constants.js";
 import { showPad } from "./pad.js";
+import { frameWorkerSource } from "./frame-worker.js";
 import { brightness } from "./tv.js";
 import { busy } from "../cloud.js";
 import { device } from "../device.js";
@@ -22,6 +23,9 @@ const cast = window.__cast = {
   /** @type {string | null} */ paramErr: null,
   /** @type {ReturnType<typeof setInterval> | null} */ watch: null,
   /** @type {(() => void) | null} stops the frame pump */ pumpStop: null,
+  /** @type {(() => void) | null} asks the encoder for a key frame */ requestKey: null,
+  /** @type {any} what the TV said it can do ({ vp8: boolean }) */ tvHello: null,
+  /** @type {"vp8" | "jpeg" | null} */ frameCodec: null,
   pumped: 0,
   // buttons: what is pressed on this phone, what the TV sends, and what the game currently sees
   lastMask: 0, localMask: 0, remoteMask: 0,
@@ -218,6 +222,8 @@ async function castTo(code, attempt = 0) {
         try {
           const j = JSON.parse(d);
           if (j.tv) cast.tvStats = j.tv;
+          if (j.hello) cast.tvHello = j.hello;
+          if (j.key && cast.requestKey) cast.requestKey();
         } catch (x) {}
         return;
       }
@@ -258,50 +264,68 @@ async function castTo(code, attempt = 0) {
     } }, 25000);
   } catch (e) { stopCast("Não deu para começar a transmissão."); }
 }
-/* "quadros" mode: reads the frames of the captured canvas, compresses each one as a
-   small JPEG (240x160, ~8 KB) and sends it over the data channel, at most ~30 a second
-   and never piling up: if the channel is still busy, the frame is skipped. */
+/* "quadros" mode: the canvas frames go to a Worker that encodes them (VP8 with
+   WebCodecs, or JPEG where WebCodecs is missing) and every encoded frame is sent over
+   the data channel with a 9-byte header: 1 = key frame, then the timestamp (µs).
+   The TV says in its hello whether it can decode VP8; without a hello in 1.5 s the
+   phone assumes it can't and sends JPEG, which any browser decodes. */
+const FRAME_HEADER = 9;
+function packFrame(buffer, key, timestamp) {
+  const out = new Uint8Array(FRAME_HEADER + buffer.byteLength);
+  out[0] = key ? 1 : 0;
+  new DataView(out.buffer).setFloat64(1, timestamp, true);
+  out.set(new Uint8Array(buffer), FRAME_HEADER);
+  return out.buffer;
+}
 async function startFramePump(track, dc) {
-  const off = new OffscreenCanvas(STREAM_W, STREAM_H);
-  const g = off.getContext("2d", { alpha: false });
-  let busy = false, lastAt = 0;
   cast.pumped = 0;
+  const hello = await waitForTvHello(1500);
+  const canVp8 = !!(window.MediaStreamTrackProcessor && window.VideoEncoder && hello && hello.vp8);
+  cast.frameCodec = canVp8 ? "vp8" : "jpeg";
 
-  async function push(frame) {
-    const now = performance.now();
-    const skip = busy || now - lastAt < 30 || dc.readyState !== "open" || dc.bufferedAmount > 150000;
-    if (skip) {
-      if (frame.close) frame.close();
-      return;
-    }
-    busy = true;
-    lastAt = now;
-    try {
-      g.drawImage(frame, 0, 0, STREAM_W, STREAM_H);
-      if (frame.close) frame.close();
-      const blob = await off.convertToBlob({ type: "image/jpeg", quality: 0.85 });
-      dc.send(await blob.arrayBuffer());
-      cast.pumped++;
-    } catch (e) {}
-    busy = false;
+  if (!window.MediaStreamTrackProcessor) {
+    // very old phone: grab frames on the main thread and compress as JPEG
+    await legacyJpegPump(track, dc);
+    return;
   }
-
-  if (window.MediaStreamTrackProcessor) {
-    // gives every new frame of the track; keeps only the latest when we are slow
-    const reader = new MediaStreamTrackProcessor({ track }).readable.getReader();
-    cast.pumpStop = () => reader.cancel().catch(() => {});
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) return;
-      await push(value);
-    }
-  } else if (window.ImageCapture) {
-    const grab = new ImageCapture(track);
-    let on = true;
-    cast.pumpStop = () => { on = false; };
-    while (on && track.readyState === "live") {
-      try { await push(await grab.grabFrame()); } catch (e) { await sleep(50); }
-    }
+  const readable = new MediaStreamTrackProcessor({ track }).readable;
+  const source = `(${frameWorkerSource.toString()})();`;
+  const worker = new Worker(URL.createObjectURL(new Blob([source], { type: "text/javascript" })));
+  worker.onmessage = ({ data }) => {
+    if (data.frame) {
+      if (dc.readyState !== "open" || dc.bufferedAmount > 200000) return; // the channel is behind: drop
+      try { dc.send(packFrame(data.frame, data.key, data.timestamp)); cast.pumped++; } catch (e) {}
+    } else if (data.fallback) cast.frameCodec = data.fallback;
+  };
+  worker.postMessage({ cmd: "start", readable, codec: cast.frameCodec, width: STREAM_W, height: STREAM_H, bitrate: 1_200_000 }, [readable]);
+  cast.requestKey = () => worker.postMessage({ cmd: "key" });
+  cast.pumpStop = () => { worker.postMessage({ cmd: "stop" }); cast.requestKey = null; };
+}
+function waitForTvHello(ms) {
+  return new Promise((resolve) => {
+    const started = performance.now();
+    const poll = () => {
+      if (cast.tvHello) resolve(cast.tvHello);
+      else if (performance.now() - started > ms || !cast.pc) resolve(null);
+      else setTimeout(poll, 50);
+    };
+    poll();
+  });
+}
+async function legacyJpegPump(track, dc) {
+  const off = document.createElement("canvas"); off.width = STREAM_W; off.height = STREAM_H;
+  const g = off.getContext("2d", { alpha: false });
+  const grab = new ImageCapture(track);
+  let on = true;
+  cast.pumpStop = () => { on = false; };
+  while (on && track.readyState === "live") {
+    try {
+      const bmp = await grab.grabFrame();
+      g.drawImage(bmp, 0, 0, STREAM_W, STREAM_H);
+      const blob = await new Promise((r) => off.toBlob(r, "image/jpeg", 0.85));
+      if (blob && dc.readyState === "open" && dc.bufferedAmount < 200000) { dc.send(packFrame(await blob.arrayBuffer(), true, 0)); cast.pumped++; }
+    } catch (e) {}
+    await sleep(33);
   }
 }
 /* Every 2 s: tells the TV what this phone is sending (the TV shows it next to its own
@@ -335,7 +359,7 @@ function watchCast(pc, sender, dc, emu) {
         }
       } catch (e) {}
     }
-    const st = { br, ua: chromeVer(), mode: `${CAST_MODES[cast.mode].name}${codec ? ` = ${codec}` : ""} (${cast.attempt + 1}/${CAST_MODES.length})`,
+    const st = { br, ua: chromeVer(), mode: `${CAST_MODES[cast.mode].name}${codec ? ` = ${codec}` : cast.frameCodec ? ` = ${cast.frameCodec === "vp8" ? "VP8 WebCodecs" : "JPEG"}` : ""} (${cast.attempt + 1}/${CAST_MODES.length})`,
       enc: (tx && tx.encoderImplementation) || "", keys: tx ? tx.keyFramesEncoded || 0 : 0, pli: tx ? tx.pliCount || 0 : 0, pk: tx ? tx.packetsSent || 0 : 0, sent: tx ? tx.framesSent || 0 : cast.pumped || 0, w: (tx && tx.frameWidth) || 0, h: (tx && tx.frameHeight) || 0, lim: (tx && tx.qualityLimitationReason) || "",
       cw: emu.canvas ? emu.canvas.width : 0, ch: emu.canvas ? emu.canvas.height : 0, track: tr ? tr.readyState + (tr.muted ? " (sem quadros)" : "") : "sem trilha" };
     if (dc.readyState === "open") { try { dc.send(JSON.stringify({ st })); } catch (e) {} }

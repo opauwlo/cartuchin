@@ -2,6 +2,9 @@
    browser APIs TypeScript's DOM lib does not know yet). Type checking only: nothing
    here reaches the bundle. */
 interface Window {
+  VideoEncoder: any;
+  VideoDecoder: any;
+  EncodedVideoChunk: any;
   __cartucho: any;
   __diag: any;
   EJS_Runtime: any;

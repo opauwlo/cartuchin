@@ -423,6 +423,14 @@
         }
         tvScreen.dc = e.channel;
         tvScreen.phoneStats = null;
+        const hello = () => {
+          try {
+            e.channel.send(JSON.stringify({ hello: { vp8: !!window.VideoDecoder } }));
+          } catch (x) {
+          }
+        };
+        if (e.channel.readyState === "open") hello();
+        else e.channel.onopen = hello;
         e.channel.onmessage = (m) => {
           try {
             const d = JSON.parse(m.data);
@@ -508,6 +516,39 @@
     canvas.hidden = false;
     $("#scrVideo").hidden = true;
     channel.binaryType = "arraybuffer";
+    function show(img) {
+      const w = img.displayWidth || img.width, h = img.displayHeight || img.height;
+      if (canvas.width !== w || canvas.height !== h) {
+        canvas.width = w;
+        canvas.height = h;
+      }
+      g.drawImage(img, 0, 0);
+      if (img.close) img.close();
+      tvScreen.drawn++;
+    }
+    function askKeyFrame() {
+      if (tvScreen.dc && tvScreen.dc.readyState === "open") {
+        try {
+          tvScreen.dc.send(JSON.stringify({ key: 1 }));
+        } catch (e) {
+        }
+      }
+    }
+    let decoder = null;
+    let waitingKey = true;
+    function vp8Decoder() {
+      const d = new window.VideoDecoder({
+        output: show,
+        error: () => {
+          waitingKey = true;
+          decoder = null;
+          askKeyFrame();
+        }
+      });
+      d.configure({ codec: "vp8", optimizeForLatency: true });
+      return d;
+    }
+    const isJpeg = (bytes) => bytes[0] === 255 && bytes[1] === 216;
     let pending = null, decoding = false;
     async function drawNext() {
       if (decoding || !pending) return;
@@ -515,15 +556,22 @@
       pending = null;
       decoding = true;
       try {
-        const img = await createImageBitmap(new Blob([buf], { type: "image/jpeg" }));
-        if (canvas.width !== img.width || canvas.height !== img.height) {
-          canvas.width = img.width;
-          canvas.height = img.height;
+        const key = new Uint8Array(buf, 0, 1)[0] === 1;
+        const timestamp = new DataView(buf).getFloat64(1, true);
+        const data = new Uint8Array(buf, 9);
+        if (isJpeg(data)) {
+          show(await createImageBitmap(new Blob([data], { type: "image/jpeg" })));
+        } else if (window.VideoDecoder) {
+          if (waitingKey && !key) askKeyFrame();
+          else {
+            if (!decoder) decoder = vp8Decoder();
+            waitingKey = false;
+            decoder.decode(new window.EncodedVideoChunk({ type: key ? "key" : "delta", timestamp, data }));
+          }
         }
-        g.drawImage(img, 0, 0);
-        if (img.close) img.close();
-        tvScreen.drawn++;
       } catch (e) {
+        waitingKey = true;
+        askKeyFrame();
       }
       decoding = false;
       drawNext();
@@ -531,6 +579,12 @@
     channel.onmessage = (m) => {
       pending = m.data;
       drawNext();
+    };
+    channel.onclose = () => {
+      try {
+        decoder && decoder.close();
+      } catch (e) {
+      }
     };
   }
   function drawVideoSharp() {
@@ -642,7 +696,7 @@
         `Rede: ${path}${rtt != null ? ` · ida e volta ${rtt} ms` : ""} · perda ${lossPct}%${rx && rx.jitter ? ` · variação ${Math.round(rx.jitter * 1e3)} ms` : ""}`,
         ph ? `Celular: ${ph.ua || ""} · formato ${ph.mode || "?"} · enviou ${ph.sent} quadros, ${ph.pk || 0} pacotes${ph.w ? ` (${ph.w}x${ph.h})` : ""} · chaves ${ph.keys || 0} · PLI ${ph.pli || 0}${ph.enc ? ` · ${ph.enc}` : ""}${ph.lim && ph.lim !== "none" ? ` · limitado por ${ph.lim}` : ""}${ph.track && ph.track !== "live" ? ` · captura ${ph.track}` : ""}${ph.br != null && ph.br >= 0 ? ` · brilho ${ph.br}` : ""}` : "Celular: sem relatório ainda",
         `TV: ${chromeVer()} · pacotes de vídeo ${got}, de áudio ${arx ? arx.packetsReceived || 0 : 0} · recebeu ${rx ? rx.framesReceived || 0 : 0}, decodificou ${dec}${codec ? ` · ${codec}` : ""}${rx && rx.frameWidth ? ` · ${rx.frameWidth}x${rx.frameHeight}` : ""} · chaves ${rx ? rx.keyFramesDecoded || 0 : 0} · PLI ${rx ? rx.pliCount || 0 : 0}${rx && rx.decoderImplementation ? ` · ${rx.decoderImplementation}` : ""}`,
-        frames ? `Quadros pelo canal de dados: desenhados ${tvScreen.drawn} · brilho ${bright}` : `Vídeo: ${v.paused ? "parado" : "tocando"} · ${v.videoWidth}x${v.videoHeight} · estado ${v.readyState} · exibidos ${shown} · brilho ${bright} · ${tvScreen.sharp ? "nítido (canvas)" : "vídeo direto"} · na tela ${Math.round(box.width)}x${Math.round(box.height)} de ${innerWidth}x${innerHeight}`
+        frames ? `Quadros pelo canal de dados (${window.VideoDecoder ? "WebCodecs" : "JPEG"}): desenhados ${tvScreen.drawn} · brilho ${bright}` : `Vídeo: ${v.paused ? "parado" : "tocando"} · ${v.videoWidth}x${v.videoHeight} · estado ${v.readyState} · exibidos ${shown} · brilho ${bright} · ${tvScreen.sharp ? "nítido (canvas)" : "vídeo direto"} · na tela ${Math.round(box.width)}x${Math.round(box.height)} de ${innerWidth}x${innerHeight}`
       ];
       info.textContent = lines.join("\n");
       info.hidden = !(problem || warnNet || performance.now() - t0 < 12e3);
@@ -880,6 +934,103 @@
     return mask;
   }
 
+  // src/js/cast/frame-worker.js
+  var frameWorkerSource = () => {
+    const worker = self;
+    let encoder = null, reader = null, running = false, codec = "jpeg";
+    let wantKey = true, framesIn = 0, busy2 = false, lastJpegAt = 0;
+    const KEY_EVERY = 180;
+    function send(buffer, key, timestamp) {
+      worker.postMessage({ frame: buffer, key, timestamp }, [buffer]);
+    }
+    async function startVp8(width, height, bitrate) {
+      encoder = new worker.VideoEncoder({
+        output: (chunk) => {
+          const buf = new ArrayBuffer(chunk.byteLength);
+          chunk.copyTo(buf);
+          send(buf, chunk.type === "key", chunk.timestamp);
+        },
+        error: (e) => worker.postMessage({ error: String(e) })
+      });
+      const config = { codec: "vp8", width, height, bitrate, framerate: 60, latencyMode: "realtime" };
+      const ok = await worker.VideoEncoder.isConfigSupported(config);
+      if (!ok.supported) throw new Error("vp8 não suportado");
+      encoder.configure(config);
+    }
+    function encodeVp8(frame) {
+      if (encoder.encodeQueueSize > 2) {
+        frame.close();
+        return;
+      }
+      const key = wantKey || framesIn % KEY_EVERY === 0;
+      wantKey = false;
+      encoder.encode(frame, { keyFrame: key });
+      frame.close();
+    }
+    let canvas = null, ctx = null;
+    async function encodeJpeg(frame, width, height) {
+      const now = performance.now();
+      if (busy2 || now - lastJpegAt < 30) {
+        frame.close();
+        return;
+      }
+      busy2 = true;
+      lastJpegAt = now;
+      try {
+        if (!canvas) {
+          canvas = new OffscreenCanvas(width, height);
+          ctx = canvas.getContext("2d", { alpha: false });
+        }
+        ctx.drawImage(frame, 0, 0, width, height);
+        frame.close();
+        const blob = await canvas.convertToBlob({ type: "image/jpeg", quality: 0.85 });
+        send(await blob.arrayBuffer(), true, 0);
+      } catch (e) {
+        worker.postMessage({ error: String(e) });
+      }
+      busy2 = false;
+    }
+    async function pump(readable, width, height) {
+      reader = readable.getReader();
+      while (running) {
+        const { value: frame, done } = await reader.read();
+        if (done || !running) {
+          if (frame) frame.close();
+          break;
+        }
+        framesIn++;
+        if (codec === "vp8") encodeVp8(frame);
+        else await encodeJpeg(frame, width, height);
+      }
+    }
+    worker.onmessage = async ({ data }) => {
+      if (data.cmd === "start") {
+        running = true;
+        codec = data.codec;
+        try {
+          if (codec === "vp8") await startVp8(data.width, data.height, data.bitrate);
+        } catch (e) {
+          codec = "jpeg";
+          worker.postMessage({ fallback: "jpeg", why: String(e) });
+        }
+        pump(data.readable, data.width, data.height);
+      } else if (data.cmd === "key") {
+        wantKey = true;
+      } else if (data.cmd === "stop") {
+        running = false;
+        try {
+          reader && reader.cancel();
+        } catch (e) {
+        }
+        try {
+          encoder && encoder.close();
+        } catch (e) {
+        }
+        worker.close();
+      }
+    };
+  };
+
   // src/js/cast/phone.js
   var cast = window.__cast = {
     /** @type {RTCPeerConnection | null} */
@@ -906,6 +1057,12 @@
     watch: null,
     /** @type {(() => void) | null} stops the frame pump */
     pumpStop: null,
+    /** @type {(() => void) | null} asks the encoder for a key frame */
+    requestKey: null,
+    /** @type {any} what the TV said it can do ({ vp8: boolean }) */
+    tvHello: null,
+    /** @type {"vp8" | "jpeg" | null} */
+    frameCodec: null,
     pumped: 0,
     // buttons: what is pressed on this phone, what the TV sends, and what the game currently sees
     lastMask: 0,
@@ -1119,6 +1276,8 @@
           try {
             const j = JSON.parse(d);
             if (j.tv) cast.tvStats = j.tv;
+            if (j.hello) cast.tvHello = j.hello;
+            if (j.key && cast.requestKey) cast.requestKey();
           } catch (x) {
           }
           return;
@@ -1172,52 +1331,76 @@
       stopCast("Não deu para começar a transmissão.");
     }
   }
+  var FRAME_HEADER = 9;
+  function packFrame(buffer, key, timestamp) {
+    const out = new Uint8Array(FRAME_HEADER + buffer.byteLength);
+    out[0] = key ? 1 : 0;
+    new DataView(out.buffer).setFloat64(1, timestamp, true);
+    out.set(new Uint8Array(buffer), FRAME_HEADER);
+    return out.buffer;
+  }
   async function startFramePump(track, dc) {
-    const off = new OffscreenCanvas(STREAM_W, STREAM_H);
-    const g = off.getContext("2d", { alpha: false });
-    let busy2 = false, lastAt = 0;
     cast.pumped = 0;
-    async function push(frame) {
-      const now = performance.now();
-      const skip = busy2 || now - lastAt < 30 || dc.readyState !== "open" || dc.bufferedAmount > 15e4;
-      if (skip) {
-        if (frame.close) frame.close();
-        return;
-      }
-      busy2 = true;
-      lastAt = now;
+    const hello = await waitForTvHello(1500);
+    const canVp8 = !!(window.MediaStreamTrackProcessor && window.VideoEncoder && hello && hello.vp8);
+    cast.frameCodec = canVp8 ? "vp8" : "jpeg";
+    if (!window.MediaStreamTrackProcessor) {
+      await legacyJpegPump(track, dc);
+      return;
+    }
+    const readable = new MediaStreamTrackProcessor({ track }).readable;
+    const source = `(${frameWorkerSource.toString()})();`;
+    const worker = new Worker(URL.createObjectURL(new Blob([source], { type: "text/javascript" })));
+    worker.onmessage = ({ data }) => {
+      if (data.frame) {
+        if (dc.readyState !== "open" || dc.bufferedAmount > 2e5) return;
+        try {
+          dc.send(packFrame(data.frame, data.key, data.timestamp));
+          cast.pumped++;
+        } catch (e) {
+        }
+      } else if (data.fallback) cast.frameCodec = data.fallback;
+    };
+    worker.postMessage({ cmd: "start", readable, codec: cast.frameCodec, width: STREAM_W, height: STREAM_H, bitrate: 12e5 }, [readable]);
+    cast.requestKey = () => worker.postMessage({ cmd: "key" });
+    cast.pumpStop = () => {
+      worker.postMessage({ cmd: "stop" });
+      cast.requestKey = null;
+    };
+  }
+  function waitForTvHello(ms) {
+    return new Promise((resolve) => {
+      const started = performance.now();
+      const poll = () => {
+        if (cast.tvHello) resolve(cast.tvHello);
+        else if (performance.now() - started > ms || !cast.pc) resolve(null);
+        else setTimeout(poll, 50);
+      };
+      poll();
+    });
+  }
+  async function legacyJpegPump(track, dc) {
+    const off = document.createElement("canvas");
+    off.width = STREAM_W;
+    off.height = STREAM_H;
+    const g = off.getContext("2d", { alpha: false });
+    const grab = new ImageCapture(track);
+    let on = true;
+    cast.pumpStop = () => {
+      on = false;
+    };
+    while (on && track.readyState === "live") {
       try {
-        g.drawImage(frame, 0, 0, STREAM_W, STREAM_H);
-        if (frame.close) frame.close();
-        const blob = await off.convertToBlob({ type: "image/jpeg", quality: 0.85 });
-        dc.send(await blob.arrayBuffer());
-        cast.pumped++;
+        const bmp = await grab.grabFrame();
+        g.drawImage(bmp, 0, 0, STREAM_W, STREAM_H);
+        const blob = await new Promise((r) => off.toBlob(r, "image/jpeg", 0.85));
+        if (blob && dc.readyState === "open" && dc.bufferedAmount < 2e5) {
+          dc.send(packFrame(await blob.arrayBuffer(), true, 0));
+          cast.pumped++;
+        }
       } catch (e) {
       }
-      busy2 = false;
-    }
-    if (window.MediaStreamTrackProcessor) {
-      const reader = new MediaStreamTrackProcessor({ track }).readable.getReader();
-      cast.pumpStop = () => reader.cancel().catch(() => {
-      });
-      for (; ; ) {
-        const { value, done } = await reader.read();
-        if (done) return;
-        await push(value);
-      }
-    } else if (window.ImageCapture) {
-      const grab = new ImageCapture(track);
-      let on = true;
-      cast.pumpStop = () => {
-        on = false;
-      };
-      while (on && track.readyState === "live") {
-        try {
-          await push(await grab.grabFrame());
-        } catch (e) {
-          await sleep(50);
-        }
-      }
+      await sleep(33);
     }
   }
   function watchCast(pc, sender, dc, emu) {
@@ -1253,7 +1436,7 @@
       const st = {
         br,
         ua: chromeVer(),
-        mode: `${CAST_MODES[cast.mode].name}${codec ? ` = ${codec}` : ""} (${cast.attempt + 1}/${CAST_MODES.length})`,
+        mode: `${CAST_MODES[cast.mode].name}${codec ? ` = ${codec}` : cast.frameCodec ? ` = ${cast.frameCodec === "vp8" ? "VP8 WebCodecs" : "JPEG"}` : ""} (${cast.attempt + 1}/${CAST_MODES.length})`,
         enc: tx && tx.encoderImplementation || "",
         keys: tx ? tx.keyFramesEncoded || 0 : 0,
         pli: tx ? tx.pliCount || 0 : 0,
