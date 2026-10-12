@@ -221,12 +221,16 @@ function guessDevice() {
 }
 const device = { name: ls.get("cartucho.device") || guessDevice() };
 
-/* ---------------- cloud: a private GitHub repository ----------------
-   Layout of the data repo:
+/* ---------------- cloud ----------------
+   Two places can hold a player's library, with the same files:
      cartucho.json        library index (game title, system, where the ROM lives)
      saves/<key>.json     current save + the previous one, gzipped and base64-encoded
+     states/<key>.json    snapshot to continue where you left off
      roms/<key>.gz        the ROM, gzipped
-   Every write is a commit, so the repo's history is also a full backup. */
+   - Google Drive (for everyone): the app's hidden folder in the player's own Drive
+     (appDataFolder). Only this app can see it; nothing is stored on any server of ours.
+   - A private GitHub repository (advanced): every write is a commit, so the history
+     is also a backup. */
 const GH_API = "https://api.github.com";
 const AUTH_KEY = "cartucho.github";
 const cloud = { db: false, docs: new Map(), roms: new Map(), ready: false, downloads: true, assets: false, auth: null, index: null, indexSha: null, saveShas: new Map() };
@@ -234,9 +238,15 @@ const busy = new Map();
 const MAX_DOC = 900 * 1024;
 
 function loadAuth() {
-  try { const a = JSON.parse(ls.get(AUTH_KEY) || "null"); if (a && a.token && a.owner && a.repo) return a; } catch (e) {}
+  try {
+    const a = JSON.parse(ls.get(AUTH_KEY) || "null");
+    if (a && a.kind === "google") return a;
+    if (a && a.token && a.owner && a.repo) return a;
+  } catch (e) {}
   return null;
 }
+const isGoogle = () => !!(cloud.auth && cloud.auth.kind === "google");
+const cloudName = () => (isGoogle() ? "Google Drive" : "GitHub");
 function saveAuth(a) { ls.set(AUTH_KEY, JSON.stringify(a)); }
 function clearAuth() { try { localStorage.removeItem(AUTH_KEY); } catch (e) {} }
 
@@ -256,12 +266,14 @@ const contents = (p, auth = cloud.auth) => `/repos/${auth.owner}/${auth.repo}/co
 const utf8 = { enc: (s) => new TextEncoder().encode(s), dec: (u) => new TextDecoder().decode(u) };
 
 async function readJson(p) {
+  if (isGoogle()) return drive.readJson(p);
   try {
     const r = await gh(contents(p));
     return { sha: r.sha, data: JSON.parse(utf8.dec(unb64((r.content || "").replace(/\s/g, "")))) };
   } catch (e) { if (e.status === 404) return null; throw e; }
 }
 async function putFile(p, base64, sha, message, keepalive) {
+  if (isGoogle()) return drive.put(p, unb64(base64), "application/json", keepalive);
   const body = { message, content: base64 };
   if (sha) body.sha = sha;
   const json = JSON.stringify(body);
@@ -269,6 +281,154 @@ async function putFile(p, base64, sha, message, keepalive) {
   const r = await gh(contents(p), { method: "PUT", body: json, keepalive: !!keepalive && json.length < 60000 });
   return r && r.content ? r.content.sha : null;
 }
+async function listDir(dir) {
+  if (isGoogle()) return drive.list(dir);
+  try { const r = await gh(contents(dir)); return Array.isArray(r) ? r.map((f) => ({ name: f.name })) : []; }
+  catch (e) { if (e.status === 404) return []; throw e; }
+}
+async function putBinary(path, bytes, message) {
+  if (isGoogle()) return drive.put(path, bytes, "application/gzip");
+  let sha;
+  try { const ex = await gh(contents(path)); sha = ex && ex.sha; } catch (e) { if (e.status !== 404) throw e; }
+  return putFile(path, b64(bytes), sha, message);
+}
+async function getBinary(path) {   // a Response whose body is the file
+  if (isGoogle()) return drive.download(path);
+  return gh(contents(path), { raw: true });
+}
+
+/* ---------------- Google Drive ----------------
+   Signing in uses Google Identity Services in the browser. Without a server there is
+   no refresh token: an access token lasts an hour, and a new one is asked for on the
+   next tap (Google answers at once, without asking again, once the player agreed).
+   Until then saves wait on the device and go up as soon as there is a token. */
+const CONFIG = window.CARTUCHIN_CONFIG || {};
+const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.appdata";
+const DRIVE = "https://www.googleapis.com/drive/v3", DRIVE_UP = "https://www.googleapis.com/upload/drive/v3";
+const gauth = { client: null, waiters: [], loading: null, lastAsk: 0 };
+const googleAvailable = () => !!CONFIG.googleClientId;
+const tokenFresh = () => isGoogle() && cloud.auth.token && cloud.auth.exp - Date.now() > 60000;
+function loadGis() {
+  if (window.google && google.accounts && google.accounts.oauth2) return Promise.resolve();
+  if (!gauth.loading) gauth.loading = new Promise((res, rej) => {
+    const sc = el("script", { src: "https://accounts.google.com/gsi/client", async: true });
+    sc.onload = res; sc.onerror = () => { gauth.loading = null; rej(new Error("gis")); };
+    document.head.append(sc);
+  });
+  return gauth.loading;
+}
+function gisClient() {
+  if (gauth.client || !(window.google && google.accounts && google.accounts.oauth2)) return gauth.client;
+  gauth.client = google.accounts.oauth2.initTokenClient({
+    client_id: CONFIG.googleClientId, scope: DRIVE_SCOPE,
+    callback: (resp) => {
+      const ws = gauth.waiters.splice(0);
+      if (!resp || resp.error || !resp.access_token) { ws.forEach((w) => w.rej(new Error((resp && resp.error) || "denied"))); return; }
+      cloud.auth = { ...(isGoogle() ? cloud.auth : {}), kind: "google", token: resp.access_token, exp: Date.now() + (Number(resp.expires_in) || 3600) * 1000 };
+      saveAuth(cloud.auth);
+      ws.forEach((w) => w.res(cloud.auth.token));
+    },
+    error_callback: (err) => { gauth.waiters.splice(0).forEach((w) => w.rej(new Error((err && err.type) || "popup"))); },
+  });
+  return gauth.client;
+}
+/* must be called straight from a tap, before any await, or the browser blocks the window */
+function askGoogleToken(first) {
+  const c = gisClient();
+  if (!c) return Promise.reject(new Error("gis-not-ready"));
+  gauth.lastAsk = Date.now();
+  return new Promise((res, rej) => {
+    gauth.waiters.push({ res, rej });
+    c.requestAccessToken({ prompt: first ? "select_account" : "", hint: (cloud.auth && cloud.auth.email) || undefined });
+  });
+}
+function needToken() { const e = new Error("google-token"); e.status = 401; e.token = true; return e; }
+
+const drive = {
+  files: new Map(),   // name -> { id, t }
+  listedAt: 0,
+  async api(url, opts = {}) {
+    if (!tokenFresh()) throw needToken();
+    const headers = Object.assign({ Authorization: "Bearer " + cloud.auth.token }, opts.headers || {});
+    const r = await fetch(url, { method: opts.method || "GET", headers, body: opts.body, cache: "no-store", keepalive: !!opts.keepalive });
+    if (r.status === 401) { cloud.auth.exp = 0; saveAuth(cloud.auth); throw needToken(); }
+    if (!r.ok) { const e = new Error("drive " + r.status); e.status = r.status; try { e.detail = await r.text(); } catch (x) {} throw e; }
+    return r;
+  },
+  remember(f) {
+    const cur = this.files.get(f.name);
+    const t = Date.parse(f.modifiedTime || 0) || Date.now();
+    if (!cur || t >= cur.t) this.files.set(f.name, { id: f.id, t });
+  },
+  async refresh() {
+    const fresh = new Map(); this.files = fresh;
+    let pageToken = "";
+    do {
+      const q = new URLSearchParams({ spaces: "appDataFolder", pageSize: "1000", fields: "nextPageToken,files(id,name,modifiedTime)" });
+      if (pageToken) q.set("pageToken", pageToken);
+      const j = await (await this.api(`${DRIVE}/files?${q}`)).json();
+      for (const f of j.files || []) this.remember(f);
+      pageToken = j.nextPageToken || "";
+    } while (pageToken);
+    this.listedAt = Date.now();
+  },
+  async idFor(name, exact) {
+    if (!this.listedAt) await this.refresh();
+    const hit = this.files.get(name);
+    if (hit || !exact) return hit && hit.id;
+    // before creating a file, ask Drive directly: another device may have just made it
+    const q = new URLSearchParams({ spaces: "appDataFolder", q: `name = '${name.replace(/'/g, "\\'")}'`, fields: "files(id,name,modifiedTime)" });
+    const j = await (await this.api(`${DRIVE}/files?${q}`)).json();
+    for (const f of j.files || []) this.remember(f);
+    const again = this.files.get(name);
+    return again && again.id;
+  },
+  async list(dir) {
+    await this.refresh();
+    return [...this.files.keys()].filter((n) => n.startsWith(dir + "/")).map((n) => ({ name: n.slice(dir.length + 1) }));
+  },
+  async readJson(name) {
+    const id = await this.idFor(name); if (!id) return null;
+    try { return { sha: id, data: await (await this.api(`${DRIVE}/files/${id}?alt=media`)).json() }; }
+    catch (e) { if (e.status === 404) { this.files.delete(name); return null; } throw e; }
+  },
+  async download(name) {
+    const id = await this.idFor(name);
+    if (!id) { const e = new Error("missing"); e.status = 404; throw e; }
+    return this.api(`${DRIVE}/files/${id}?alt=media`);
+  },
+  async put(name, bytes, type, keepalive) {
+    const id = await this.idFor(name, true);
+    if (id) {
+      try {
+        await this.api(`${DRIVE_UP}/files/${id}?uploadType=media&fields=id`, { method: "PATCH", headers: { "Content-Type": type }, body: bytes, keepalive: !!keepalive && bytes.length < 60000 });
+        this.files.set(name, { id, t: Date.now() });
+        return id;
+      } catch (e) { if (e.status !== 404) throw e; this.files.delete(name); }
+    }
+    const meta = { name, parents: ["appDataFolder"] };
+    let j;
+    if (bytes.length < 4 * 1024 * 1024) {
+      const boundary = "cartuchin" + rid();
+      const body = new Blob([`--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(meta)}\r\n--${boundary}\r\nContent-Type: ${type}\r\n\r\n`, bytes, `\r\n--${boundary}--`]);
+      j = await (await this.api(`${DRIVE_UP}/files?uploadType=multipart&fields=id,name,modifiedTime`, { method: "POST", headers: { "Content-Type": "multipart/related; boundary=" + boundary }, body })).json();
+    } else {
+      // big files (ROMs) go up in a resumable session
+      const start = await this.api(`${DRIVE_UP}/files?uploadType=resumable&fields=id,name,modifiedTime`, { method: "POST", headers: { "Content-Type": "application/json; charset=UTF-8", "X-Upload-Content-Type": type }, body: JSON.stringify(meta) });
+      const where = start.headers.get("Location");
+      if (!where) throw new Error("no-upload-url");
+      j = await (await this.api(where, { method: "PUT", headers: { "Content-Type": type }, body: bytes })).json();
+    }
+    this.remember({ id: j.id, name, modifiedTime: new Date().toISOString() });
+    return j.id;
+  },
+  async whoami() {
+    try {
+      const j = await (await this.api(`${DRIVE}/about?fields=user(displayName,emailAddress)`)).json();
+      return (j.user && (j.user.emailAddress || j.user.displayName)) || "";
+    } catch (e) { return ""; }
+  },
+};
 
 /* index read-modify-write, retried when another device wrote first */
 async function updateIndex(mutate, message) {
@@ -293,9 +453,8 @@ async function refreshLibrary() {
   cloud.indexSha = idx && idx.sha;
   cloud.roms.clear();
   for (const [key, g] of Object.entries(cloud.index.games || {})) if (g && g.rom) cloud.roms.set(key, { game: key, ...g });
-  let files = [];
-  try { files = await gh(contents("saves")); } catch (e) { if (e.status !== 404) throw e; }
-  const docs = await Promise.all((Array.isArray(files) ? files : []).filter((f) => f.name.endsWith(".json")).map(async (f) => {
+  const files = await listDir("saves");
+  const docs = await Promise.all(files.filter((f) => f.name.endsWith(".json")).map(async (f) => {
     try { const r = await readJson("saves/" + f.name); return r && r.data && r.data.game ? r : null; } catch (e) { return null; }
   }));
   cloud.docs.clear();
@@ -305,6 +464,7 @@ async function refreshLibrary() {
 async function connect() {
   cloud.auth = loadAuth();
   if (!cloud.auth) { cloud.ready = true; showConnect(); return; }
+  if (isGoogle()) { await connectGoogle(); handlePairLink(); return; }
   try {
     await gh(`/repos/${cloud.auth.owner}/${cloud.auth.repo}`);
     cloud.db = true; cloud.assets = true;
@@ -322,6 +482,51 @@ async function connect() {
   cloud.ready = true; render();
   handlePairLink();
 }
+
+async function connectGoogle() {
+  if (googleAvailable()) loadGis().then(gisClient).catch(() => {});
+  if (!tokenFresh()) {
+    cloud.db = false; cloud.ready = true; googleNeedsTap(true); render();
+    return;
+  }
+  try {
+    if (!cloud.auth.email) { cloud.auth.email = await drive.whoami(); saveAuth(cloud.auth); }
+    cloud.db = true; cloud.assets = true;
+    googleNeedsTap(false);
+    await refreshLibrary();
+  } catch (e) {
+    cloud.db = false;
+    if (e.token) googleNeedsTap(true);
+    else { $("#notice").dataset.sticky = "1"; notice("Sem conexão com o Google Drive agora. Dá para jogar o que já está neste aparelho; o save sobe quando a internet voltar."); }
+  }
+  cloud.ready = true; render();
+}
+/* The Google token expired: show a one-tap way back. Any tap on the page outside the
+   game counts too, so most of the time the player never sees this. */
+function googleNeedsTap(on) {
+  cloud.needTap = on;
+  const n = $("#notice");
+  if (on) {
+    n.dataset.sticky = "1"; n.className = "notice"; n.hidden = false;
+    n.replaceChildren(el("span", {}, "Sua sessão do Google expirou. Os saves ficam guardados aqui até você reconectar. "),
+      el("button", { class: "btn small primary", type: "button", onclick: reconnectGoogle }, "Reconectar"));
+  } else if (n.dataset.sticky === "1" && n.querySelector("button")) { n.dataset.sticky = ""; n.hidden = true; }
+}
+function reconnectGoogle() {
+  askGoogleToken(false).then(afterGoogleToken, () => toast("Não deu para reconectar. Tente de novo.", 3500));
+}
+async function afterGoogleToken() {
+  googleNeedsTap(false);
+  if (player.key) { cloud.db = true; flush(); }
+  else await connectGoogle();
+}
+window.addEventListener("pointerdown", (e) => {
+  if (!isGoogle() || tokenFresh() || !gauth.client || Date.now() - gauth.lastAsk < 20000) return;
+  // only on the library or the game's top bar: never in the middle of playing
+  if (!$("#library").hidden || (e.target.closest && e.target.closest(".pbar, .pad-top"))) {
+    askGoogleToken(false).then(afterGoogleToken, () => {});
+  }
+}, true);
 
 async function getSaveDoc(key) {
   const r = await readJson("saves/" + key + ".json");
@@ -363,26 +568,24 @@ function setBusy(key, msg) { if (msg) busy.set(key, msg); else busy.delete(key);
 
 async function uploadRom(rom) {
   if (!cloud.db || busy.has(rom.key)) return false;
-  setBusy(rom.key, "Guardando a ROM no GitHub…");
+  setBusy(rom.key, `Guardando a ROM no ${cloudName()}…`);
   try {
     const raw = new Uint8Array(await rom.blob.arrayBuffer());
     const s = new Blob([raw]).stream().pipeThrough(new CompressionStream("gzip"));
     const gz = new Uint8Array(await new Response(s).arrayBuffer());
     const path = "roms/" + rom.key + ".gz";
-    let sha;
-    try { const ex = await gh(contents(path)); sha = ex && ex.sha; } catch (e) { if (e.status !== 404) throw e; }
-    await putFile(path, b64(gz), sha, `ROM: ${rom.title}`);
+    await putBinary(path, gz, `ROM: ${rom.title}`);
     await updateIndex((d) => {
       d.games[rom.key] = { ...(d.games[rom.key] || {}), title: rom.title, system: rom.system, code: rom.code || "", ext: rom.ext,
         fileName: rom.fileName || "", size: raw.length, rom: path, romAt: Date.now(), romDevice: device.name };
     }, `Biblioteca: ${rom.title}`);
     cloud.roms.set(rom.key, { game: rom.key, ...cloud.index.games[rom.key] });
     setBusy(rom.key, null);
-    toast(`${rom.title}: ROM guardada no GitHub`);
+    toast(`${rom.title}: ROM guardada no ${cloudName()}`);
     return true;
   } catch (e) {
     setBusy(rom.key, null);
-    toast(e.status === 401 || e.status === 403 ? "O token não tem permissão de escrita no repositório." : "Não deu para guardar a ROM agora. Tente de novo.", 4000);
+    toast(e.token ? "Reconecte ao Google para guardar a ROM." : (e.status === 403 && isGoogle()) ? "O Google Drive recusou: pode ser falta de espaço na sua conta." : e.status === 401 || e.status === 403 ? "O token não tem permissão de escrita no repositório." : "Não deu para guardar a ROM agora. Tente de novo.", 4000);
     return false;
   }
 }
@@ -391,7 +594,7 @@ async function fetchRom(key) {
   const meta = cloud.roms.get(key); if (!meta || !cloud.auth) return null;
   setBusy(key, "Baixando a ROM…");
   try {
-    const r = await gh(contents(meta.rom), { raw: true });
+    const r = await getBinary(meta.rom);
     const total = Number(r.headers.get("content-length")) || 0;
     let got = 0; const chunks = [];
     if (r.body && r.body.getReader) {
@@ -429,6 +632,9 @@ function defaultRepo() {
 
 function showConnect() {
   $("#connect").hidden = false;
+  $("#googleBox").hidden = !googleAvailable();
+  if (!googleAvailable()) $("#ghAdv").open = true;
+  else loadGis().then(gisClient).catch(() => { $("#googleMsg").textContent = "Não deu para carregar o login do Google. Confira a internet."; });
   const repo = $("#ghRepo"); if (!repo.value) repo.value = defaultRepo();
   $("#dataRepoName").textContent = dataRepoName();
   render();
@@ -455,10 +661,19 @@ $("#ghForm").addEventListener("submit", async (e) => {
   }
 });
 $("#localOnlyBtn").addEventListener("click", () => { $("#connect").hidden = true; render(); });
+$("#googleBtn").addEventListener("click", () => {
+  const msg = $("#googleMsg");
+  if (!gisClient()) { msg.textContent = "Carregando o login do Google… toque de novo em um instante."; loadGis().then(gisClient).catch(() => {}); return; }
+  askGoogleToken(true).then(() => { msg.textContent = "Conectado! Abrindo sua biblioteca…"; location.reload(); },
+    (e) => { msg.textContent = /popup/.test(e.message) ? "O navegador bloqueou a janela do Google. Libere pop-ups para este site e tente de novo." : "Não deu para entrar. Tente de novo."; });
+});
 $("#disconnectBtn").addEventListener("click", async () => {
-  const ok = await dialog("Desconectar este aparelho?", "Os jogos que já estão aqui continuam, mas o save para de subir para o GitHub até você conectar de novo.",
+  const ok = await dialog("Desconectar este aparelho?", `Os jogos que já estão aqui continuam, mas o save para de subir para o ${cloudName()} até você conectar de novo.`,
     [{ label: "Desconectar", value: true, cls: "primary" }, { label: "Cancelar", value: false }]);
-  if (ok) { clearAuth(); location.reload(); }
+  if (ok) {
+    if (isGoogle() && cloud.auth.token && window.google && google.accounts && google.accounts.oauth2) try { google.accounts.oauth2.revoke(cloud.auth.token, () => {}); } catch (e) {}
+    clearAuth(); location.reload();
+  }
 });
 
 /* Pairing: the new device shows a code (and a QR with a link carrying it).
@@ -565,9 +780,11 @@ function notice(msg, kind) {
 
 function render() {
   if (!cloud.ready) return;
-  if ($("#notice").dataset.sticky !== "1") notice(cloud.auth || !$("#connect").hidden ? "" : "Este aparelho não está conectado ao GitHub: o save fica só aqui.");
-  $("#connText").textContent = cloud.db ? `Conectado a ${cloud.auth.owner}/${cloud.auth.repo}` : cloud.auth ? "GitHub indisponível agora" : "Não conectado ao GitHub";
-  $("#pairOtherBtn").hidden = !cloud.db; $("#disconnectBtn").hidden = !cloud.auth; $("#connectBtn").hidden = !!cloud.auth;
+  if ($("#notice").dataset.sticky !== "1") notice(cloud.auth || !$("#connect").hidden ? "" : "Este aparelho não está conectado à nuvem: o save fica só aqui.");
+  $("#connText").textContent = isGoogle()
+    ? (cloud.db ? `Google Drive${cloud.auth.email ? " · " + cloud.auth.email : ""}` : "Google Drive: reconecte para sincronizar")
+    : cloud.db ? `Conectado a ${cloud.auth.owner}/${cloud.auth.repo}` : cloud.auth ? "GitHub indisponível agora" : "Não conectado à nuvem";
+  $("#pairOtherBtn").hidden = !cloud.db || isGoogle(); $("#disconnectBtn").hidden = !cloud.auth; $("#connectBtn").hidden = !!cloud.auth;
   const keys = new Set([...roms.keys(), ...cloud.docs.keys(), ...cloud.roms.keys()]);
   const list = [...keys].map((k) => ({ key: k, rom: roms.get(k), save: cloud.docs.get(k) }))
     .sort((a, b) => ((b.save && b.save.at) || 0) - ((a.save && a.save.at) || 0) || (a.key < b.key ? -1 : 1));
@@ -600,7 +817,7 @@ function card({ key, rom, save }) {
   if (cloud.db) more.append(el("button", { class: "btn small", type: "button", onclick: () => pickSav(key, { title, system: sys === "GBA" ? "gba" : "gb", code }) }, "Enviar arquivo .sav"));
   if (save && cloud.downloads) more.append(el("button", { class: "btn small", type: "button", onclick: () => downloadSave(save) }, "Baixar save"));
   if (save && save.prev) more.append(el("button", { class: "btn small", type: "button", onclick: () => confirmRestore(key, save) }, "Voltar à versão anterior"));
-  if (rom && !crom && cloud.db && !working) more.append(el("button", { class: "btn small", type: "button", onclick: () => uploadRom(rom) }, "Guardar ROM no GitHub"));
+  if (rom && !crom && cloud.db && !working) more.append(el("button", { class: "btn small", type: "button", onclick: () => uploadRom(rom) }, `Guardar ROM no ${cloudName()}`));
   if (rom && !crom) more.append(el("button", { class: "btn small ghost", type: "button", onclick: () => confirmRemoveRom(key, title) }, "Tirar ROM daqui"));
 
   return el("article", { class: "cart" },
@@ -1084,10 +1301,10 @@ async function play(key) {
 
 async function pullSave(report) {
   if (!player.key || !player.emu || !player.emu.started) return;
-  if (!cloud.db) { report("Este aparelho não está conectado ao GitHub."); return; }
+  if (!cloud.db) { report(isGoogle() ? "Reconecte ao Google primeiro (botão no topo da biblioteca)." : "Este aparelho não está conectado à nuvem."); return; }
   report("Buscando o save na nuvem…");
   let remote;
-  try { remote = await getSaveDoc(player.key); } catch (e) { report("Não deu para falar com o GitHub agora."); return; }
+  try { remote = await getSaveDoc(player.key); } catch (e) { report(`Não deu para falar com o ${cloudName()} agora.`); return; }
   if (!remote) { report("Ainda não há save deste jogo na nuvem."); return; }
   const gm = player.emu.gameManager;
   let cur = null; try { cur = new Uint8Array(gm.getSaveFile()); } catch (e) {}
@@ -1108,7 +1325,12 @@ async function pullSave(report) {
 $("#pullBtn").addEventListener("click", () => pullSave((m) => m && toast(m)));
 $("#padPull").addEventListener("click", () => pullSave((m) => m && padMsg(m)));
 
+function tokenFromTap() {
+  if (isGoogle() && !tokenFresh() && gauth.client) return askGoogleToken(false).then(() => { googleNeedsTap(false); cloud.db = true; }, () => {});
+  return Promise.resolve();
+}
 $("#saveNowBtn").addEventListener("click", async () => {
+  await tokenFromTap();
   await flush();
   const ok = await uploadState({ force: true });
   if (ok && cloud.db) toast("Progresso salvo: o jogo continua daqui em qualquer aparelho", 3500);
@@ -1500,12 +1722,13 @@ if (window.ResizeObserver) new ResizeObserver(() => { if (padState.mode === "loc
   pad.addEventListener("contextmenu", (e) => e.preventDefault());
   $("#padStop").addEventListener("click", () => stopCast("Transmissão encerrada."));
   $("#padSave").addEventListener("click", async () => {
+    await tokenFromTap();
     padMsg("Enviando o save…");
     await flush();
     const okState = await uploadState({ force: true });
     if (player.state === "ok" || okState) { padMsg(cloud.db ? "Progresso salvo: continua daqui em qualquer aparelho" : "Progresso salvo neste celular"); }
     else if (player.state === "none") padMsg("Ainda não há save. Salve dentro do jogo primeiro.");
-    else if (player.state === "local") padMsg("Save guardado neste celular (sem GitHub conectado)");
+    else if (player.state === "local") padMsg("Save guardado neste celular (sem nuvem conectada)");
     else padMsg("Save guardado aqui. Ele sobe quando a internet voltar.");
   });
   $("#padRotate").addEventListener("click", () => {
@@ -1842,7 +2065,7 @@ function resetEmulatorSettings() {
   return n;
 }
 $("#resetEmuBtn").addEventListener("click", async () => {
-  const ok = await dialog("Restaurar as configurações do emulador?", "Controles, vídeo, som e as opções do menu do emulador voltam ao padrão, e o desempenho volta para Automático. Seus jogos, saves e a conexão com o GitHub continuam.",
+  const ok = await dialog("Restaurar as configurações do emulador?", "Controles, vídeo, som e as opções do menu do emulador voltam ao padrão, e o desempenho volta para Automático. Seus jogos, saves e a conexão com a nuvem continuam.",
     [{ label: "Restaurar", value: true, cls: "primary" }, { label: "Cancelar", value: false }]);
   if (!ok) return;
   resetEmulatorSettings();

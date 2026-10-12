@@ -8,7 +8,7 @@ Emulador de Game Boy Advance (e Game Boy / Color) que roda no navegador, com a R
 
 - O emulador é o [mGBA](https://mgba.io) compilado para WebAssembly, rodando pelo [EmulatorJS](https://github.com/EmulatorJS/EmulatorJS).
 - Este repositório é público e só tem o site. Nada de ROM ou save aqui.
-- As ROMs e os saves vão para um repositório privado seu (por padrão `cartuchin-dados`), pela API do GitHub, com um token que só tem acesso a ele:
+- Com **Entrar com Google**, as ROMs e os saves vão para a pasta oculta do app no Google Drive de cada pessoa (escopo `drive.appdata`: o app não enxerga nenhum outro arquivo). Opção avançada: um repositório privado do GitHub, pela API, com um token que só tem acesso a ele:
   - `cartucho.json`: a biblioteca
   - `roms/<jogo>.gz`: a ROM compactada
   - `saves/<jogo>.json`: o save atual e o anterior

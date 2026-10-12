@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Cartuchin</title>
-<meta name="description" content="Emulador de GBA no navegador com save e ROM sincronizados num repositório privado do GitHub.">
+<meta name="description" content="Emulador de GBA no navegador. Seus jogos e saves ficam no seu Google Drive e continuam em qualquer aparelho.">
 <meta name="theme-color" content="#1f2440">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
@@ -123,6 +123,14 @@ button { cursor: pointer; }
 .conn span { margin-right: auto; }
 #ghMsg:empty { display: none; }
 .perf { display: grid; gap: 6px; }
+#googleBox { display: grid; gap: 8px; justify-items: start; }
+.google-btn { gap: 10px; padding-inline: 18px; }
+.google-btn svg { background: #fff; border-radius: 50%; padding: 2px; box-sizing: content-box; }
+.small-note { font-size: 0.85rem; color: var(--muted); margin: 0; }
+.gh-adv { border-top: 1px solid var(--line); padding-top: 10px; }
+.gh-adv summary { cursor: pointer; color: var(--muted); font-weight: 600; font-size: 0.9rem; }
+.gh-adv[open] summary { margin-bottom: 12px; }
+.notice button { margin-left: 6px; }
 .top-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 /* ---------- phone controller (console mode) ----------
    Landscape layout (rotated by script when the phone stays upright): shoulders on
@@ -261,8 +269,18 @@ body { margin: 0; }
   <div id="notice" hidden></div>
 
   <section id="connect" class="panel" hidden>
-    <h2>Conecte este aparelho ao seu GitHub</h2>
-    <p>As ROMs e os saves ficam num repositório privado seu. Cada aparelho se conecta uma vez.</p>
+    <h2>Guarde seus jogos na nuvem</h2>
+    <p>Entre com o Google e seus jogos e saves ficam numa pasta oculta do seu Google Drive, só deste app. Em outro aparelho, é só entrar com a mesma conta.</p>
+    <div id="googleBox">
+      <button class="btn primary google-btn" id="googleBtn" type="button">
+        <svg viewBox="0 0 18 18" width="18" height="18" aria-hidden="true"><path fill="#4285F4" d="M17.64 9.2c0-.64-.06-1.25-.16-1.84H9v3.48h4.84a4.14 4.14 0 0 1-1.8 2.71v2.26h2.92a8.78 8.78 0 0 0 2.68-6.61z"/><path fill="#34A853" d="M9 18c2.43 0 4.47-.8 5.96-2.18l-2.92-2.26c-.8.54-1.83.86-3.04.86-2.34 0-4.32-1.58-5.03-3.7H.96v2.33A9 9 0 0 0 9 18z"/><path fill="#FBBC05" d="M3.97 10.72A5.41 5.41 0 0 1 3.68 9c0-.6.1-1.18.29-1.72V4.95H.96A9 9 0 0 0 0 9c0 1.45.35 2.83.96 4.05l3.01-2.33z"/><path fill="#EA4335" d="M9 3.58c1.32 0 2.5.45 3.44 1.35l2.58-2.59A9 9 0 0 0 .96 4.95l3.01 2.33C4.68 5.16 6.66 3.58 9 3.58z"/></svg>
+        <span>Entrar com Google</span>
+      </button>
+      <p class="small-note" id="googleMsg" role="status">O app só enxerga a própria pasta: não vê nenhum outro arquivo do seu Drive.</p>
+    </div>
+    <p class="small-note"><b>Na TV:</b> use <b>Usar como tela</b> lá em cima. A TV só mostra o jogo que roda no celular e não precisa entrar em conta nenhuma.</p>
+    <details class="gh-adv" id="ghAdv">
+      <summary>Usar um repositório do GitHub (avançado)</summary>
     <div class="split">
       <div class="opt">
         <h3>Já conectou em outro aparelho?</h3>
@@ -292,6 +310,7 @@ body { margin: 0; }
         <p id="ghMsg" role="status"></p>
       </form>
     </div>
+    </details>
     <button class="btn ghost small" id="localOnlyBtn" type="button">Jogar sem nuvem por enquanto</button>
   </section>
 
@@ -299,10 +318,10 @@ body { margin: 0; }
   <section id="empty" class="empty" hidden>
     <h2>Nenhum jogo ainda</h2>
     <ol>
-      <li>Adicione a ROM do jogo (.gba, .gb, .gbc ou .zip). Ela vai para o seu repositório privado junto com o save.</li>
+      <li>Adicione a ROM do jogo (.gba, .gb, .gbc ou .zip). Ela vai para a sua nuvem junto com o save.</li>
       <li>Se tiver um save antigo, envie o arquivo .sav no cartão do jogo.</li>
       <li>Salve dentro do jogo normalmente. O save sobe sozinho.</li>
-      <li>No tablet ou na TV, conecte com o código e toque em Jogar. Dá para navegar com o controle.</li>
+      <li>Em outro aparelho, entre com a mesma conta e toque em Jogar. Na TV, use <b>Usar como tela</b>.</li>
     </ol>
   </section>
   <footer class="foot">
@@ -310,7 +329,7 @@ body { margin: 0; }
       <span id="connText"></span>
       <button class="btn small" id="pairOtherBtn" type="button" hidden>Conectar outro aparelho</button>
       <button class="btn small ghost" id="disconnectBtn" type="button" hidden>Desconectar</button>
-      <button class="btn small" id="connectBtn" type="button" hidden>Conectar ao GitHub</button>
+      <button class="btn small" id="connectBtn" type="button" hidden>Conectar à nuvem</button>
     </div>
     <div class="perf">
       <span>Desempenho neste aparelho</span>
@@ -401,8 +420,9 @@ body { margin: 0; }
 
 <div id="dialogRoot"></div>
 
-<script src="vendor/lang-pt-BR.js?v=20261012020354"></script>
+<script src="config.js?v=20261012130837"></script>
+<script src="vendor/lang-pt-BR.js?v=20261012130837"></script>
 <script src="vendor/qrcode.js"></script>
-<script src="app.js?v=20261012020354"></script>
+<script src="app.js?v=20261012130837"></script>
 </body>
 </html>
