@@ -69,7 +69,14 @@
     const extra = new URLSearchParams(location.search).get("arquivo");
     if (extra && /^[a-z0-9_]+$/.test(extra)) {
       const threads = new URLSearchParams(location.search).get("threads") === "1";
-      CORES[extra] = { label: `Build ${extra}`, file: `${extra}_libretro`, save: "sav", coreName: "melonds", threads };
+      CORES[extra] = {
+        label: `Build ${extra}`,
+        file: `${extra}_libretro`,
+        save: "sav",
+        coreName: "melonds",
+        threads,
+        options: threads ? { melonds_threaded_renderer: "enabled" } : void 0
+      };
       const b = document.createElement("button");
       b.type = "button";
       b.dataset.core = extra;

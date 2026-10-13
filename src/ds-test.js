@@ -31,7 +31,9 @@ let coreKey = "melonds";
   if (extra && /^[a-z0-9_]+$/.test(extra)) {
     // &threads=1: a threaded build (the profiler builds sample from a second thread)
     const threads = new URLSearchParams(location.search).get("threads") === "1";
-    CORES[extra] = { label: `Build ${extra}`, file: `${extra}_libretro`, save: "sav", coreName: "melonds", threads };
+    // with threads, the 3D renderer also runs on its own thread, in parallel with the CPUs
+    CORES[extra] = { label: `Build ${extra}`, file: `${extra}_libretro`, save: "sav", coreName: "melonds", threads,
+      options: threads ? { melonds_threaded_renderer: "enabled" } : undefined };
     const b = document.createElement("button");
     b.type = "button"; b.dataset.core = extra; b.textContent = `Build ${extra}`;
     document.querySelector(".row").append(b);
