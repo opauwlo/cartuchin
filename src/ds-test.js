@@ -23,6 +23,18 @@ const CORES = {
 
 let romFile = null;
 let coreKey = "melonds";
+
+/* for comparing builds: teste-ds.html?arquivo=<name> loads vendor/<name>_libretro.js
+   (non-threaded) as an extra choice. Only names of letters, digits and _ are accepted. */
+{
+  const extra = new URLSearchParams(location.search).get("arquivo");
+  if (extra && /^[a-z0-9_]+$/.test(extra)) {
+    CORES[extra] = { label: `Build ${extra}`, file: `${extra}_libretro`, save: "sav", coreName: "melonds" };
+    const b = document.createElement("button");
+    b.type = "button"; b.dataset.core = extra; b.textContent = `Build ${extra}`;
+    document.querySelector(".row").append(b);
+  }
+}
 /** @type {any} */ let emu = null;
 
 /* keep EmulatorJS from calling its own CDN for update checks */
@@ -66,7 +78,7 @@ function loadScript(src) {
 function patchEmulator(core) {
   const EJS = window.EmulatorJS;
   EJS.prototype.downloadGameCore = function () {
-    this.extensions = ["nds"]; this.coreName = coreKey.replace(/-(thread|prof)$/, ""); this.defaultCoreOpts = {};
+    this.extensions = ["nds"]; this.coreName = core.coreName || coreKey.replace(/-(thread|prof)$/, ""); this.defaultCoreOpts = {};
     this.saveFileExt = core.save; this.webgl2Enabled = false; this.enableMouseLock = false;
     this.downloadFile(`cores/${core.file}.wasm`, () => {}, false, { responseType: "arraybuffer", method: "GET" }).then((res) => {
       if (res === -1 || !res.data) { this.startGameError("Erro de rede"); return; }

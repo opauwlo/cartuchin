@@ -65,6 +65,17 @@
   };
   var romFile = null;
   var coreKey = "melonds";
+  {
+    const extra = new URLSearchParams(location.search).get("arquivo");
+    if (extra && /^[a-z0-9_]+$/.test(extra)) {
+      CORES[extra] = { label: `Build ${extra}`, file: `${extra}_libretro`, save: "sav", coreName: "melonds" };
+      const b = document.createElement("button");
+      b.type = "button";
+      b.dataset.core = extra;
+      b.textContent = `Build ${extra}`;
+      document.querySelector(".row").append(b);
+    }
+  }
   var emu = null;
   var realFetch = window.fetch.bind(window);
   window.fetch = (input, init) => {
@@ -108,7 +119,7 @@
     const EJS = window.EmulatorJS;
     EJS.prototype.downloadGameCore = function() {
       this.extensions = ["nds"];
-      this.coreName = coreKey.replace(/-(thread|prof)$/, "");
+      this.coreName = core.coreName || coreKey.replace(/-(thread|prof)$/, "");
       this.defaultCoreOpts = {};
       this.saveFileExt = core.save;
       this.webgl2Enabled = false;
