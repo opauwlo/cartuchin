@@ -118,6 +118,7 @@ async function start() {
     startOnLoad: true, threads: !!core.threads, forceLegacyCores: true, cacheLimit: 0, backgroundColor: "#000000",
     buttonOpts: { netplay: false, saveSavFiles: false, loadSavFiles: false, cacheManager: false, exitEmulation: false },
   });
+  window.__dsEmu = emu;   // for the automated speed/diff tests
   emu.on("start", () => {
     $("#status").textContent = "Passe a abertura e entre no jogo (ande um pouco). Depois toque em Medir.";
     $("#measure").disabled = false;

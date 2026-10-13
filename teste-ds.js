@@ -185,6 +185,7 @@
       backgroundColor: "#000000",
       buttonOpts: { netplay: false, saveSavFiles: false, loadSavFiles: false, cacheManager: false, exitEmulation: false }
     });
+    window.__dsEmu = emu;
     emu.on("start", () => {
       $("#status").textContent = "Passe a abertura e entre no jogo (ande um pouco). Depois toque em Medir.";
       $("#measure").disabled = false;
