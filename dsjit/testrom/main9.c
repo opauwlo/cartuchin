@@ -93,6 +93,37 @@ __attribute__((noinline)) static u32 jump_table(u32 h, u32 k)
 
 __attribute__((noinline)) static u32 fib(u32 n) { return n < 2 ? n : fib(n - 1) + fib(n - 2); }
 
+/* THUMB code that calls: BL to THUMB, BLX to ARM, and THUMB recursion. The JIT merges
+   each THUMB BL/BLX pair into one instruction (a bug there hung real games). */
+__attribute__((noinline, target("thumb"))) static u32 fib_thumb(u32 n) { return n < 2 ? n : fib_thumb(n - 1) + fib_thumb(n - 2); }
+__attribute__((noinline, target("thumb"))) static u32 thumb_caller(u32 h, u32 x)
+{
+    h = mix_thumb(h, x);          /* BL  THUMB → THUMB */
+    h = op_sub_thumb(h, x);
+    h = mix_arm(h, x);            /* BLX THUMB → ARM */
+    h ^= multiplies(h, x + 7);
+    return h + fib_thumb(6);
+}
+
+/* Self-modifying code, like a game loading an overlay over old code: two tiny ARM
+   functions are written alternately into the same RAM and called. A JIT that kept a
+   stale block would keep running the old one and the checksum would differ. */
+static u32 code_buf[4] __attribute__((aligned(32)));
+static const u32 code_add[2] = { 0xE0800001u, 0xE12FFF1Eu };   /* add r0, r0, r1 ; bx lr */
+static const u32 code_eor[2] = { 0xE0200001u, 0xE12FFF1Eu };   /* eor r0, r0, r1 ; bx lr */
+__attribute__((noinline)) static u32 self_modifying(u32 h, u32 round)
+{
+    for (int v = 0; v < 4; v++)
+    {
+        const u32* src = ((v + round) & 1) ? code_eor : code_add;
+        volatile u32* dst = code_buf;
+        dst[0] = src[0]; dst[1] = src[1];
+        u32 (*fn)(u32, u32) = (u32 (*)(u32, u32))(void*)code_buf;
+        for (u32 i = 0; i < 16; i++) h = fn(h, i * 0x01010101u + v);
+    }
+    return h;
+}
+
 __attribute__((noinline)) static u32 round_work(u32 round)
 {
     u32 h = 0x811C9DC5u ^ round;
@@ -103,8 +134,10 @@ __attribute__((noinline)) static u32 round_work(u32 round)
         h = jump_table(h, h >> 11);
         h ^= multiplies(h, i * 0x10001u + round);
         h = mix_arm(h, i);
+        h = thumb_caller(h, i ^ round);
     }
     h += fib(12 + (round & 3));
+    h = self_modifying(h, round);
     return h;
 }
 

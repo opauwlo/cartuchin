@@ -2,6 +2,7 @@
 
 #include "../ARM.h"
 #include "../ARMInterpreter.h"
+#include "../ARMInterpreter_Branch.h"
 #include "../ARM_InstrInfo.h"
 #include <stdio.h>
 
@@ -16,7 +17,20 @@ enum StepKind : u8
     step_Interpret,     // run the handler (after the condition check for ARM)
     step_BLXImm,        // ARM BLX <imm>: its condition field is 0xF, it always runs
     step_CondNever,     // other ARM instructions with condition 0xF: only spend the cycles
+    step_ThumbBLLong,   // THUMB BL/BLX: the frontend merged its two halves into one word
 };
+
+/* The frontend merges a THUMB BL/BLX pair into one instruction, with the first half in
+   the low 16 bits and the second in the high 16 bits. Native backends compile it
+   whole; the interpreter's halves each decode their own half, so run them in turn. */
+static void ThumbBLLong(ARM* cpu, u32 merged)
+{
+    cpu->CurInstr = merged & 0xFFFF;
+    ARMInterpreter::T_BL_LONG_1(cpu);
+    cpu->R[15] += 2;
+    cpu->CurInstr = merged >> 16;
+    ARMInterpreter::T_BL_LONG_2(cpu);
+}
 
 Compiler::Compiler()
 {
@@ -45,7 +59,7 @@ JitBlockEntry Compiler::CompileBlock(ARM* cpu, bool thumb, FetchedInstr instrs[]
         {
             s.Func = InterpretTHUMB[in.Info.Kind];
             s.Cond = 0xE;
-            s.Kind = step_Interpret;
+            s.Kind = in.Info.Kind == ARMInstrInfo::tk_BL_LONG ? step_ThumbBLLong : step_Interpret;
         }
         else
         {
@@ -116,6 +130,9 @@ extern "C" void ARM_Dispatch(ARM* cpu, JitBlockEntry entry)
         case step_CondNever:
             cpu->AddCycles_C();
             executed = false;
+            break;
+        case step_ThumbBLLong:
+            ThumbBLLong(cpu, s->Instr);
             break;
         }
 
