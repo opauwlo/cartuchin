@@ -17,7 +17,8 @@ const CORES = {
     options: { melonds_threaded_renderer: "enabled" } },
   desmume2015: { label: "DeSmuME 2015", file: "desmume2015_libretro", save: "dsv" },
   // our own build of melonDS, with a profiler that reports where each frame's time goes
-  "melonds-prof": { label: "melonDS Cartuchin (medidor)", file: "melonds_prof_libretro", save: "sav" },
+  // threaded: a second thread samples which part of the emulator is running (see Prof.cpp)
+  "melonds-prof": { label: "melonDS Cartuchin (medidor)", file: "melonds_prof_libretro", save: "sav", threads: true },
 };
 
 let romFile = null;
@@ -77,7 +78,12 @@ function patchEmulator(core) {
     window.EJS_Runtime({
       noInitialRun: true, arguments: [], preRun: [], postRun: [], canvas: this.canvas, callbacks: {}, parent: this.elements.parent,
       print: () => {}, printErr: () => {}, totalDependencies: 0, wasmBinary: bytes,
-      locateFile: (f) => (f.endsWith(".wasm") ? URL.createObjectURL(new Blob([bytes], { type: "application/wasm" })) : f),
+      locateFile: (f) => {
+        if (f.endsWith(".wasm")) return URL.createObjectURL(new Blob([bytes], { type: "application/wasm" }));
+        // threaded builds from older Emscripten start their threads from a separate worker file
+        if (f.endsWith(".worker.js")) return new URL(`vendor/${core.file}.worker.js`, location.href).href;
+        return f;
+      },
       getSavExt: () => "." + core.save,
       // emulator threads start as Workers running this same script
       mainScriptUrlOrBlob: new URL(`vendor/${core.file}.js`, location.href).href,
@@ -116,17 +122,25 @@ async function measure(ms) {
 }
 
 /* where each frame's time went, from the profiling build (window.__dsProf, in ms per frame) */
+/* where each frame's time went (window.__dsProf from the profiling build). Every value
+   is the share of samples spent in that part, exclusive of the parts nested inside it,
+   so the rows add up to 100%. */
 function profileHtml(p) {
-  if (!p || !p.frame) return "";
-  const otherSystem = Math.max(0, p.system - p.raster3d - p.draw2d);
-  const core = p.arm9 + p.arm7 + p.geometry + p.system;
+  if (!p) return "";
+  if (p.error) return `<b>Medidor:</b> ${p.error}<br>`;
+  if (!p.sampled || !p.samples) return "";
   const parts = [
-    ["CPU principal (ARM9)", p.arm9], ["CPU secundária (ARM7)", p.arm7], ["Geometria 3D", p.geometry],
-    ["Desenho 3D", p.raster3d], ["Desenho 2D", p.draw2d], ["Resto do sistema", otherSystem],
-    ["Fora do emulador (vídeo, som)", Math.max(0, p.frame - core)],
-  ];
-  const rows = parts.map(([name, ms]) => `<tr><td>${name}</td><td>${ms.toFixed(2)} ms</td><td>${Math.round((ms / p.frame) * 100)}%</td></tr>`).join("");
-  return `<b>Onde vai o tempo de cada quadro</b> (${p.frame.toFixed(1)} ms; o DS precisa de 16,7)<table style="width:100%;font-size:0.95rem">${rows}</table><br>`;
+    ["CPU principal (ARM9)", p.arm9], ["CPU secundária (ARM7)", p.arm7], ["DMA", p.dma], ["Timers", p.timers],
+    ["Laço do emulador (agenda, eventos)", p.frame], ["Geometria 3D", p.geometry], ["Desenho 3D", p.raster3d],
+    ["Desenho 2D", p.draw2d], ["Resto do sistema", p.system], ["Som do DS (SPU)", p.spu],
+    ["Imagem: montar as telas", p.video], ["Imagem: RetroArch/WebGL", p.videocb], ["Som: enviar", p.audio],
+    ["Controles", p.input], ["Opções do core", p.vars], ["Fora do núcleo (RetroArch, navegador)", p.outside],
+  ].sort((x, y) => y[1] - x[1]);
+  const rows = parts.map(([name, share]) => `<tr><td>${name}</td><td>${(share * p.wall).toFixed(2)} ms</td><td>${Math.round(share * 100)}%</td></tr>`).join("");
+  const total = parts.reduce((a, [, v]) => a + v, 0);
+  return `<b>Onde vai o tempo de cada quadro</b> (${p.wall.toFixed(1)} ms; o DS precisa de 16,7)` +
+    `<br><small>${p.samples} amostras · soma ${Math.round(total * 100)}% · fatias de CPU por quadro: ARM9 ${Math.round(p.arm9calls)}, ARM7 ${Math.round(p.arm7calls)}</small>` +
+    `<table style="width:100%;font-size:0.9rem">${rows}</table><br>`;
 }
 async function runMeasure() {
   $("#measure").disabled = true;
