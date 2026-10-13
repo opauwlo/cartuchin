@@ -5,6 +5,7 @@
 #include "../ARMInterpreter_Branch.h"
 #include "../ARM_InstrInfo.h"
 #include <stdio.h>
+#include "../Prof.h"
 
 // declared here instead of including emscripten.h, which clashes with libretro's FILE remap
 extern "C" void emscripten_run_script(const char* script);
@@ -94,6 +95,9 @@ using namespace ARMJIT;
    (which adds its own cycles), and leave early when a followed branch went the other way. */
 extern "C" void ARM_Dispatch(ARM* cpu, JitBlockEntry entry)
 {
+#ifdef CARTUCHIN_PROF
+    Prof::Mark _prof(cpu->Num == 0 ? Prof::JITRUN9 : Prof::JITRUN7);
+#endif
     Compiler* c = JITCompiler;
     const ThreadedBlock& block = c->Blocks[(u32)(uintptr_t)entry];
     const ThreadedStep* s = c->Steps.data() + block.FirstStep;

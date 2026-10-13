@@ -68,7 +68,8 @@
   {
     const extra = new URLSearchParams(location.search).get("arquivo");
     if (extra && /^[a-z0-9_]+$/.test(extra)) {
-      CORES[extra] = { label: `Build ${extra}`, file: `${extra}_libretro`, save: "sav", coreName: "melonds" };
+      const threads = new URLSearchParams(location.search).get("threads") === "1";
+      CORES[extra] = { label: `Build ${extra}`, file: `${extra}_libretro`, save: "sav", coreName: "melonds", threads };
       const b = document.createElement("button");
       b.type = "button";
       b.dataset.core = extra;
@@ -218,7 +219,10 @@
       ["Som: enviar", p.audio],
       ["Controles", p.input],
       ["Opções do core", p.vars],
-      ["Fora do núcleo (RetroArch, navegador)", p.outside]
+      ["Fora do núcleo (RetroArch, navegador)", p.outside],
+      ["JIT: compilar blocos", p.jitcompile || 0],
+      ["JIT: executar blocos do ARM9", p.jitrun9 || 0],
+      ["JIT: executar blocos do ARM7", p.jitrun7 || 0]
     ].sort((x, y) => y[1] - x[1]);
     const rows = parts.map(([name, share]) => `<tr><td>${name}</td><td>${(share * p.wall).toFixed(2)} ms</td><td>${Math.round(share * 100)}%</td></tr>`).join("");
     const total = parts.reduce((a, [, v]) => a + v, 0);

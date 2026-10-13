@@ -38,13 +38,14 @@ void EndFrame() {
     unsigned n = Samples.exchange(0);
     double h[COUNT];
     for (int i = 0; i < COUNT; i++) h[i] = n ? (double)Hist[i].exchange(0) / n : 0;
-    char js[1000];
+    char js[1200];
     snprintf(js, sizeof js,
         "window.__dsProf={sampled:1,wall:%.3f,samples:%u,outside:%.4f,frame:%.4f,arm9:%.4f,arm7:%.4f,geometry:%.4f,system:%.4f,"
         "raster3d:%.4f,draw2d:%.4f,dma:%.4f,timers:%.4f,video:%.4f,videocb:%.4f,audio:%.4f,input:%.4f,vars:%.4f,spu:%.4f,"
-        "arm9calls:%.0f,arm7calls:%.0f,at:performance.now()}",
+        "jitcompile:%.4f,jitrun9:%.4f,jitrun7:%.4f,arm9calls:%.0f,arm7calls:%.0f,at:performance.now()}",
         wall, n, h[OUTSIDE], h[FRAME], h[ARM9], h[ARM7], h[GEOMETRY], h[SYSTEM], h[RASTER3D], h[DRAW2D], h[DMA], h[TIMERS],
-        h[VIDEO], h[VIDEOCB], h[AUDIO], h[INPUT], h[VARS], h[SPU], (double)Calls[ARM9] / frames, (double)Calls[ARM7] / frames);
+        h[VIDEO], h[VIDEOCB], h[AUDIO], h[INPUT], h[VARS], h[SPU], h[JITCOMPILE], h[JITRUN9], h[JITRUN7],
+        (double)Calls[ARM9] / frames, (double)Calls[ARM7] / frames);
     emscripten_run_script(js);
     for (int i = 0; i < COUNT; i++) Calls[i] = 0;
     frames = 0; since = now;

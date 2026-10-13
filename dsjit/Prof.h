@@ -16,7 +16,8 @@ extern "C" void emscripten_run_script(const char* script);
 namespace Prof {
 // OUTSIDE = not inside retro_run: RetroArch's own loop and the browser
 enum Part { OUTSIDE = 0, FRAME, ARM9, ARM7, GEOMETRY, SYSTEM, RASTER3D, DRAW2D, DMA, TIMERS,
-            VIDEO, VIDEOCB, AUDIO, INPUT, VARS, SPU, COUNT };
+            VIDEO, VIDEOCB, AUDIO, INPUT, VARS, SPU,
+            JITCOMPILE, JITRUN9, JITRUN7, COUNT };   // JIT: building a block, running a block (per CPU)
 extern volatile int Cur;
 extern unsigned Calls[COUNT];
 struct Mark {
