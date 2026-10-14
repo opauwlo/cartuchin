@@ -1504,7 +1504,7 @@ index 1f8f3b5..423a904 100644
  
  #endif
 diff --git a/desmume/wasm-port/main.cpp b/desmume/wasm-port/main.cpp
-index 44f22c8..3e53a0e 100644
+index 44f22c8..9eebdde 100644
 --- a/desmume/wasm-port/main.cpp
 +++ b/desmume/wasm-port/main.cpp
 @@ -14,22 +14,19 @@
@@ -1563,7 +1563,7 @@ index 44f22c8..3e53a0e 100644
  }
  
  // The NDS reads audio samples in the following format:
-@@ -106,16 +117,34 @@ SoundInterface_struct SndWasm = {1,
+@@ -106,16 +117,41 @@ SoundInterface_struct SndWasm = {1,
                                   SNDWasmUnMuteAudio,
                                   SNDWasmSetVolume,
                                   SNDWasmClearBuffer,
@@ -1579,28 +1579,35 @@ index 44f22c8..3e53a0e 100644
  
  u32 dstFrameBuffer[2][256 * 192];
  
-+// ---- resolução interna (1x a 4x) ----
-+// Em 1x a saída é dstFrameBuffer (256x384, as duas telas). Acima disso o GPU renderiza
-+// tudo no buffer "custom" (3D em resolução alta; 2D ampliado) e a saída vai para
-+// customOut (256*s x 384*s), que o JS pega em getSymbol(8).
++// ---- resolução interna (1x a 6x) ----
++// Em 1x a saída é dstFrameBuffer (256x384, as duas telas). Acima disso a saída vai para
++// customOut (getSymbol 8), uma tela por vez, cada uma no tamanho em que foi renderizada.
 +static int renderScale = 1;
 +static u32 *customOut = NULL;
 +static size_t customOutCap = 0;
++// Cada tela sai no tamanho em que foi renderizada: a tela com 3D em 256*s x 192*s, a tela
++// só 2D fica em 256x192 (o JS amplia na GPU do navegador). Sem "auto resolve" o core não
++// amplia a tela 2D na CPU nem converte pixels à toa. Tela i começa em customOut + i*slot.
++static int screenW[2] = {256, 256};
 +static void gpu_custom_to_rgb() {
 +  const NDSDisplayInfo &di = GPU->GetDisplayInfo();
-+  const size_t px = di.customWidth * di.customHeight * 2;
-+  if (customOutCap < px) {
-+    customOut = (u32 *)realloc(customOut, px * sizeof(u32));
-+    customOutCap = px;
++  const size_t slot = (size_t)256 * renderScale * 192 * renderScale;
++  if (customOutCap < slot * 2) {
++    customOut = (u32 *)realloc(customOut, slot * 2 * sizeof(u32));
++    customOutCap = slot * 2;
 +  }
-+  ColorspaceConvertBuffer555To8888Opaque<false, false>(
-+      (const uint16_t *)di.masterCustomBuffer, customOut, px);
++  for (int i = 0; i < 2; i++) {
++    const size_t w = di.renderedWidth[i], h = di.renderedHeight[i];
++    screenW[i] = (int)w;
++    ColorspaceConvertBuffer555To8888Opaque<false, false>(
++        (const uint16_t *)di.renderedBuffer[i], customOut + i * slot, w * h);
++  }
 +}
 +
  static void gpu_screen_to_rgb(u32 *dst) {
    ColorspaceConvertBuffer555To8888Opaque<false, false>(
        (const uint16_t *)GPU->GetDisplayInfo().masterNativeBuffer, dst,
-@@ -132,6 +161,15 @@ void setSampleRate(int r) {
+@@ -132,6 +168,15 @@ void setSampleRate(int r) {
  int main() {
    srand(time(NULL));
  
@@ -1616,7 +1623,7 @@ index 44f22c8..3e53a0e 100644
    NDS_Init();
    SPU_ChangeSoundCore(1, 16384);
  
-@@ -139,6 +177,7 @@ int main() {
+@@ -139,6 +184,7 @@ int main() {
    cheatsExport = new CHEATSEXPORT();
    printf("wasm ready.\n");
    EM_ASM(wasmReady(););
@@ -1624,7 +1631,7 @@ index 44f22c8..3e53a0e 100644
  }
  
  void *prepareRomBuffer(int rl) {
-@@ -163,6 +202,9 @@ void *getSymbol(int id) {
+@@ -163,6 +209,9 @@ void *getSymbol(int id) {
    if (id == 3) {
      // return NDSCart::CartROM;
    }
@@ -1634,7 +1641,7 @@ index 44f22c8..3e53a0e 100644
    if (id == 4) {
      return dstFrameBuffer;
    }
-@@ -184,7 +226,9 @@ int loadROM(int romLen) {
+@@ -184,7 +233,9 @@ int loadROM(int romLen) {
    if (!NDS_LoadROM("rom.nds")) {
      return emuLastError;
    }
@@ -1645,7 +1652,7 @@ index 44f22c8..3e53a0e 100644
    SPU_SetVolume(100);
    cheatsExport->load("usrcheat.dat");
    return 0;
-@@ -207,6 +251,13 @@ static inline void convertFB(u8 *dst, u8 *src) {
+@@ -207,6 +258,13 @@ static inline void convertFB(u8 *dst, u8 *src) {
  int savGetSize() { return savFile->size(); }
  
  void *savGetPointer(int desiredSize) {
@@ -1659,7 +1666,7 @@ index 44f22c8..3e53a0e 100644
    if (desiredSize > 0) {
      savFile->truncate(desiredSize);
      savFile->fseek(0, SEEK_SET);
-@@ -241,7 +292,8 @@ int runFrame(int shouldDraw, u32 keys, int touched, u32 touchX, u32 touchY) {
+@@ -241,7 +299,8 @@ int runFrame(int shouldDraw, u32 keys, int touched, u32 touchX, u32 touchY) {
    NDS_exec<false>();
  
    if (shouldDraw) {
@@ -1669,20 +1676,22 @@ index 44f22c8..3e53a0e 100644
    }
  
    return ret;
-@@ -345,10 +397,86 @@ int micWriteSamples(uint8_t *buffer, int len) {
+@@ -345,10 +404,88 @@ int micWriteSamples(uint8_t *buffer, int len) {
    return len;
  }
  
 +// largura/altura da saída atual (as duas telas empilhadas)
 +int outWidth() { return 256 * renderScale; }
 +int outHeight() { return 384 * renderScale; }
++// largura real da tela i no último quadro (256 = não ampliada)
++int screenWidth(int i) { return screenW[i & 1]; }
 +
  int emuSetOpt(int k, int v) {
 +    if (k == 3) {  // resolução interna: 1 a 4
 +      if (v < 1 || v > 6) return -1;
 +      renderScale = v;
 +      GPU->SetCustomFramebufferSize(256 * v, 192 * v);
-+      GPU->SetWillAutoResolveToCustomBuffer(v > 1);
++      GPU->SetWillAutoResolveToCustomBuffer(false);
 +      return 0;
 +    }
 +    if (k == 4) {  // renderizador 3D: 1 = software, 2 = GPU (WebGL2); volta ao software se falhar

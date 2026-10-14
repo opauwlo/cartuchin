@@ -169,7 +169,7 @@ EXTRA_EXPORTS=""
 # TEST=1: core do canal de teste (resolução interna 2x-4x etc.); sai como nds-test.*
 if [[ "${TEST:-0}" == "1" ]]; then
   NAME="nds-test"; [[ "${MT:-0}" == "1" ]] && NAME="nds-test-mt"
-  EXTRA_EXPORTS=',"_outWidth","_outHeight"'
+  EXTRA_EXPORTS=',"_outWidth","_outHeight","_screenWidth"'
   LINK_EXTRA+=(-sMAX_WEBGL_VERSION=2 -sMIN_WEBGL_VERSION=2)
 fi
 EXPORTS='["_main","_malloc","_free","_prepareRomBuffer","_loadROM","_reset","_runFrame","_getSymbol","_savGetSize","_savGetPointer","_savUpdateChangeFlag","_audioDrain","_audioSetup","_micWriteSamples","_emuSetOpt","_chtGetList","_chtAddItem","_utilStrLen","_zlibCompress","_zlibDecompress","_stateSave","_stateLoad","_stateGetPointer"'"$EXTRA_EXPORTS"']'

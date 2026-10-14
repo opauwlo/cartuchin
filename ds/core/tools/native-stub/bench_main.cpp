@@ -15,6 +15,7 @@ void *getSymbol(int);
 int emuSetOpt(int, int);
 int outWidth();
 int outHeight();
+int screenWidth(int);
 }
 int main(int argc, char **argv) {
   wasm_main();
@@ -38,11 +39,17 @@ int main(int argc, char **argv) {
   double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
   printf("render=%s escala=%dx quadros=%d ms/quadro=%.3f (%.0f fps de emulação)\n", rend == 2 ? "gpu" : "soft", scale, frames, ms / frames, 1000.0 * frames / ms);
   if (argc > 3) {
-    const int w = outWidth(), h = outHeight();
+    // as duas telas empilhadas em 256*s x 384*s; a tela não ampliada (só 2D) é esticada
+    const int w = outWidth(), h = outHeight(), sh = h / 2;
     const uint8_t *fb = (const uint8_t *)getSymbol(scale > 1 ? 8 : 4);
     FILE *o = fopen(argv[3], "wb");
     fprintf(o, "P6 %d %d 255\n", w, h);
-    for (int i = 0; i < w * h; i++) fwrite(fb + i * 4, 1, 3, o);
+    for (int scr = 0; scr < 2; scr++) {
+      const int sw = scale > 1 ? screenWidth(scr) : w, f = w / sw;
+      const uint8_t *base = fb + (size_t)scr * w * sh * 4;
+      for (int y = 0; y < sh; y++)
+        for (int x = 0; x < w; x++) fwrite(base + ((size_t)(y / f) * sw + x / f) * 4, 1, 3, o);
+    }
     fclose(o);
   }
   return 0;

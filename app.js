@@ -2891,6 +2891,11 @@ registerProcessor("ds-out", DSOut);
     const fctx = fb.getContext("2d", { alpha: false });
     const fbPtr = M._getSymbol(4), audioPtr = M._getSymbol(6);
     let heapBuf = null, img = null;
+    const scr = [0, 1].map(() => {
+      const c = document.createElement("canvas");
+      return { c, ctx: c.getContext("2d", { alpha: false }), img: null };
+    });
+    const perScreen = typeof M._screenWidth === "function";
     const romLen = romBytes.length;
     let pendingSav = null;
     const listeners = {};
@@ -3123,10 +3128,32 @@ registerProcessor("ds-out", DSOut);
       if (want === emu.gpu3d) return true;
       return emu.setGpu3d(want) || !want;
     };
+    function drawScreens() {
+      const buf = M.HEAPU8.buffer, base = M._getSymbol(8);
+      if (!base) return false;
+      const slot = W * S * H * S * 4;
+      fctx.imageSmoothingEnabled = false;
+      for (let i = 0; i < 2; i++) {
+        const sw = M._screenWidth(i), sh = sw * H / W | 0, o = scr[i], ptr = base + i * slot;
+        if (!o.img || o.img.width !== sw || o.img.__ptr !== ptr || o.img.data.buffer !== buf) {
+          o.img = new ImageData(new Uint8ClampedArray(buf, ptr, sw * sh * 4), sw, sh);
+          o.img.__ptr = ptr;
+          o.c.width = sw;
+          o.c.height = sh;
+        }
+        o.ctx.putImageData(o.img, 0, 0);
+        fctx.drawImage(o.c, 0, 0, sw, sh, 0, i * H * S, W * S, H * S);
+      }
+      return true;
+    }
     function draw() {
-      const im = frameImage();
-      if (!im) return;
-      fctx.putImageData(im, 0, 0);
+      if (S > 1 && perScreen) {
+        if (!drawScreens()) return;
+      } else {
+        const im = frameImage();
+        if (!im) return;
+        fctx.putImageData(im, 0, 0);
+      }
       blit(vctx, shownLocal);
       if (casting()) {
         if (castGl) castGl.draw(fb, ds.cast, ds.tvq === "suave" && S === 1, S);
