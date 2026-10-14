@@ -55,13 +55,25 @@ jobs:
 
       - name: Build sem SIMD (fallback)
         working-directory: up
-        run: SIMD=0 OUT=dist ./build.sh
+        run: |
+          set -o pipefail
+          if ! SIMD=0 OUT=dist ./build.sh 2>&1 | tee build0.log; then
+            # o log do Actions nem sempre dá pra baixar; joga os erros nas anotações
+            grep -iE "error|ERRO|undefined" build0.log | head -25 | sed 's/^/::error::/' || true
+            tail -15 build0.log | sed 's/^/::error::TAIL /'
+            exit 1
+          fi
 
       - name: Build com SIMD
         id: simd
         continue-on-error: true
         working-directory: up
-        run: SIMD=1 OUT=dist ./build.sh
+        run: |
+          set -o pipefail
+          if ! SIMD=1 OUT=dist ./build.sh 2>&1 | tee build1.log; then
+            grep -iE "error|ERRO|undefined" build1.log | head -25 | sed 's/^/::warning::SIMD /' || true
+            exit 1
+          fi
 
       - name: Se o SIMD falhar, usa o fallback como principal
         if: steps.simd.outcome != 'success'
