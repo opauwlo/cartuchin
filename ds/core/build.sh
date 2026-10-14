@@ -62,6 +62,15 @@ else
   CC=emcc; CXX=em++
   OBJ="$ROOT/.obj-simd$SIMD"
   COMMON_FLAGS+=(-flto -sUSE_ZLIB=1)
+  if [[ "${DEBUG:-0}" == "1" ]]; then
+    # build de diagnóstico: exceções com stack trace e asserts do runtime
+    OBJ="$ROOT/.obj-debug"
+    dbg=()
+    for f in "${COMMON_FLAGS[@]}"; do
+      case "$f" in -O3) dbg+=(-O1) ;; -flto) ;; *) dbg+=("$f") ;; esac
+    done
+    COMMON_FLAGS=("${dbg[@]}" -g2 -fexceptions)
+  fi
   if [[ "$SIMD" == "1" ]]; then
     # wasm SIMD + emulação de SSE2: ativa os caminhos SSE2 do DeSmuME
     # (compositor 2D da GPU e conversão de cor), que são o grosso do custo de vídeo.
@@ -110,10 +119,15 @@ if [[ "$NATIVE_CHECK" == "1" ]]; then
 fi
 
 NAME="nds"; [[ "$SIMD" == "1" ]] || NAME="nds-nosimd"
+LINK_EXTRA=(-O3 -flto)
+if [[ "${DEBUG:-0}" == "1" ]]; then
+  NAME="nds-debug"
+  LINK_EXTRA=(-O1 -g2 -fexceptions -sEXCEPTION_STACK_TRACES=1 -sASSERTIONS=2)
+fi
 
 EXPORTS='["_main","_malloc","_free","_prepareRomBuffer","_loadROM","_reset","_runFrame","_getSymbol","_savGetSize","_savGetPointer","_savUpdateChangeFlag","_audioDrain","_audioSetup","_micWriteSamples","_emuSetOpt","_chtGetList","_chtAddItem","_utilStrLen","_zlibCompress","_zlibDecompress","_stateSave","_stateLoad","_stateGetPointer"]'
 
-em++ "${OBJS[@]}" -O3 -flto -sUSE_ZLIB=1 \
+em++ "${OBJS[@]}" "${LINK_EXTRA[@]}" -sUSE_ZLIB=1 \
   $([[ "$SIMD" == "1" ]] && echo "-msimd128") \
   -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=134217728 -sSTACK_SIZE=1048576 \
   -sENVIRONMENT=web -sFORCE_FILESYSTEM=1 \

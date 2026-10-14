@@ -83,6 +83,29 @@ jobs:
           cp dist/nds-nosimd.js dist/nds.js
           cp dist/nds-nosimd.wasm dist/nds.wasm
 
+      - name: Teste do wasm no Node (áudio, save state, vídeo)
+        id: nodetest
+        continue-on-error: true
+        working-directory: up
+        run: |
+          set -o pipefail
+          ok=0
+          for n in nds nds-nosimd; do
+            node tools/node-test.js dist "$n" tone.nds 2>&1 | tee "nodetest-$n.log" || ok=1
+          done
+          grep -h "THROW\|FALHOU\|media=" nodetest-*.log | sed 's/^/::warning::/' || true
+          exit $ok
+
+      - name: Diagnóstico (só se o teste falhar)
+        if: steps.nodetest.outcome != 'success'
+        working-directory: up
+        run: |
+          set -o pipefail
+          DEBUG=1 SIMD=0 OUT=dbg ./build.sh > debug-build.log 2>&1 || { tail -20 debug-build.log | sed 's/^/::error::DBG /'; exit 1; }
+          node tools/node-test.js dbg nds-debug tone.nds 2>&1 | tee dbg.log || true
+          grep -A25 "THROW" dbg.log | head -40 | sed 's/^/::error::/' || true
+          exit 1
+
       - name: Commitar o core em ds/
         run: |
           set -euo pipefail
