@@ -2035,7 +2035,7 @@
       [{ label: withRom ? "Apagar jogo" : "Apagar save", value: true, cls: "primary" }, { label: "Cancelar", value: false }]
     );
     if (!ok) return false;
-    for (const k of [key, "state:" + key]) await idb.del("pend", k);
+    for (const k of [key, "state:" + key, "quick:" + key]) await idb.del("pend", k);
     await idb.del("sync", key);
     if (withRom) {
       await idb.del("roms", key);
@@ -2872,6 +2872,7 @@ registerProcessor("ds-out", DSOut);
       muted: false,
       volume: 1,
       isDs: true,
+      gameKey: gameName,
       canvas: castCanvas,
       streamW: W,
       streamH: H,
@@ -3233,8 +3234,45 @@ registerProcessor("ds-out", DSOut);
   function nextOf(list, cur) {
     return list[(list.indexOf(cur) + 1) % list.length];
   }
+  var quickKey = (emu) => "quick:" + emu.gameKey;
+  var quickInfo = { key: "", at: 0 };
+  async function refreshQuickInfo(emu) {
+    const rec = await idb.get("pend", quickKey(emu)).catch(() => null);
+    quickInfo = { key: emu.gameKey, at: rec ? rec.at : 0 };
+  }
+  async function quickSave(emu) {
+    try {
+      const st = await emu.gameManager.getState();
+      const p = await pack(st);
+      await idb.put("pend", quickKey(emu), { ...p, at: Date.now() });
+      quickInfo = { key: emu.gameKey, at: Date.now() };
+      toast("Estado salvo");
+    } catch (e) {
+      toast("Não deu para salvar o estado.");
+    }
+  }
+  async function quickLoad(emu) {
+    const rec = await idb.get("pend", quickKey(emu)).catch(() => null);
+    if (!rec) {
+      toast("Ainda não há estado salvo");
+      return;
+    }
+    try {
+      await emu.gameManager.loadState(await unpack(rec));
+      toast("Estado carregado");
+    } catch (e) {
+      try {
+        await emu.gameManager.restart();
+      } catch (x) {
+      }
+      toast("Não deu para carregar esse estado; o jogo reiniciou pelo save.", 4e3);
+    }
+  }
   function dsMenuItems(emu, refresh) {
+    if (quickInfo.key !== emu.gameKey) refreshQuickInfo(emu).then(refresh);
     return [
+      { icon: "save", label: "Salvar estado", fn: () => quickSave(emu).then(refresh) },
+      { icon: "download", label: quickInfo.at ? `Carregar estado (${ago(quickInfo.at)})` : "Carregar estado", fn: () => quickLoad(emu).then(refresh) },
       {
         icon: "sliders",
         label: "Telas aqui: " + LAYOUT_LABEL[ds.local],
@@ -3267,7 +3305,7 @@ registerProcessor("ds-out", DSOut);
       }
     ];
   }
-  var dsStatesOk = false;
+  var dsStatesOk = true;
 
   // src/player/player.js
   var player = window.__cartucho = {

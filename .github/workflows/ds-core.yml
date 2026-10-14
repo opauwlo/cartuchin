@@ -85,7 +85,8 @@ jobs:
             cp dist/nds-nosimd.wasm dist/nds.wasm
           fi
           # threads (3D em paralelo): opcional; sem ele a página usa o core sem threads
-          if ! CCACHE=1 SIMD=1 MT=1 OUT=dist ./build.sh > ../logs/build-mt.log 2>&1; then
+          # threads: desligado até o patch experimental (ds/core/experimental) ser testado em jogo
+          if [ "${BUILD_MT:-0}" = 1 ] && ! CCACHE=1 SIMD=1 MT=1 OUT=dist ./build.sh > ../logs/build-mt.log 2>&1; then
             echo "::warning::Build com threads falhou"
             grep -iE "error|ERRO" ../logs/build-mt.log | head -8 | sed 's/^/::warning::MT /' || true
           fi

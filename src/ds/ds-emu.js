@@ -1,4 +1,6 @@
-import { $, el, ls, toast } from "../util.js";
+import { $, ago, el, ls, toast } from "../util.js";
+import { pack, unpack } from "../bytes.js";
+import { idb } from "../idb.js";
 
 /* ---------------- Nintendo DS ----------------
    O DS roda no DeSmuME-wasm melhorado (ds/nds.js + ds/nds.wasm, compilados pelo
@@ -217,7 +219,7 @@ async function createDsEmulator(romBytes, gameName, startSav) {
 
   const listeners = {};
   const emu = {
-    started: false, paused: false, muted: false, volume: 1, isDs: true,
+    started: false, paused: false, muted: false, volume: 1, isDs: true, gameKey: gameName,
     canvas: castCanvas, streamW: W, streamH: H,
     keys: 0, padKeys: 0, kbKeys: 0, gpKeys: 0, touch: false, tx: 0, ty: 0,
     turbo: 1, frames: 0,
@@ -525,8 +527,40 @@ async function createDsEmulator(romBytes, gameName, startSav) {
 
 /* ---------- opções do DS para o menu do jogo ---------- */
 function nextOf(list, cur) { return list[(list.indexOf(cur) + 1) % list.length]; }
+/* Estado rápido: um snapshot do console guardado só neste aparelho, para salvar e
+   voltar quando quiser (o "Salvar progresso na nuvem" continua sendo o que viaja). */
+const quickKey = (emu) => "quick:" + emu.gameKey;
+let quickInfo = { key: "", at: 0 };
+async function refreshQuickInfo(emu) {
+  const rec = await idb.get("pend", quickKey(emu)).catch(() => null);
+  quickInfo = { key: emu.gameKey, at: rec ? rec.at : 0 };
+}
+async function quickSave(emu) {
+  try {
+    const st = await emu.gameManager.getState();
+    const p = await pack(st);
+    await idb.put("pend", quickKey(emu), { ...p, at: Date.now() });
+    quickInfo = { key: emu.gameKey, at: Date.now() };
+    toast("Estado salvo");
+  } catch (e) { toast("Não deu para salvar o estado."); }
+}
+async function quickLoad(emu) {
+  const rec = await idb.get("pend", quickKey(emu)).catch(() => null);
+  if (!rec) { toast("Ainda não há estado salvo"); return; }
+  try {
+    await emu.gameManager.loadState(await unpack(rec));
+    toast("Estado carregado");
+  } catch (e) {
+    // um load que falha no meio deixa o console quebrado: reinicia pelo save do jogo
+    try { await emu.gameManager.restart(); } catch (x) {}
+    toast("Não deu para carregar esse estado; o jogo reiniciou pelo save.", 4000);
+  }
+}
 function dsMenuItems(emu, refresh) {
+  if (quickInfo.key !== emu.gameKey) refreshQuickInfo(emu).then(refresh);
   return [
+    { icon: "save", label: "Salvar estado", fn: () => quickSave(emu).then(refresh) },
+    { icon: "download", label: quickInfo.at ? `Carregar estado (${ago(quickInfo.at)})` : "Carregar estado", fn: () => quickLoad(emu).then(refresh) },
     {
       icon: "sliders", label: "Telas aqui: " + LAYOUT_LABEL[ds.local],
       fn: () => { ds.local = nextOf(LOCAL_LAYOUTS, ds.local); ls.set("cartucho.ds.local", ds.local); emu.relayout(); refresh(); },
@@ -542,8 +576,7 @@ function dsMenuItems(emu, refresh) {
   ];
 }
 
-/* o load state do core ainda lança exceção no wasm (investigando): enquanto isso,
-   o "continuar de onde parou" do DS fica desligado */
-const dsStatesOk = false;
+/* load state corrigido no core (fseek(-1) com save vazio tentava alocar 4 GB) */
+const dsStatesOk = true;
 
 export { createDsEmulator, dsMenuItems, ds, dsStatesOk, dsLastError };

@@ -53,7 +53,7 @@ async function confirmDeleteGame(key, title, withRom) {
     (withRom ? "A ROM, o save e o progresso saem" : "O save e o progresso (\"continuar de onde parou\") saem") + where + ". Não dá para desfazer.",
     [{ label: withRom ? "Apagar jogo" : "Apagar save", value: true, cls: "primary" }, { label: "Cancelar", value: false }]);
   if (!ok) return false;
-  for (const k of [key, "state:" + key]) await idb.del("pend", k);
+  for (const k of [key, "state:" + key, "quick:" + key]) await idb.del("pend", k);
   await idb.del("sync", key);
   if (withRom) {
     await idb.del("roms", key);

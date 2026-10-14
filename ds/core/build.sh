@@ -5,6 +5,8 @@
 #   OUT=dist ./build.sh   -> pasta de saída
 # Teste nativo (só checa se compila/linka, sem emcc):
 #   NATIVE_CHECK=1 ./build.sh
+#   FAST=1 ./build.sh     -> flags experimentais (bulk-memory, fptoint, sem RTTI): quebraram jogo
+#                            de verdade no celular; só para testar, não é o padrão
 #   MT=1 ./build.sh       -> build com threads (rasterizador 3D em paralelo); precisa de SIMD
 #                            e de página com isolamento cross-origin (SharedArrayBuffer)
 set -euo pipefail
@@ -32,7 +34,7 @@ SOURCES=(
   utils/advanscene.cpp utils/datetime.cpp utils/guid.cpp
   utils/emufat.cpp utils/fsnitro.cpp utils/xstring.cpp
   utils/decrypt/crc.cpp utils/decrypt/decrypt.cpp utils/decrypt/header.cpp
-  utils/vfat.cpp utils/task.cpp utils/dlditool.cpp
+  utils/vfat.cpp utils/dlditool.cpp
   utils/colorspacehandler/colorspacehandler.cpp
   utils/libfat/cache.cpp utils/libfat/directory.cpp utils/libfat/disc.cpp
   utils/libfat/fatdir.cpp utils/libfat/fatfile.cpp utils/libfat/filetime.cpp
@@ -92,7 +94,8 @@ else
     # bulk-memory: memcpy/memset viram uma instrução só (o core copia muito buffer).
     # nontrapping-fptoint: float→int sem checagem (o rasterizador 3D faz isso o tempo todo).
     # Todo navegador com SIMD já tem esses dois.
-    COMMON_FLAGS+=(-msimd128 -msse2 -mbulk-memory -mnontrapping-fptoint)
+    COMMON_FLAGS+=(-msimd128 -msse2)
+    [[ "${FAST:-0}" == "1" ]] && COMMON_FLAGS+=(-mbulk-memory -mnontrapping-fptoint)
   fi
 fi
 
@@ -108,7 +111,7 @@ compile_one() {
   else
     local extra=()
     [[ "$NATIVE_CHECK" == "1" && "$path" == *wasm-port/main.cpp ]] && extra=(-Dmain=wasm_main)
-    "${WRAP[@]}" "$CXX" "${COMMON_FLAGS[@]}" "${extra[@]}" -std=gnu++14 -fno-rtti -c "$path" -o "$o"
+    "${WRAP[@]}" "$CXX" "${COMMON_FLAGS[@]}" "${extra[@]}" -std=gnu++14 $([[ "${FAST:-0}" == "1" ]] && echo -fno-rtti) -c "$path" -o "$o"
   fi
 }
 
@@ -154,9 +157,9 @@ fi
 EXPORTS='["_main","_malloc","_free","_prepareRomBuffer","_loadROM","_reset","_runFrame","_getSymbol","_savGetSize","_savGetPointer","_savUpdateChangeFlag","_audioDrain","_audioSetup","_micWriteSamples","_emuSetOpt","_chtGetList","_chtAddItem","_utilStrLen","_zlibCompress","_zlibDecompress","_stateSave","_stateLoad","_stateGetPointer"]'
 
 em++ "${OBJS[@]}" "${LINK_EXTRA[@]}" -sUSE_ZLIB=1 \
-  $([[ "$SIMD" == "1" ]] && echo "-msimd128 -mbulk-memory -mnontrapping-fptoint") --profiling-funcs \
+  $([[ "$SIMD" == "1" ]] && echo "-msimd128") $([[ "${FAST:-0}" == "1" ]] && echo "-mbulk-memory -mnontrapping-fptoint --profiling-funcs") \
   "${MEM[@]}" -sSTACK_SIZE=1048576 \
-  -sENVIRONMENT=web,worker -sFORCE_FILESYSTEM=1 \
+  -sENVIRONMENT=$([[ "${FAST:-0}${MT:-0}" == "00" ]] && echo web || echo web,worker) -sFORCE_FILESYSTEM=1 \
   -sEXPORTED_FUNCTIONS="$EXPORTS" \
   -sEXPORTED_RUNTIME_METHODS='["ccall","cwrap","FS","HEAPU8","HEAP16","HEAPU32","UTF8ToString"]' \
   -o "$OUT/$NAME.js"
