@@ -1,7 +1,7 @@
 {
   "name": "Cartuchin",
   "short_name": "Cartuchin",
-  "description": "Emulador de GBA com save na nuvem",
+  "description": "Emulador de GBA e Nintendo DS com save na nuvem",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

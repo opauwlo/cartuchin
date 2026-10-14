@@ -1967,6 +1967,7 @@
     $("#empty").hidden = games.length > 0;
     box.hidden = games.length === 0;
     for (const g of games) box.append(tile(g));
+    $("#dsPromo").hidden = !games.length || games.some((g) => g.system === "nds") || ls.get("cartucho.dsPromo") === "off";
     if (games.length) box.append(addTile());
     if (sheetKey) fillGameSheet(sheetKey);
   }
@@ -4131,6 +4132,11 @@ registerProcessor("ds-out", DSOut);
     render();
   });
   $("#emptyAddBtn").addEventListener("click", pickRom);
+  $("#dsPromoAdd").addEventListener("click", pickRom);
+  $("#dsPromoHide").addEventListener("click", () => {
+    ls.set("cartucho.dsPromo", "off");
+    $("#dsPromo").hidden = true;
+  });
   $("#googleBtn").addEventListener("click", () => {
     const msg = $("#googleMsg");
     if (!gisClient()) {

@@ -51,6 +51,8 @@ function render() {
   $("#empty").hidden = games.length > 0;
   box.hidden = games.length === 0;
   for (const g of games) box.append(tile(g));
+  // destaque do DS: some quando já há um jogo de DS ou quando a pessoa dispensa
+  $("#dsPromo").hidden = !games.length || games.some((g) => g.system === "nds") || ls.get("cartucho.dsPromo") === "off";
   if (games.length) box.append(addTile());
   if (sheetKey) fillGameSheet(sheetKey);
 }

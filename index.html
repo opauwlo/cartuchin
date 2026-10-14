@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Cartuchin</title>
-<meta name="description" content="Emulador de GBA no navegador. Seus jogos e saves ficam no seu Google Drive e continuam em qualquer aparelho.">
+<meta name="description" content="Emulador de GBA e Nintendo DS no navegador. Seus jogos e saves ficam no seu Google Drive e continuam em qualquer aparelho, inclusive na TV.">
 <meta name="theme-color" content="#1f2440">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
@@ -294,6 +294,40 @@ button { cursor: pointer; }
 .cart-title-art { position: relative; color: #fff; font-family: var(--font-display); font-weight: 800; font-size: 1.25rem; line-height: 1.05; }
 .cart-pins { position: absolute; left: 22px; right: 22px; bottom: 10px; height: 14px; background: repeating-linear-gradient(90deg, #a6abbd 0 7px, transparent 7px 11px); opacity: 0.55; border-radius: 2px; }
 @media (prefers-reduced-motion: no-preference) { .cart-shell { animation: cart-in 0.7s cubic-bezier(.2,.9,.25,1.15) both; } @keyframes cart-in { from { transform: translateY(18px) rotate(4deg); opacity: 0; } } }
+/* DS ao lado do cartucho na arte de boas-vindas */
+.welcome-art { position: relative; }
+.welcome-art .cart-shell { margin-right: 110px; }
+.ds-art { position: absolute; left: 50%; top: 50%; width: 118px; transform: translate(8px, -46%) rotate(6deg); display: grid; gap: 3px; filter: drop-shadow(0 10px 18px rgba(10,12,30,0.28)); }
+.ds-half { background: #e9ebf2; border: 2px solid #c9cdd9; border-radius: 10px; padding: 8px; position: relative; }
+.ds-up { border-radius: 12px 12px 6px 6px; }
+.ds-down { border-radius: 6px 6px 12px 12px; padding: 8px 26px 12px; }
+.ds-screen { height: 58px; border-radius: 4px; background: #11131c; position: relative; overflow: hidden; }
+.ds-screen-top { background: linear-gradient(180deg, #7cc4ff 0 55%, #57c27a 55%); }
+.ds-sun { position: absolute; right: 12px; top: 8px; width: 12px; height: 12px; background: #ffd34d; box-shadow: 0 0 0 3px rgba(255,211,77,0.35); }
+.ds-hill { position: absolute; left: -10px; bottom: 0; width: 70px; height: 34px; background: #3f9a5a; border-radius: 50% 50% 0 0; }
+.ds-screen-touch { height: 44px; background: repeating-linear-gradient(0deg, #262b4a 0 6px, #2c3256 6px 12px); }
+.ds-tap { position: absolute; left: 46%; top: 40%; width: 10px; height: 10px; border-radius: 50%; background: #fff; box-shadow: 0 0 0 5px rgba(255,255,255,0.25); }
+.ds-dpad { position: absolute; left: 6px; top: 22px; width: 14px; height: 14px; background: linear-gradient(#2c3146, #2c3146) center / 5px 100% no-repeat, linear-gradient(#2c3146, #2c3146) center / 100% 5px no-repeat; }
+.ds-abxy { position: absolute; right: 5px; top: 20px; width: 16px; height: 16px; }
+.ds-abxy i { position: absolute; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+.ds-abxy i:nth-child(1) { left: 5px; top: 0; } .ds-abxy i:nth-child(2) { left: 0; top: 5px; } .ds-abxy i:nth-child(3) { right: 0; top: 5px; } .ds-abxy i:nth-child(4) { left: 5px; bottom: 0; }
+@media (prefers-reduced-motion: no-preference) { .ds-art { animation: ds-in 0.8s 0.12s cubic-bezier(.2,.9,.25,1.15) both; } @keyframes ds-in { from { transform: translate(30px, -40%) rotate(14deg); opacity: 0; } } }
+.welcome-badge { margin: 0; color: var(--accent); font-size: 0.72rem; }
+.features { list-style: none; margin: 4px 0 0; padding: 0; width: 100%; display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; }
+.features li { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; display: grid; gap: 4px; }
+.features b { font-family: var(--font-display); font-weight: 800; font-size: 1rem; line-height: 1.15; }
+.features span { color: var(--muted); font-size: 0.88rem; line-height: 1.4; }
+/* destaque do DS na biblioteca */
+.promo { display: grid; grid-template-columns: 92px 1fr; gap: 16px; align-items: center; padding: 14px 16px; border-radius: 16px; border: 1px solid var(--line);
+  background: radial-gradient(120% 140% at 0% 0%, color-mix(in srgb, var(--accent) 18%, var(--surface)) 0%, var(--surface) 60%); }
+.promo-art { display: grid; gap: 4px; justify-items: center; padding: 8px; border-radius: 12px; background: #e9ebf2; border: 2px solid #c9cdd9; }
+.promo-scr { width: 64px; height: 44px; border-radius: 4px; background: linear-gradient(180deg, #7cc4ff 0 55%, #57c27a 55%); }
+.promo-scr.touch { height: 36px; background: repeating-linear-gradient(0deg, #262b4a 0 6px, #2c3256 6px 12px); }
+.promo-body { display: grid; gap: 4px; min-width: 0; }
+.promo-kicker { margin: 0; color: var(--accent); font-size: 0.7rem; }
+.promo-title { font-family: var(--font-display); font-weight: 800; font-size: 1.25rem; line-height: 1.1; margin: 0; }
+.promo-text { margin: 0; color: var(--muted); font-size: 0.9rem; }
+.promo-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
 .welcome-title { font-family: var(--font-display); font-weight: 800; font-size: clamp(2rem, 8vw, 2.7rem); line-height: 1.02; letter-spacing: -0.025em; margin: 0; text-wrap: balance; }
 .welcome-lead { margin: 0; color: var(--muted); font-size: 1.05rem; max-width: 40ch; }
 .welcome #googleBox { width: 100%; justify-items: stretch; }
@@ -391,8 +425,13 @@ body { margin: 0; }
   <section id="connect" class="welcome" hidden>
     <div class="welcome-art" aria-hidden="true">
       <div class="cart-shell"><div class="cart-label-art"><span class="cart-stripes"></span><span class="cart-title-art">Seus jogos</span></div><div class="cart-pins"></div></div>
+      <div class="ds-art">
+        <div class="ds-half ds-up"><div class="ds-screen ds-screen-top"><span class="ds-sun"></span><span class="ds-hill"></span></div></div>
+        <div class="ds-half ds-down"><div class="ds-screen ds-screen-touch"><span class="ds-tap"></span></div><span class="ds-dpad"></span><span class="ds-abxy"><i></i><i></i><i></i><i></i></span></div>
+      </div>
     </div>
-    <h1 class="welcome-title">Seus jogos de GBA em qualquer tela</h1>
+    <p class="welcome-badge pix">Novo · Nintendo DS</p>
+    <h1 class="welcome-title">Seus jogos de GBA e DS em qualquer tela</h1>
     <p class="welcome-lead">Jogue no celular e continue no tablet ou na TV. O save vai junto, guardado no seu Google Drive.</p>
     <div id="googleBox">
       <button class="btn primary google-btn" id="googleBtn" type="button">
@@ -402,6 +441,12 @@ body { margin: 0; }
       <p class="small-note" id="googleMsg" role="status">O app só enxerga a pasta dele no seu Drive, nenhum outro arquivo.</p>
     </div>
     <button class="btn ghost" id="localOnlyBtn" type="button">Jogar sem conta</button>
+    <ul class="features">
+      <li><b>Nintendo DS de verdade</b><span>As duas telas, toque na de baixo e X/Y no controle. Em pé fica uma sobre a outra; deitado, lado a lado.</span></li>
+      <li><b>A TV vira o console</b><span>O jogo roda no celular e aparece na TV. No DS, a TV mostra a tela de cima e o celular fica com a de toque.</span></li>
+      <li><b>Continue de onde parou</b><span>Salve o momento exato e retome em outro aparelho. No DS também dá para salvar e carregar estados.</span></li>
+      <li><b>Som limpo, sem estalo</b><span>O desempenho se ajusta sozinho ao aparelho: menos atraso no som e 30 fps de vídeo quando precisa.</span></li>
+    </ul>
     <div class="welcome-more">
       <p class="small-note">Na TV, toque em <b>Usar como tela</b> lá em cima. A TV mostra o jogo que roda no celular e não precisa de conta.</p>
       <details class="gh-adv" id="ghAdv">
@@ -436,12 +481,25 @@ body { margin: 0; }
       </form>
     </div>
     </details>
+      <p class="small-note">GBA: mGBA via EmulatorJS. DS: DeSmuME-wasm (GPL-2.0) com melhorias próprias de áudio, toque, telas e transmissão. Código em <a href="https://github.com/opauwlo/cartuchin" target="_blank" rel="noopener">github.com/opauwlo/cartuchin</a>.</p>
       <p class="small-note"><a href="privacidade.html">Privacidade</a> e <a href="termos.html">Termos</a></p>
     </div>
   </section>
 
   <section id="home" hidden>
     <section id="continue" class="continue" hidden></section>
+    <section id="dsPromo" class="promo" hidden>
+      <div class="promo-art" aria-hidden="true"><span class="promo-scr"></span><span class="promo-scr touch"></span></div>
+      <div class="promo-body">
+        <p class="promo-kicker pix">Novo</p>
+        <h2 class="promo-title">Jogos de Nintendo DS</h2>
+        <p class="promo-text">Adicione um .nds como qualquer jogo: duas telas, toque, X/Y no controle, salvar estado e a tela de cima na TV.</p>
+        <div class="promo-actions">
+          <button class="btn primary small" id="dsPromoAdd" type="button">Adicionar jogo de DS</button>
+          <button class="btn ghost small" id="dsPromoHide" type="button">Agora não</button>
+        </div>
+      </div>
+    </section>
     <div class="shelf-head">
       <h2 class="shelf-title">Biblioteca</h2>
       <button class="btn small" id="addRomBtn" type="button">Adicionar jogo</button>
@@ -449,7 +507,7 @@ body { margin: 0; }
     <section id="games" class="shelf" aria-live="polite"></section>
     <section id="empty" class="empty" hidden>
       <h2>Sua estante está vazia</h2>
-      <p>Adicione a ROM de um jogo seu (.gba, .gb, .gbc ou .zip). A capa e o nome aparecem sozinhos, e o jogo fica disponível em todos os seus aparelhos.</p>
+      <p>Adicione a ROM de um jogo seu (.gba, .gb, .gbc, .nds ou .zip). A capa e o nome aparecem sozinhos, e o jogo fica disponível em todos os seus aparelhos.</p>
       <button class="btn primary" id="emptyAddBtn" type="button">Adicionar jogo</button>
     </section>
   </section>
@@ -592,6 +650,6 @@ body { margin: 0; }
 <script src="config.js?v=20261013202456"></script>
 <script src="vendor/lang-pt-BR.js?v=20261013202456"></script>
 <script src="vendor/qrcode.js"></script>
-<script src="app.js?v=20261014163251"></script>
+<script src="app.js?v=20261014172029"></script>
 </body>
 </html>

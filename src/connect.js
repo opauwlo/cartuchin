@@ -60,6 +60,11 @@ $("#localOnlyBtn").addEventListener("click", () => {
   render();
 });
 $("#emptyAddBtn").addEventListener("click", pickRom);
+$("#dsPromoAdd").addEventListener("click", pickRom);
+$("#dsPromoHide").addEventListener("click", () => {
+  ls.set("cartucho.dsPromo", "off");
+  $("#dsPromo").hidden = true;
+});
 $("#googleBtn").addEventListener("click", () => {
   const msg = $("#googleMsg");
   if (!gisClient()) {
