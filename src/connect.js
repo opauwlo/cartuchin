@@ -4,7 +4,7 @@ import { notice } from "./library.js";
 import { dialog } from "./ui/dialogs.js";
 import { pickRom } from "./ui/pickers.js";
 import { render } from "./ui/screens.js";
-import { $, el, ls, toast } from "./util.js";
+import { $, appUrl, el, ls, toast } from "./util.js";
 
 /* ---------------- connecting a device ---------------- */
 function dataRepoName() {
@@ -122,7 +122,7 @@ let pairTimer = null;
 async function startPairing() {
   const code = newPairCode();
   const { topic, key } = await pairMaterial(code);
-  const link = location.origin + location.pathname + "#parear-" + code;
+  const link = appUrl() + "#parear-" + code;
   $("#pairCode").textContent = code.slice(0, 4) + " " + code.slice(4);
   try {
     const qr = window.qrcode(0, "M");

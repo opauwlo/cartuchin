@@ -89,6 +89,13 @@
     if (a < 86400 * 30) return rtf.format(Math.round(s / 86400), "day");
     return new Date(ts).toLocaleDateString("pt-BR");
   }
+  function appUrl() {
+    const c = (
+      /** @type {any} */
+      window.CARTUCHIN_CONFIG || {}
+    );
+    return c.appUrl || location.origin + location.pathname;
+  }
 
   // src/bytes.js
   function b64(u8) {
@@ -371,7 +378,7 @@
     } catch (e) {
     }
     tvScreen.code = newPairCode();
-    const link = location.origin + location.pathname + "#tela-" + tvScreen.code;
+    const link = appUrl() + "#tela-" + tvScreen.code;
     $("#scrCode").textContent = tvScreen.code.slice(0, 4) + " " + tvScreen.code.slice(4);
     try {
       const qr = window.qrcode(0, "M");
@@ -710,7 +717,7 @@
       let problem = "";
       if (still >= 2) problem = dec === 0 ? "A imagem não está chegando do celular." : "A imagem parou de chegar do celular.";
       else if (!frames && v.paused) problem = "A imagem chega, mas o vídeo está parado. Toque no botão ou aperte A.";
-      else if (!frames && v.readyState < 2) problem = "A imagem chega, mas a TV ainda não começou a mostrar.";
+      else if (!frames && v.readyState < 2) problem = "A imagem chega, mas esta tela ainda não começou a mostrar.";
       const ph = tvScreen.phoneStats;
       const warnNet = net.warnUntil && performance.now() < net.warnUntil;
       const avg = (arr) => arr.length ? Math.round(arr.reduce((a, b) => a + b, 0) / arr.length) : null;
@@ -734,7 +741,7 @@
       const total = known.length ? known.reduce((a, b) => a + b, 0) : null;
       const latencyLine = `Atraso: controle TV→celular ${ms(oneWay)} · toque→jogo ${ms(lat.touch)} · 1 quadro do jogo ${ms(gameFrame)}${lat.speed ? ` (${lat.speed}%)` : ""} · codificar ${ms(lat.enc)} · enviar ${ms(lat.send)} · rede ${ms(oneWay)} · buffer+decodificar na TV ${ms(tvMs)} · total ≈ ${ms(total)} + 1 quadro da TV`;
       const lines = [
-        problem || (warnNet ? `Wi-Fi instável: ${net.warnPct}% dos pacotes se perdem. Dica: ligue o roteador do celular e conecte a TV nele.` : "Conectado. Se a imagem não aparecer, mande uma foto desta tela."),
+        problem || (warnNet ? `Wi-Fi instável: ${net.warnPct}% dos pacotes se perdem. Dica: ligue o roteador do celular e conecte esta tela nele.` : "Conectado. Se a imagem não aparecer, mande uma foto desta tela."),
         `Rede: ${path}${rtt != null ? ` · ida e volta ${rtt} ms` : ""} · perda ${lossPct}%${rx && rx.jitter ? ` · variação ${Math.round(rx.jitter * 1e3)} ms` : ""}`,
         latencyLine,
         ph ? `Celular: ${ph.ua || ""} · formato ${ph.mode || "?"} · enviou ${ph.sent} quadros, ${ph.pk || 0} pacotes${ph.w ? ` (${ph.w}x${ph.h})` : ""} · chaves ${ph.keys || 0} · PLI ${ph.pli || 0}${ph.enc ? ` · ${ph.enc}` : ""}${ph.lim && ph.lim !== "none" ? ` · limitado por ${ph.lim}` : ""}${ph.track && ph.track !== "live" ? ` · captura ${ph.track}` : ""}${ph.br != null && ph.br >= 0 ? ` · brilho ${ph.br}` : ""}` : "Celular: sem relatório ainda",
@@ -1287,7 +1294,7 @@
   }
   function setCastUi(state) {
     const b = $("#castBtn");
-    b.innerHTML = state === "on" ? '<span class="long">Na </span>TV ●' : state === "wait" ? "Conectando…" : '<span class="long">Jogar na </span>TV';
+    b.innerHTML = state === "on" ? '<span class="long">Na 2ª </span>tela ●' : state === "wait" ? "Conectando…" : '<span class="long">Segunda </span>tela';
     b.classList.toggle("primary", state === "on");
   }
   function closeCastConnection() {
@@ -1476,7 +1483,7 @@
           showPad(true);
           wakeAudio();
           for (const t of window.__audioTaps || []) t.local.gain.value = 0;
-          if (attempt === 0) toast("Jogando na TV. Este celular agora é o controle.", 3500);
+          if (attempt === 0) toast("Jogando na segunda tela. Este celular agora é o controle.", 3500);
           if (vt) {
             const send = vt.sender, p = send.getParameters();
             p.encodings = (p.encodings && p.encodings.length ? p.encodings : [{}]).map((e) => ({ ...e, maxBitrate: opt.kbps * 1e3, maxFramerate: 60, scaleResolutionDownBy: 1, priority: "high", networkPriority: "high" }));
@@ -1486,9 +1493,9 @@
             });
           } else startFramePump(vtrack, cast.frameChannel);
           watchCast(pc, vt ? vt.sender : null, dc, emu);
-        } else if (pc.connectionState === "failed") stopCast("Não deu para conectar com a TV. Os dois aparelhos estão na mesma rede Wi-Fi?");
+        } else if (pc.connectionState === "failed") stopCast("Não deu para conectar com a segunda tela. Os dois aparelhos estão na mesma rede Wi-Fi?");
         else if (pc.connectionState === "disconnected" || pc.connectionState === "closed") {
-          if (cast.pc === pc) stopCast("A TV desconectou.");
+          if (cast.pc === pc) stopCast("A segunda tela desconectou.");
         }
       };
       await pc.setLocalDescription(await pc.createOffer());
@@ -1500,14 +1507,14 @@
         try {
           await pc.setRemoteDescription(msg.sdp);
         } catch (e) {
-          stopCast("A TV respondeu de um jeito inesperado. Tente de novo.");
+          stopCast("A segunda tela respondeu de um jeito inesperado. Tente de novo.");
         }
       });
       await sig.send("oferta", { id: offerId, sdp: pc.localDescription.toJSON(), from: device.name });
       setTimeout(() => {
         if (pc === cast.pc && pc.connectionState !== "connected") {
           stopListen();
-          stopCast("A TV não respondeu. Confira o código e se ela está na tela de espera.");
+          stopCast("A segunda tela não respondeu. Confira o código e se ela está na tela de espera.");
         }
       }, 25e3);
     } catch (e) {
@@ -1658,9 +1665,9 @@
       if (!worked && tv && checks >= 4 && st.sent > 60 && tv.dec === 0) {
         clearInterval(cast.watch);
         if (cast.attempt + 1 < CAST_MODES.length) {
-          toast(`A TV não está recebendo a imagem. Tentando outro formato (${cast.attempt + 2}/${CAST_MODES.length})…`, 4e3);
+          toast(`A segunda tela não está recebendo a imagem. Tentando outro formato (${cast.attempt + 2}/${CAST_MODES.length})…`, 4e3);
           castTo(cast.code, cast.attempt + 1);
-        } else toast("A TV não conseguiu receber a imagem em nenhum formato. Mande uma foto do diagnóstico que aparece na TV.", 8e3);
+        } else toast("A segunda tela não conseguiu receber a imagem em nenhum formato. Mande uma foto do diagnóstico que aparece nela.", 8e3);
         return;
       }
       if (emu.paused) {
@@ -1684,7 +1691,7 @@
         } catch (e) {
         }
       }
-      if (still === 4) toast(`A imagem não está saindo deste celular (${st.sent} quadros enviados). Toque em "TV" para sair e conecte de novo.`, 6e3);
+      if (still === 4) toast(`A imagem não está saindo deste celular (${st.sent} quadros enviados). Toque em "tela ●" para sair e conecte de novo.`, 6e3);
     }, 2e3);
   }
 
@@ -2581,8 +2588,8 @@
         close();
         castTo(c);
       } },
-      el("h2", {}, "Jogar na TV"),
-      el("p", {}, 'Na TV, abra o Cartuchin e escolha "Usar como tela". Digite aqui o código que aparecer. Os dois precisam estar no mesmo Wi-Fi.'),
+      el("h2", {}, "Jogar numa segunda tela"),
+      el("p", {}, 'Na TV, tablet ou notebook, abra o Cartuchin e escolha "Usar como tela". Digite aqui o código que aparecer. Os dois precisam estar no mesmo Wi-Fi.'),
       input,
       el("button", { class: "btn primary", type: "submit" }, "Transmitir"),
       el("button", { class: "btn", type: "button", onclick: close }, "Cancelar")
@@ -2599,7 +2606,7 @@
     }
     cast.pending = normCode(m[1]);
     $("#notice").dataset.sticky = "1";
-    notice("TV pronta! Escolha o jogo: ele roda aqui e aparece na TV. Este celular vira o controle.");
+    notice("Segunda tela pronta! Escolha o jogo: ele roda aqui e aparece lá. Este celular vira o controle.");
   }
 
   // src/ds/ds-emu.js
@@ -3384,7 +3391,7 @@ void main() {
       },
       {
         icon: "sliders",
-        label: "Telas na TV: " + LAYOUT_LABEL[ds.cast],
+        label: "Na 2ª tela: " + LAYOUT_LABEL[ds.cast],
         fn: () => {
           ds.cast = nextOf(CAST_LAYOUTS, ds.cast);
           ls.set("cartucho.ds.cast", ds.cast);
@@ -3394,7 +3401,7 @@ void main() {
       },
       {
         icon: "sliders",
-        label: "Imagem na TV: " + TVQ_LABEL[ds.tvq],
+        label: "Imagem na 2ª tela: " + TVQ_LABEL[ds.tvq],
         fn: () => {
           ds.tvq = nextOf(TVQ_MODES, ds.tvq);
           ls.set("cartucho.ds.tvq", ds.tvq);
@@ -4307,7 +4314,7 @@ void main() {
   async function startPairing() {
     const code = newPairCode();
     const { topic, key } = await pairMaterial(code);
-    const link = location.origin + location.pathname + "#parear-" + code;
+    const link = appUrl() + "#parear-" + code;
     $("#pairCode").textContent = code.slice(0, 4) + " " + code.slice(4);
     try {
       const qr = window.qrcode(0, "M");
@@ -5158,6 +5165,16 @@ Content-Type: ${type}\r
   })();
 
   // src/main.js
+  {
+    const official = (
+      /** @type {any} */
+      window.CARTUCHIN_CONFIG && /** @type {any} */
+      window.CARTUCHIN_CONFIG.appUrl
+    );
+    if (official && location.hostname.endsWith(".github.io") && !location.hostname.startsWith(new URL(official).hostname)) {
+      location.replace(official + location.search + location.hash);
+    }
+  }
   $("#connectBtn").addEventListener("click", () => {
     showWelcome();
     window.scrollTo(0, 0);

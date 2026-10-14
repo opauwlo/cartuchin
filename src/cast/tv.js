@@ -2,7 +2,7 @@ import { iceDone, keepAwake, readPad, signal } from "./common.js";
 import { KEYCODES, KEYMAP, RTC_CONFIG, keysDown } from "./constants.js";
 import { chromeVer } from "./phone.js";
 import { newPairCode } from "../connect.js";
-import { $ } from "../util.js";
+import { $, appUrl } from "../util.js";
 
 /* ---------- TV side ---------- */
 /** Everything the TV holds while acting as the screen. */
@@ -39,7 +39,7 @@ async function startScreen() {
   keepAwake();
   try { await document.documentElement.requestFullscreen(); } catch (e) {}
   tvScreen.code = newPairCode();
-  const link = location.origin + location.pathname + "#tela-" + tvScreen.code;
+  const link = appUrl() + "#tela-" + tvScreen.code;
   $("#scrCode").textContent = tvScreen.code.slice(0, 4) + " " + tvScreen.code.slice(4);
   try {
     const qr = window.qrcode(0, "M");
@@ -330,7 +330,7 @@ function watchScreen(pc) {
     let problem = "";
     if (still >= 2) problem = dec === 0 ? "A imagem não está chegando do celular." : "A imagem parou de chegar do celular.";
     else if (!frames && v.paused) problem = "A imagem chega, mas o vídeo está parado. Toque no botão ou aperte A.";
-    else if (!frames && v.readyState < 2) problem = "A imagem chega, mas a TV ainda não começou a mostrar.";
+    else if (!frames && v.readyState < 2) problem = "A imagem chega, mas esta tela ainda não começou a mostrar.";
     const ph = tvScreen.phoneStats;
     const warnNet = net.warnUntil && performance.now() < net.warnUntil;
     const avg = (arr) => (arr.length ? Math.round(arr.reduce((a, b) => a + b, 0) / arr.length) : null);
@@ -352,7 +352,7 @@ function watchScreen(pc) {
     const total = known.length ? known.reduce((a, b) => a + b, 0) : null;   // of the parts measured so far
     const latencyLine = `Atraso: controle TV→celular ${ms(oneWay)} · toque→jogo ${ms(lat.touch)} · 1 quadro do jogo ${ms(gameFrame)}${lat.speed ? ` (${lat.speed}%)` : ""} · codificar ${ms(lat.enc)} · enviar ${ms(lat.send)} · rede ${ms(oneWay)} · buffer+decodificar na TV ${ms(tvMs)} · total ≈ ${ms(total)} + 1 quadro da TV`;
     const lines = [
-      problem || (warnNet ? `Wi-Fi instável: ${net.warnPct}% dos pacotes se perdem. Dica: ligue o roteador do celular e conecte a TV nele.` : "Conectado. Se a imagem não aparecer, mande uma foto desta tela."),
+      problem || (warnNet ? `Wi-Fi instável: ${net.warnPct}% dos pacotes se perdem. Dica: ligue o roteador do celular e conecte esta tela nele.` : "Conectado. Se a imagem não aparecer, mande uma foto desta tela."),
       `Rede: ${path}${rtt != null ? ` · ida e volta ${rtt} ms` : ""} · perda ${lossPct}%${rx && rx.jitter ? ` · variação ${Math.round(rx.jitter * 1000)} ms` : ""}`,
       latencyLine,
       ph ? `Celular: ${ph.ua || ""} · formato ${ph.mode || "?"} · enviou ${ph.sent} quadros, ${ph.pk || 0} pacotes${ph.w ? ` (${ph.w}x${ph.h})` : ""} · chaves ${ph.keys || 0} · PLI ${ph.pli || 0}${ph.enc ? ` · ${ph.enc}` : ""}${ph.lim && ph.lim !== "none" ? ` · limitado por ${ph.lim}` : ""}${ph.track && ph.track !== "live" ? ` · captura ${ph.track}` : ""}${ph.br != null && ph.br >= 0 ? ` · brilho ${ph.br}` : ""}`

@@ -7,7 +7,7 @@ Emulador de Game Boy Advance (e Game Boy / Color) que roda no navegador, com a R
 ## Como funciona
 
 - O emulador é o [mGBA](https://mgba.io) compilado para WebAssembly, rodando pelo [EmulatorJS](https://github.com/EmulatorJS/EmulatorJS).
-- Jogos de **Nintendo DS** (.nds) rodam no DeSmuME-wasm com patch próprio (pasta `ds/`), com o mesmo controle, saves na nuvem e transmissão para a TV. No menu do jogo dá para escolher quais telas aparecem aqui e na TV.
+- Jogos de **Nintendo DS** (.nds) rodam no DeSmuME-wasm com patch próprio (pasta `ds/`), com o mesmo controle, saves na nuvem e transmissão para uma segunda tela (TV, tablet, notebook). No menu do jogo dá para escolher quais telas aparecem em cada aparelho.
 - Este repositório é público e só tem o site. Nada de ROM ou save aqui.
 - Com **Entrar com Google**, as ROMs e os saves vão para a pasta oculta do app no Google Drive de cada pessoa (escopo `drive.appdata`: o app não enxerga nenhum outro arquivo). Opção avançada: um repositório privado do GitHub, pela API, com um token que só tem acesso a ele:
   - `cartucho.json`: a biblioteca

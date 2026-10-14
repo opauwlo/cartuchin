@@ -657,11 +657,11 @@ function dsMenuItems(emu, refresh) {
       fn: () => { ds.local = nextOf(LOCAL_LAYOUTS, ds.local); ls.set("cartucho.ds.local", ds.local); emu.relayout(); refresh(); },
     },
     {
-      icon: "sliders", label: "Telas na TV: " + LAYOUT_LABEL[ds.cast],
+      icon: "sliders", label: "Na 2ª tela: " + LAYOUT_LABEL[ds.cast],
       fn: () => { ds.cast = nextOf(CAST_LAYOUTS, ds.cast); ls.set("cartucho.ds.cast", ds.cast); emu.relayout(); refresh(); },
     },
     {
-      icon: "sliders", label: "Imagem na TV: " + TVQ_LABEL[ds.tvq],
+      icon: "sliders", label: "Imagem na 2ª tela: " + TVQ_LABEL[ds.tvq],
       fn: () => { ds.tvq = nextOf(TVQ_MODES, ds.tvq); ls.set("cartucho.ds.tvq", ds.tvq); emu.relayout(); sendTvView(); refresh(); },
     },
     {

@@ -31,6 +31,13 @@ import { showWelcome } from "./ui/screens.js";
 import { $ } from "./util.js";
 
 /* ---------------- boot ---------------- */
+/* o endereço antigo (GitHub Pages) leva para o oficial, com o mesmo #parear/#tela */
+{
+  const official = /** @type {any} */ (window).CARTUCHIN_CONFIG && /** @type {any} */ (window).CARTUCHIN_CONFIG.appUrl;
+  if (official && location.hostname.endsWith(".github.io") && !location.hostname.startsWith(new URL(official).hostname)) {
+    location.replace(official + location.search + location.hash);
+  }
+}
 $("#connectBtn").addEventListener("click", () => {
   showWelcome();
   window.scrollTo(0, 0);

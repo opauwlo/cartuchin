@@ -78,7 +78,7 @@ function applyRemote(mask) {
 }
 function setCastUi(state) {
   const b = $("#castBtn");
-  b.innerHTML = state === "on" ? "<span class=\"long\">Na </span>TV ●" : state === "wait" ? "Conectando…" : "<span class=\"long\">Jogar na </span>TV";
+  b.innerHTML = state === "on" ? "<span class=\"long\">Na 2ª </span>tela ●" : state === "wait" ? "Conectando…" : "<span class=\"long\">Segunda </span>tela";
   b.classList.toggle("primary", state === "on");
 }
 /* Ends the current transmission and frees everything it held. Also runs before every
@@ -245,7 +245,7 @@ async function castTo(code, attempt = 0) {
         showPad(true);
         wakeAudio();
         for (const t of window.__audioTaps || []) t.local.gain.value = 0;
-        if (attempt === 0) toast("Jogando na TV. Este celular agora é o controle.", 3500);
+        if (attempt === 0) toast("Jogando na segunda tela. Este celular agora é o controle.", 3500);
         if (vt) {
           const send = vt.sender, p = send.getParameters();
           p.encodings = (p.encodings && p.encodings.length ? p.encodings : [{}]).map((e) => ({ ...e, maxBitrate: opt.kbps * 1000, maxFramerate: 60, scaleResolutionDownBy: 1, priority: "high", networkPriority: "high" }));
@@ -253,8 +253,8 @@ async function castTo(code, attempt = 0) {
           send.setParameters(p).catch((e) => { cast.paramErr = String(e); });
         } else startFramePump(vtrack, cast.frameChannel);
         watchCast(pc, vt ? vt.sender : null, dc, emu);
-      } else if (pc.connectionState === "failed") stopCast("Não deu para conectar com a TV. Os dois aparelhos estão na mesma rede Wi-Fi?");
-      else if (pc.connectionState === "disconnected" || pc.connectionState === "closed") { if (cast.pc === pc) stopCast("A TV desconectou."); }
+      } else if (pc.connectionState === "failed") stopCast("Não deu para conectar com a segunda tela. Os dois aparelhos estão na mesma rede Wi-Fi?");
+      else if (pc.connectionState === "disconnected" || pc.connectionState === "closed") { if (cast.pc === pc) stopCast("A segunda tela desconectou."); }
     };
     await pc.setLocalDescription(await pc.createOffer());
     await iceDone(pc);
@@ -262,12 +262,12 @@ async function castTo(code, attempt = 0) {
     const stopListen = sig.listen("resposta", async (msg) => {
       if (!msg.sdp || msg.re !== offerId || pc !== cast.pc || pc.signalingState !== "have-local-offer") return;
       stopListen();
-      try { await pc.setRemoteDescription(msg.sdp); } catch (e) { stopCast("A TV respondeu de um jeito inesperado. Tente de novo."); }
+      try { await pc.setRemoteDescription(msg.sdp); } catch (e) { stopCast("A segunda tela respondeu de um jeito inesperado. Tente de novo."); }
     });
     await sig.send("oferta", { id: offerId, sdp: pc.localDescription.toJSON(), from: device.name });
     setTimeout(() => { if (pc === cast.pc && pc.connectionState !== "connected") {
       stopListen();
-      stopCast("A TV não respondeu. Confira o código e se ela está na tela de espera.");
+      stopCast("A segunda tela não respondeu. Confira o código e se ela está na tela de espera.");
     } }, 25000);
   } catch (e) { stopCast("Não deu para começar a transmissão."); }
 }
@@ -389,9 +389,9 @@ function watchCast(pc, sender, dc, emu) {
     if (!worked && tv && checks >= 4 && st.sent > 60 && tv.dec === 0) {
       clearInterval(cast.watch);
       if (cast.attempt + 1 < CAST_MODES.length) {
-        toast(`A TV não está recebendo a imagem. Tentando outro formato (${cast.attempt + 2}/${CAST_MODES.length})…`, 4000);
+        toast(`A segunda tela não está recebendo a imagem. Tentando outro formato (${cast.attempt + 2}/${CAST_MODES.length})…`, 4000);
         castTo(cast.code, cast.attempt + 1);
-      } else toast("A TV não conseguiu receber a imagem em nenhum formato. Mande uma foto do diagnóstico que aparece na TV.", 8000);
+      } else toast("A segunda tela não conseguiu receber a imagem em nenhum formato. Mande uma foto do diagnóstico que aparece nela.", 8000);
       return;
     }
     if (emu.paused) {
@@ -411,7 +411,7 @@ function watchCast(pc, sender, dc, emu) {
         cast.stream = ns;
       } catch (e) {}
     }
-    if (still === 4) toast(`A imagem não está saindo deste celular (${st.sent} quadros enviados). Toque em "TV" para sair e conecte de novo.`, 6000);
+    if (still === 4) toast(`A imagem não está saindo deste celular (${st.sent} quadros enviados). Toque em "tela ●" para sair e conecte de novo.`, 6000);
   }, 2000);
 }
 

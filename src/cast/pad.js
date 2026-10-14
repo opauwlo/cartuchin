@@ -270,8 +270,8 @@ function askCastCode() {
       close();
       castTo(c);
     } },
-    el("h2", {}, "Jogar na TV"),
-    el("p", {}, "Na TV, abra o Cartuchin e escolha \"Usar como tela\". Digite aqui o código que aparecer. Os dois precisam estar no mesmo Wi-Fi."),
+    el("h2", {}, "Jogar numa segunda tela"),
+    el("p", {}, "Na TV, tablet ou notebook, abra o Cartuchin e escolha \"Usar como tela\". Digite aqui o código que aparecer. Os dois precisam estar no mesmo Wi-Fi."),
     input,
     el("button", { class: "btn primary", type: "submit" }, "Transmitir"),
     el("button", { class: "btn", type: "button", onclick: close }, "Cancelar"))));
@@ -284,7 +284,7 @@ function handleScreenLink() {
   try { history.replaceState(null, "", location.pathname); } catch (e) {}
   cast.pending = normCode(m[1]);
   $("#notice").dataset.sticky = "1";
-  notice("TV pronta! Escolha o jogo: ele roda aqui e aparece na TV. Este celular vira o controle.");
+  notice("Segunda tela pronta! Escolha o jogo: ele roda aqui e aparece lá. Este celular vira o controle.");
 }
 
 export { padState, padGeometry, padMsg, showPad, handleScreenLink };

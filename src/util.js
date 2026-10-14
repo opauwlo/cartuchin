@@ -50,4 +50,10 @@ function ago(ts) {
 }
 function fmtSize(n) { return n >= 1024 ? Math.round(n / 1024) + " KB" : n + " B"; }
 
-export { $, $$, el, ls, sleep, rid, actionToast, toast, ago };
+/** endereço do app para links e QR codes: o oficial (config.js), ou o atual se não houver */
+function appUrl() {
+  const c = /** @type {any} */ (window).CARTUCHIN_CONFIG || {};
+  return c.appUrl || location.origin + location.pathname;
+}
+
+export { $, $$, el, ls, sleep, rid, actionToast, toast, ago, appUrl };
