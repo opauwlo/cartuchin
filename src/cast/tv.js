@@ -291,8 +291,12 @@ void main() {
       canvas,
       draw(video, view) {
         const vw = video.videoWidth, vh = video.videoHeight, grid = Math.max(1, view.grid | 0);
-        // 4 pixels de saída por pixel do jogo (o resto da ampliação até a TV é do CSS)
-        const ow = Math.round(vw / grid) * 4, oh = Math.round(vh / grid) * 4;
+        // pixels crus (grid > 1): 4 de saída por pixel do jogo; vídeo já em alta resolução
+        // (2x+ interna): só o necessário para a tela. Nunca acima de 4096 (limite de TV fraca).
+        const gw = Math.round(vw / grid), gh = Math.round(vh / grid);
+        const long = Math.max(screen.width, screen.height) * (window.devicePixelRatio || 1);
+        const k = Math.max(1, Math.min(grid > 1 ? 4 : Math.floor(long / gw) || 1, Math.floor(4096 / Math.max(gw, gh)) || 1));
+        const ow = gw * k, oh = gh * k;
         if (canvas.width !== ow || canvas.height !== oh) { canvas.width = ow; canvas.height = oh; }
         gl.viewport(0, 0, ow, oh);
         try { gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, video); } catch (e) { return false; }

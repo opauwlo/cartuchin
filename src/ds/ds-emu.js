@@ -373,8 +373,17 @@ async function createDsEmulator(romBytes, gameName, startSav) {
   // A imagem vai crua para a TV, que amplia (EPX/exata) na GPU dela. Em 1x cada pixel vira um
   // bloco 2x2 (a compressão do vídeo guarda cor a cada 2x2: sem isso pixels finos borram);
   // em 2x+ a resolução interna já basta. Bem menos pixels para codificar que a antiga 4x.
+  // Em 2x+ a imagem vai na resolução interna, até 3x e 1536 px no lado maior: 4x-6x
+  // não melhora o que a TV mostra e o vídeo fica pesado demais para codificar.
   function castScale() {
-    return castGl && S === 1 ? 2 : 1;
+    if (!castGl) return 1;
+    return S === 1 ? 2 : 1;
+  }
+  function castSize(layout) {
+    if (!castGl) return sizeFor(layout);
+    const [w1, h1] = layout === "both" ? [W, H * 2] : layout === "side" ? [W * 2, H] : [W, H];
+    const k = S === 1 ? 2 : Math.max(1, Math.min(S, 3, Math.floor(1536 / Math.max(w1, h1))));
+    return [w1 * k, h1 * k];
   }
   function blit(ctx, layout) {
     const w = W * S, h = H * S;
@@ -395,8 +404,7 @@ async function createDsEmulator(romBytes, gameName, startSav) {
       window.dispatchEvent(new Event("ds-layout"));
     }
     if (casting()) {
-      const s = castScale(ds.cast);
-      const [w0, h0] = sizeFor(ds.cast), w = w0 * s, h = h0 * s;
+      const [w, h] = castSize(ds.cast);
       if (ds.cast !== shownCast || castCanvas.width !== w || castCanvas.height !== h) {
         shownCast = ds.cast;
         castCanvas.width = w;

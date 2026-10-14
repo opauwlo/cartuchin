@@ -685,7 +685,10 @@ void main() {
         canvas,
         draw(video, view) {
           const vw = video.videoWidth, vh = video.videoHeight, grid = Math.max(1, view.grid | 0);
-          const ow = Math.round(vw / grid) * 4, oh = Math.round(vh / grid) * 4;
+          const gw = Math.round(vw / grid), gh2 = Math.round(vh / grid);
+          const long = Math.max(screen.width, screen.height) * (window.devicePixelRatio || 1);
+          const k = Math.max(1, Math.min(grid > 1 ? 4 : Math.floor(long / gw) || 1, Math.floor(4096 / Math.max(gw, gh2)) || 1));
+          const ow = gw * k, oh = gh2 * k;
           if (canvas.width !== ow || canvas.height !== oh) {
             canvas.width = ow;
             canvas.height = oh;
@@ -3171,7 +3174,14 @@ registerProcessor("ds-out", DSOut);
       return layout === "both" ? [W * S, H * 2 * S] : layout === "side" ? [W * 2 * S, H * S] : [W * S, H * S];
     }
     function castScale() {
-      return castGl && S === 1 ? 2 : 1;
+      if (!castGl) return 1;
+      return S === 1 ? 2 : 1;
+    }
+    function castSize(layout) {
+      if (!castGl) return sizeFor(layout);
+      const [w1, h1] = layout === "both" ? [W, H * 2] : layout === "side" ? [W * 2, H] : [W, H];
+      const k = S === 1 ? 2 : Math.max(1, Math.min(S, 3, Math.floor(1536 / Math.max(w1, h1))));
+      return [w1 * k, h1 * k];
     }
     function blit(ctx, layout) {
       const w = W * S, h = H * S;
@@ -3194,8 +3204,7 @@ registerProcessor("ds-out", DSOut);
         window.dispatchEvent(new Event("ds-layout"));
       }
       if (casting()) {
-        const s = castScale(ds.cast);
-        const [w0, h0] = sizeFor(ds.cast), w = w0 * s, h = h0 * s;
+        const [w, h] = castSize(ds.cast);
         if (ds.cast !== shownCast || castCanvas.width !== w || castCanvas.height !== h) {
           shownCast = ds.cast;
           castCanvas.width = w;

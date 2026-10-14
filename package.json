@@ -3,7 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test:speed": "node tests/speed.mjs"
+    "test:speed": "node tests/speed.mjs",
+    "test:ds": "node tests/ds-e2e.mjs"
   },
   "devDependencies": {
     "playwright": "^1.55.1"
