@@ -94,6 +94,8 @@ async function startScreen() {
       e.channel.onmessage = (m) => { try {
         const d = JSON.parse(m.data);
         if (d && d.st) tvScreen.phoneStats = d.st;
+        // DS: a imagem já vem ampliada do celular; no modo "suave" a TV também amplia suave
+        if (d && d.view) $("#screen").classList.toggle("smooth", !!d.view.smooth);
         if (d && d.pong) { tvScreen.rtt.push(performance.now() - d.pong); if (tvScreen.rtt.length > 10) tvScreen.rtt.shift(); }
       } catch (x) {} };
     };

@@ -446,6 +446,7 @@
           try {
             const d = JSON.parse(m.data);
             if (d && d.st) tvScreen.phoneStats = d.st;
+            if (d && d.view) $("#screen").classList.toggle("smooth", !!d.view.smooth);
             if (d && d.pong) {
               tvScreen.rtt.push(performance.now() - d.pong);
               if (tvScreen.rtt.length > 10) tvScreen.rtt.shift();
@@ -2638,6 +2639,8 @@
   var ds = {
     local: ls.get("cartucho.ds.local") || "auto",
     cast: ls.get("cartucho.ds.cast") || "top",
+    // imagem na TV: "x1" (original), "nitida" (4x, pixels exatos) ou "suave" (4x com filtro de pixel art)
+    tvq: ls.get("cartucho.ds.tvq") || "suave",
     perf: ls.get("cartucho.ds.perf") || "auto",
     level: Math.min(LEVELS.length - 1, Number(ls.get("cartucho.ds.level") || 1))
   };
@@ -2857,7 +2860,8 @@ registerProcessor("ds-out", DSOut);
     const vctx = view.getContext("2d", { alpha: false });
     const castCanvas = el("canvas", { class: "ds-cast", width: String(W), height: String(H), "aria-hidden": "true" });
     document.body.append(castCanvas);
-    const cctx = castCanvas.getContext("2d", { alpha: false });
+    const castGl = makeCastGl(castCanvas);
+    const cctx = castGl ? null : castCanvas.getContext("2d", { alpha: false });
     const fb = document.createElement("canvas");
     fb.width = W;
     fb.height = H * 2;
@@ -3015,6 +3019,10 @@ registerProcessor("ds-out", DSOut);
     function sizeFor(layout) {
       return layout === "both" ? [W, H * 2] : layout === "side" ? [W * 2, H] : [W, H];
     }
+    function castScale(layout) {
+      if (!castGl || ds.tvq === "x1") return 1;
+      return layout === "top" || layout === "bottom" ? 4 : 3;
+    }
     function blit(ctx, layout) {
       if (layout === "both") ctx.drawImage(fb, 0, 0);
       else if (layout === "side") {
@@ -3035,8 +3043,9 @@ registerProcessor("ds-out", DSOut);
         window.dispatchEvent(new Event("ds-layout"));
       }
       if (casting()) {
-        const [w, h] = sizeFor(ds.cast);
-        if (ds.cast !== shownCast || castCanvas.width !== w) {
+        const s = castScale(ds.cast);
+        const [w0, h0] = sizeFor(ds.cast), w = w0 * s, h = h0 * s;
+        if (ds.cast !== shownCast || castCanvas.width !== w || castCanvas.height !== h) {
           shownCast = ds.cast;
           castCanvas.width = w;
           castCanvas.height = h;
@@ -3055,7 +3064,10 @@ registerProcessor("ds-out", DSOut);
     function draw() {
       fctx.putImageData(frameImage(), 0, 0);
       blit(vctx, shownLocal);
-      if (casting()) blit(cctx, ds.cast);
+      if (casting()) {
+        if (castGl) castGl.draw(fb, ds.cast, ds.tvq === "suave");
+        else blit(cctx, ds.cast);
+      }
     }
     let touchId = null;
     function touchAt(e) {
@@ -3232,6 +3244,92 @@ registerProcessor("ds-out", DSOut);
     }, 0);
     return emu;
   }
+  var TVQ_MODES = ["suave", "nitida", "x1"];
+  var TVQ_LABEL = { suave: "Suave 4x", nitida: "Nítida 4x", x1: "Original 1x" };
+  var LAYOUT_ID = { top: 0, bottom: 1, both: 2, side: 3 };
+  function makeCastGl(canvas) {
+    const gl = canvas.getContext("webgl", { alpha: false, antialias: false, preserveDrawingBuffer: true });
+    if (!gl) return null;
+    const vs = "attribute vec2 p; varying vec2 uv; void main(){ uv = vec2(p.x * 0.5 + 0.5, 0.5 - p.y * 0.5); gl_Position = vec4(p, 0.0, 1.0); }";
+    const fs = `precision highp float;
+varying vec2 uv;
+uniform sampler2D t;
+uniform int layout;
+uniform bool epx;
+const vec2 FB = vec2(256.0, 384.0);
+vec3 px(vec2 c) { return texture2D(t, (clamp(c, vec2(0.0), FB - 1.0) + 0.5) / FB).rgb; }
+bool eq(vec3 a, vec3 b) { return all(lessThan(abs(a - b), vec3(0.01))); }
+void main() {
+  vec2 s;                                     // posição na tela do DS, em pixels (pode ter fração)
+  if (layout == 0) s = vec2(uv.x * 256.0, uv.y * 192.0);
+  else if (layout == 1) s = vec2(uv.x * 256.0, 192.0 + uv.y * 192.0);
+  else if (layout == 2) s = vec2(uv.x * 256.0, uv.y * 384.0);
+  else s = uv.x < 0.5 ? vec2(uv.x * 512.0, uv.y * 192.0) : vec2((uv.x - 0.5) * 512.0, 192.0 + uv.y * 192.0);
+  vec2 c = floor(s);
+  vec3 E = px(c);
+  if (!epx) { gl_FragColor = vec4(E, 1.0); return; }
+  vec3 A = px(c + vec2(0.0, -1.0)), B = px(c + vec2(1.0, 0.0)), C = px(c + vec2(-1.0, 0.0)), D = px(c + vec2(0.0, 1.0));
+  vec2 f = s - c;
+  vec3 o = E;
+  if (f.y < 0.5) {
+    if (f.x < 0.5) { if (eq(C, A) && !eq(C, D) && !eq(A, B)) o = A; }
+    else { if (eq(A, B) && !eq(A, C) && !eq(B, D)) o = B; }
+  } else {
+    if (f.x < 0.5) { if (eq(D, C) && !eq(D, B) && !eq(C, A)) o = C; }
+    else { if (eq(B, D) && !eq(B, A) && !eq(D, C)) o = D; }
+  }
+  gl_FragColor = vec4(o, 1.0);
+}`;
+    const sh = (type, src) => {
+      const s = gl.createShader(type);
+      gl.shaderSource(s, src);
+      gl.compileShader(s);
+      if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+      return s;
+    };
+    let prog;
+    try {
+      prog = gl.createProgram();
+      gl.attachShader(prog, sh(gl.VERTEX_SHADER, vs));
+      gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, fs));
+      gl.linkProgram(prog);
+      if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+    } catch (e) {
+      console.warn("[ds] shader da TV", e);
+      return null;
+    }
+    gl.useProgram(prog);
+    const buf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+    const loc = gl.getAttribLocation(prog, "p");
+    gl.enableVertexAttribArray(loc);
+    gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.NEAREST], [gl.TEXTURE_MAG_FILTER, gl.NEAREST], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, k, v);
+    const uLayout = gl.getUniformLocation(prog, "layout"), uEpx = gl.getUniformLocation(prog, "epx");
+    return {
+      draw(src, layout, epx) {
+        gl.viewport(0, 0, canvas.width, canvas.height);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, src);
+        gl.uniform1i(uLayout, LAYOUT_ID[layout] || 0);
+        gl.uniform1i(uEpx, epx ? 1 : 0);
+        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+      }
+    };
+  }
+  window.__dsCastGl = makeCastGl;
+  function sendTvView() {
+    const c = window.__cast;
+    if (c && c.dc && c.dc.readyState === "open") {
+      try {
+        c.dc.send(JSON.stringify({ view: { smooth: ds.tvq === "suave" } }));
+      } catch (e) {
+      }
+    }
+  }
+  setInterval(sendTvView, 3e3);
   function nextOf(list, cur) {
     return list[(list.indexOf(cur) + 1) % list.length];
   }
@@ -3291,6 +3389,17 @@ registerProcessor("ds-out", DSOut);
           ds.cast = nextOf(CAST_LAYOUTS, ds.cast);
           ls.set("cartucho.ds.cast", ds.cast);
           emu.relayout();
+          refresh();
+        }
+      },
+      {
+        icon: "sliders",
+        label: "Imagem na TV: " + TVQ_LABEL[ds.tvq],
+        fn: () => {
+          ds.tvq = nextOf(TVQ_MODES, ds.tvq);
+          ls.set("cartucho.ds.tvq", ds.tvq);
+          emu.relayout();
+          sendTvView();
           refresh();
         }
       },
