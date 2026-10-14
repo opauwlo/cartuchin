@@ -305,7 +305,8 @@ async function startFramePump(track, dc) {
     } else if (data.fallback) cast.frameCodec = data.fallback;
     if (data.encMs != null) lag.enc.push(data.encMs);
   };
-  worker.postMessage({ cmd: "start", readable, codec: cast.frameCodec, width: STREAM_W, height: STREAM_H, bitrate: 1_200_000 }, [readable]);
+  const emu = player.emu || {};
+  worker.postMessage({ cmd: "start", readable, codec: cast.frameCodec, width: emu.streamW || STREAM_W, height: emu.streamH || STREAM_H, bitrate: 1_200_000 }, [readable]);
   cast.requestKey = () => worker.postMessage({ cmd: "key" });
   cast.pumpStop = () => { worker.postMessage({ cmd: "stop" }); cast.requestKey = null; };
 }
@@ -321,7 +322,8 @@ function waitForTvHello(ms) {
   });
 }
 async function legacyJpegPump(track, dc) {
-  const off = document.createElement("canvas"); off.width = STREAM_W; off.height = STREAM_H;
+  const emu = player.emu || {}, sw = emu.streamW || STREAM_W, sh = emu.streamH || STREAM_H;
+  const off = document.createElement("canvas"); off.width = sw; off.height = sh;
   const g = off.getContext("2d", { alpha: false });
   const grab = new ImageCapture(track);
   let on = true;
@@ -329,7 +331,7 @@ async function legacyJpegPump(track, dc) {
   while (on && track.readyState === "live") {
     try {
       const bmp = await grab.grabFrame();
-      g.drawImage(bmp, 0, 0, STREAM_W, STREAM_H);
+      g.drawImage(bmp, 0, 0, sw, sh);
       const blob = await new Promise((r) => off.toBlob(r, "image/jpeg", 0.85));
       if (blob && dc.readyState === "open" && dc.bufferedAmount < 200000) { dc.send(packFrame(await blob.arrayBuffer(), true, 0)); cast.pumped++; }
     } catch (e) {}

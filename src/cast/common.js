@@ -112,6 +112,8 @@ function readPad() {
     const b = (i) => !!(pad.buttons[i] && pad.buttons[i].pressed), ax = pad.axes || [];
     s.A = b(1);
     s.B = b(0);
+    s.X = b(3);   // DS: botão de cima do controle
+    s.Y = b(2);   // DS: botão da esquerda
     s.L = b(4) || b(6);
     s.R = b(5) || b(7);
     s.SELECT = b(8);

@@ -48,7 +48,7 @@ function prettyName(n) {
   return t;
 }
 function cleanTitle(raw) {
-  let t = (raw || "").replace(/\.(gba|gbc|gb|zip)$/i, "").replace(/_+/g, " ").replace(/\s*[([][^)\]]*[)\]]/g, " ");
+  let t = (raw || "").replace(/\.(gba|gbc|gb|nds|zip)$/i, "").replace(/_+/g, " ").replace(/\s*[([][^)\]]*[)\]]/g, " ");
   t = t.replace(/\s+(v|ver|version|vesion|versao|versão|rev)\.?\s*\d[\d.]*\s*$/i, "").replace(/\s+v?\d+(\.\d+)+\s*$/i, "");
   t = t.replace(/\s+/g, " ").trim();
   const letters = t.replace(/[^A-Za-z]/g, "");
@@ -58,7 +58,7 @@ function cleanTitle(raw) {
 const normTitle = (t) => t.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/\(hack\)|\bpokemon\b|\bversion\b/g, "").replace(/[^a-z0-9]/g, "");
 async function identifyRom(bytes, info, fileName) {
   const crc = crc32(bytes).toString(16).toUpperCase().padStart(8, "0");
-  const systems = info.system === "gba" ? ["gba"] : ["gbc", "gb"];
+  const systems = info.system === "gba" ? ["gba"] : info.system === "nds" ? [] : ["gbc", "gb"];   // DS: ainda sem base de nomes
   for (const sys of systems) {
     const db = await gameDb(sys);
     if (!db) continue;
@@ -113,7 +113,7 @@ function gameInfo(key) {
   const coverRev = (ix && ix.coverRev) || (rom && rom.coverRev) || "";
   const system = (rom && rom.system) || (save && save.system) || (crom && crom.system) || "gba";
   const code = (rom && rom.code) || (save && save.code) || (crom && crom.code) || "";
-  return { key, rom, save, crom, ix, title, cover, coverRev, system, code, sys: system === "gba" ? "GBA" : (rom && rom.ext === "gbc") ? "GBC" : "GB", playable: !!(rom || crom) };
+  return { key, rom, save, crom, ix, title, cover, coverRev, system, code, sys: system === "gba" ? "GBA" : system === "nds" ? "DS" : (rom && rom.ext === "gbc") ? "GBC" : "GB", playable: !!(rom || crom) };
 }
 
 /* custom covers: kept in IndexedDB and, with a cloud, in covers/<key>.jpg */

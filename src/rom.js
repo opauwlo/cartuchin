@@ -29,12 +29,18 @@ function parseRom(u8, fileName) {
       const c = ascii(u8, 0x13f, 4);
       if (/^[A-Z0-9]{4}$/.test(c)) code = c;
     }
+  } else if (u8.length > 0x200 && u8[0xc0] === 0x24 && u8[0xc1] === 0xff && u8[0xc2] === 0xae && u8[0xc3] === 0x51) {
+    // Nintendo DS: o logo da Nintendo começa em 0xC0; título em 0x00, código em 0x0C
+    system = "nds";
+    title = ascii(u8, 0, 12);
+    const c = ascii(u8, 0x0c, 4);
+    if (/^[A-Z0-9]{4}$/.test(c)) code = c;
   } else return null;
   const clean = (title || fileName.replace(/\.[^.]+$/, "")).replace(/[^A-Za-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 40) || "jogo";
   const key = /^[A-Z0-9]{4}$/.test(code) ? code + "-" + clean : system + "-" + clean;
   const base = fileName.replace(/\.[^.]+$/, "").replace(/[_]+/g, " ").replace(/\s*\((?:[^)]*)\)\s*/g, " ").trim();
   const nice = (base.match(/[A-Za-zÀ-ÿ]/g) || []).length >= 4 ? base : title;
-  const display = (code && KNOWN[code.slice(0, 3)]) || titleCase(nice || title || "Jogo");
+  const display = (system === "gba" && code && KNOWN[code.slice(0, 3)]) || titleCase(nice || title || "Jogo");
   return { key, system, title: display, header: title, code };
 }
 

@@ -29,9 +29,9 @@ $("#romInput").addEventListener("change", async (e) => {
     let bytes = new Uint8Array(await f.arrayBuffer());
     let name = f.name;
     if (/\.zip$/i.test(name) || (bytes[0] === 0x50 && bytes[1] === 0x4b)) {
-      const inner = await unzipRom(bytes);
+      const inner = await unzipRom(bytes, /\.(gba|gbc|gb|nds)$/i);
       if (!inner) {
-        toast("Não achei uma ROM de GBA ou GB dentro desse .zip.");
+        toast("Não achei uma ROM de GBA, GB ou DS dentro desse .zip.");
         return;
       }
       bytes = inner.bytes;
@@ -39,10 +39,10 @@ $("#romInput").addEventListener("change", async (e) => {
     }
     const info = parseRom(bytes, name);
     if (!info) {
-      toast("Esse arquivo não parece uma ROM de GBA ou GB.");
+      toast("Esse arquivo não parece uma ROM de GBA, GB ou DS.");
       return;
     }
-    const ext = info.system === "gba" ? "gba" : (/\.gbc$/i.test(name) ? "gbc" : "gb");
+    const ext = info.system === "gba" || info.system === "nds" ? info.system : (/\.gbc$/i.test(name) ? "gbc" : "gb");
     const id = await identifyRom(bytes, info, name).catch(() => ({ title: info.title, cover: null }));
     await idb.put("roms", info.key, { ...info, title: id.title, cover: id.cover, ident: true, ext, fileName: name, size: bytes.length, addedAt: Date.now(), blob: new Blob([bytes]) });
     await loadRoms();
@@ -60,8 +60,9 @@ $("#savInput").addEventListener("change", async (e) => {
   savTarget = null;
   try {
     const sav = new Uint8Array(await f.arrayBuffer());
-    if (!sav.length || sav.length > 160 * 1024) {
-      toast("Esse arquivo não parece um save de GBA (tamanho estranho).");
+    const maxSav = (meta && meta.system === "nds") ? 33 * 1024 * 1024 : 160 * 1024;   // saves de DS vão de 512 B a 32 MB
+    if (!sav.length || sav.length > maxSav) {
+      toast("Esse arquivo não parece um save desse jogo (tamanho estranho).");
       return;
     }
     const existing = cloud.docs.get(key);

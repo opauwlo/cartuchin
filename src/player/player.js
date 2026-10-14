@@ -8,6 +8,7 @@ import { idb } from "../idb.js";
 import { roms } from "../library.js";
 import { PROFILES, coreOptions, perfProfile, startSpeedMeter } from "./perf.js";
 import { fixSaveChip } from "../rom.js";
+import { createDsEmulator, dsStatesOk } from "../ds/ds-emu.js";
 import { dialog } from "../ui/dialogs.js";
 import { render } from "../ui/screens.js";
 import { $, actionToast, ago, el, sleep, toast } from "../util.js";
@@ -49,6 +50,7 @@ setInterval(() => {
 
 function savPath(gm) { return gm.getSaveFilePath(); }
 function writeSav(gm, sav) {
+  if (gm.writeSav) return gm.writeSav(sav);   // DS: o adaptador guarda e aplica no restart()
   const path = savPath(gm);
   const parts = path.split("/");
   let cp = "";
@@ -336,7 +338,9 @@ async function play(key) {
   if (!rom) return;
   const start = await chooseStartSave(key);
   if (start === null) return;
-  const resume = await findResumeState(key, start);
+  const isDs = rom.system === "nds";
+  // DS: retomar do save state fica desligado enquanto o load state do core não está confiável
+  const resume = isDs && !dsStatesOk ? null : await findResumeState(key, start);
   player.key = key;
   player.meta = { title: rom.title, system: rom.system, code: rom.code };
   player.lastSha = start.upload ? null : start.sha;
@@ -347,9 +351,16 @@ async function play(key) {
   setChip(start.sav ? (start.upload ? "pending" : (cloud.db ? "ok" : "local")) : "none", start.at);
   try { document.title = rom.title + " · Cartuchin"; } catch (e) {}
 
-  const romBytes = fixSaveChip(new Uint8Array(await rom.blob.arrayBuffer()));
-  const file = new File([romBytes], rom.code ? rom.code + "." + rom.ext : "jogo." + rom.ext);
-  const emu = await createEmulator(file, key, coreOptions());
+  let emu;
+  if (isDs) {
+    emu = await createDsEmulator(new Uint8Array(await rom.blob.arrayBuffer()), key);
+  } else {
+    const romBytes = fixSaveChip(new Uint8Array(await rom.blob.arrayBuffer()));
+    const file = new File([romBytes], rom.code ? rom.code + "." + rom.ext : "jogo." + rom.ext);
+    emu = await createEmulator(file, key, coreOptions());
+  }
+  player.isDs = isDs;
+  $("#player").classList.toggle("ds", isDs);
   if (!emu) {
     toast("Não deu para carregar o emulador. Confira a internet.");
     $("#player").hidden = true;

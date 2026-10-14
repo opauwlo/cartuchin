@@ -22,6 +22,7 @@ function padGeometry() {
   const geo = [];
   for (const n of $$("#pad [data-btn], #pad .pad-dpad")) {
     const r = n.getBoundingClientRect();
+    if (!r.width || !r.height) continue;   // botão escondido (X/Y fora do DS)
     geo.push({ id: n.classList.contains("pad-dpad") ? "dpad" : n.dataset.btn, round: n.classList.contains("pad-face"),
       l: r.left, t: r.top, r: r.right, b: r.bottom, cx: (r.left + r.right) / 2, cy: (r.top + r.bottom) / 2, rad: Math.min(r.width, r.height) / 2 });
   }
@@ -138,16 +139,16 @@ function layoutPad() {
     const pl = $("#player"), bar = $(".pbar").getBoundingClientRect();
     const availH = innerHeight - bar.bottom, availW = innerWidth;
     const upright = availH > availW;
+    // proporção da imagem: GBA 3:2; no DS depende de quais telas aparecem (2:3, 8:3 ou 4:3)
+    const ar = (player.isDs && player.emu && player.emu.aspect) || 1.5;
     let gw, gh;
     if (upright) {
-      gw = availW;
-      gh = Math.min(availW / 1.5, availH * 0.55);
-      gw = gh * 1.5;
+      gh = Math.min(availW / ar, availH * (player.isDs ? 0.5 : 0.55));
+      gw = gh * ar;
     }
     else {
-      gh = availH;
-      gw = Math.min(availH * 1.5, availW * 0.62);
-      gh = gw / 1.5;
+      gw = Math.min(availH * ar, availW * 0.62);
+      gh = gw / ar;
     }
     for (const n of [pad, pl]) {
       n.classList.toggle("port", upright);
@@ -175,6 +176,7 @@ function layoutPad() {
   requestAnimationFrame(() => { padState.geo = null; });
 }
 window.addEventListener("resize", layoutPad);
+window.addEventListener("ds-layout", layoutPad);   // o DS trocou de telas (girou, começou a transmitir…)
 // the browser bar on phones grows and shrinks without always firing "resize"
 if (window.ResizeObserver) new ResizeObserver(() => { if (padState.mode === "local") layoutPad(); }).observe(document.documentElement);
 (() => {
@@ -237,10 +239,12 @@ function showPad(on) {
   padTouches.clear();
   cast.localMask = 0;
   applyInput();
-  if (on) padState.mode = "cast";
+  // DS transmitindo: o celular continua mostrando a tela de toque, com o controle em volta
+  if (on) padState.mode = player.isDs ? "local" : "cast";
   else padState.mode = (player.key || padState.forceLocal) && touchDevice() ? "local" : "off";
   pad.hidden = padState.mode === "off";
   pad.classList.toggle("local", padState.mode === "local");
+  pad.classList.toggle("ds", !!player.isDs);
   // the game stays rendered under the opaque pad while casting: a hidden canvas can stop
   // producing frames for the stream on some phones
   $("#player").classList.toggle("casting", padState.mode === "cast");

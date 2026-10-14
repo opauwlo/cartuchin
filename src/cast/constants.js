@@ -5,9 +5,9 @@ const KEYMAP = { ArrowUp: "UP", ArrowDown: "DOWN", ArrowLeft: "LEFT", ArrowRight
   GoBack: "B", BrowserBack: "B", MediaPlayPause: "START", ColorF0Red: "L", ColorF1Green: "R", ColorF2Yellow: "SELECT", ColorF3Blue: "START" };
 /* TV remotes send arrow keys, Enter and Back: they work as a controller too */
 const keysDown = new Set();
-const PAD_BITS = ["B", "SELECT", "START", "UP", "DOWN", "LEFT", "RIGHT", "A", "L", "R"];
+const PAD_BITS = ["B", "SELECT", "START", "UP", "DOWN", "LEFT", "RIGHT", "A", "L", "R", "X", "Y"];
 /* RetroPad indexes EmulatorJS understands, and how a standard controller maps onto them */
-const PAD = { B: 0, SELECT: 2, START: 3, UP: 4, DOWN: 5, LEFT: 6, RIGHT: 7, A: 8, L: 10, R: 11 };
+const PAD = { B: 0, Y: 1, SELECT: 2, START: 3, UP: 4, DOWN: 5, LEFT: 6, RIGHT: 7, A: 8, X: 9, L: 10, R: 11 };
 const RTC_CONFIG = { iceServers: [{ urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] }] };
 
 export { STREAM_W, STREAM_H, KEYCODES, KEYMAP, keysDown, PAD_BITS, PAD, RTC_CONFIG };

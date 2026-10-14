@@ -499,6 +499,12 @@ async function uploadRom(rom) {
     const s = new Blob([raw]).stream().pipeThrough(new CompressionStream("gzip"));
     const gz = new Uint8Array(await new Response(s).arrayBuffer());
     const path = "roms/" + rom.key + ".gz";
+    // a API de arquivos do GitHub não aceita mais que ~100 MB por envio (em base64)
+    if (!isGoogle() && gz.length > 70 * 1024 * 1024) {
+      setBusy(rom.key, null);
+      toast(`${rom.title}: ROM grande demais para o GitHub. Ela fica só neste aparelho (o save sincroniza normal).`, 5000);
+      return false;
+    }
     await putBinary(path, gz, `ROM: ${rom.title}`);
     await updateIndex((d) => {
       const prev = d.games[rom.key] || {};

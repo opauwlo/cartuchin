@@ -1,5 +1,5 @@
 (() => {
-  // src/js/cast/constants.js
+  // src/cast/constants.js
   var STREAM_W = 240;
   var STREAM_H = 160;
   var KEYCODES = { 10009: "B", 415: "START", 19: "START", 403: "L", 404: "R", 405: "SELECT", 406: "START" };
@@ -21,11 +21,11 @@
     ColorF3Blue: "START"
   };
   var keysDown = /* @__PURE__ */ new Set();
-  var PAD_BITS = ["B", "SELECT", "START", "UP", "DOWN", "LEFT", "RIGHT", "A", "L", "R"];
-  var PAD = { B: 0, SELECT: 2, START: 3, UP: 4, DOWN: 5, LEFT: 6, RIGHT: 7, A: 8, L: 10, R: 11 };
+  var PAD_BITS = ["B", "SELECT", "START", "UP", "DOWN", "LEFT", "RIGHT", "A", "L", "R", "X", "Y"];
+  var PAD = { B: 0, Y: 1, SELECT: 2, START: 3, UP: 4, DOWN: 5, LEFT: 6, RIGHT: 7, A: 8, X: 9, L: 10, R: 11 };
   var RTC_CONFIG = { iceServers: [{ urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] }] };
 
-  // src/js/util.js
+  // src/util.js
   var $ = (s) => document.querySelector(s);
   var $$ = (s, root = document) => Array.from(root.querySelectorAll(s));
   var el = (tag, attrs = {}, ...kids) => {
@@ -90,7 +90,7 @@
     return new Date(ts).toLocaleDateString("pt-BR");
   }
 
-  // src/js/bytes.js
+  // src/bytes.js
   function b64(u8) {
     let s = "";
     for (let i = 0; i < u8.length; i += 32768) s += String.fromCharCode.apply(null, u8.subarray(i, i + 32768));
@@ -183,7 +183,7 @@
     return null;
   }
 
-  // src/js/rom.js
+  // src/rom.js
   var KNOWN = {
     BPE: "Pokémon Emerald",
     AXV: "Pokémon Ruby",
@@ -228,12 +228,17 @@
         const c = ascii(u8, 319, 4);
         if (/^[A-Z0-9]{4}$/.test(c)) code = c;
       }
+    } else if (u8.length > 512 && u8[192] === 36 && u8[193] === 255 && u8[194] === 174 && u8[195] === 81) {
+      system = "nds";
+      title = ascii(u8, 0, 12);
+      const c = ascii(u8, 12, 4);
+      if (/^[A-Z0-9]{4}$/.test(c)) code = c;
     } else return null;
     const clean = (title || fileName.replace(/\.[^.]+$/, "")).replace(/[^A-Za-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 40) || "jogo";
     const key = /^[A-Z0-9]{4}$/.test(code) ? code + "-" + clean : system + "-" + clean;
     const base = fileName.replace(/\.[^.]+$/, "").replace(/[_]+/g, " ").replace(/\s*\((?:[^)]*)\)\s*/g, " ").trim();
     const nice = (base.match(/[A-Za-zÀ-ÿ]/g) || []).length >= 4 ? base : title;
-    const display = code && KNOWN[code.slice(0, 3)] || titleCase(nice || title || "Jogo");
+    const display = system === "gba" && code && KNOWN[code.slice(0, 3)] || titleCase(nice || title || "Jogo");
     return { key, system, title: display, header: title, code };
   }
   var MGBA_CODES = new Set("2GBP A2YE A3AE A3AJ A3AP AA2E AA2J AA2P AC8E AC8J AC8P AFXE AGFE AI2E AI2P ALFE ALFJ ALFP ALGP ALUE ALUP AR8E AREE AROP ASLE ASLF AW2E AW2P AWRE AWRP AX4E AX4J AX4P AXPD AXPE AXPF AXPI AXPJ AXPP AXPS AXVD AXVE AXVF AXVI AXVJ AXVP AXVS AZCE B24E B24P BDBE BDBP BDKJ BFTJ BGWJ BKAJ BLJJ BLJK BLVJ BPED BPEE BPEF BPEI BPEJ BPEP BPES BPGD BPGE BPGF BPGI BPGJ BPGP BPGS BPRD BPRE BPRF BPRI BPRJ BPRP BPRS BR4J BSME BUHJ KHPJ KYGE KYGJ KYGP PEAJ PSAE PSAJ RZWE RZWJ RZWP TCHK U32E U32J U32P U33J U3IE U3IJ U3IP V49E V49J V49P".split(" "));
@@ -257,7 +262,7 @@
     return out;
   }
 
-  // src/js/idb.js
+  // src/idb.js
   var idb = /* @__PURE__ */ (() => {
     let p = null;
     function open() {
@@ -297,7 +302,7 @@
     };
   })();
 
-  // src/js/device.js
+  // src/device.js
   function guessDevice() {
     const ua = navigator.userAgent || "";
     if (/SmartTV|SMART-TV|Tizen|Web0S|webOS|AFT[A-Z]|BRAVIA|GoogleTV|Android TV|\bTV\b/i.test(ua)) return "TV";
@@ -312,7 +317,7 @@
   }
   var device = { name: ls.get("cartucho.device") || guessDevice() };
 
-  // src/js/cast/tv.js
+  // src/cast/tv.js
   var tvScreen = window.__tvScreen = {
     active: false,
     /** @type {string | null} the pairing code shown on screen */
@@ -852,7 +857,7 @@
     if (k) keysDown.delete(k);
   });
 
-  // src/js/cast/common.js
+  // src/cast/common.js
   async function sealJson(key, obj) {
     const raw = utf8.enc(JSON.stringify(obj));
     const gz = new Uint8Array(await new Response(new Blob([raw]).stream().pipeThrough(new CompressionStream("gzip"))).arrayBuffer());
@@ -966,6 +971,8 @@
       const b = (i) => !!(pad.buttons[i] && pad.buttons[i].pressed), ax = pad.axes || [];
       s.A = b(1);
       s.B = b(0);
+      s.X = b(3);
+      s.Y = b(2);
       s.L = b(4) || b(6);
       s.R = b(5) || b(7);
       s.SELECT = b(8);
@@ -983,7 +990,7 @@
     return mask;
   }
 
-  // src/js/cast/frame-worker.js
+  // src/cast/frame-worker.js
   var frameWorkerSource = () => {
     const worker = self;
     let encoder = null, reader = null, running = false, codec = "jpeg";
@@ -1084,7 +1091,7 @@
     };
   };
 
-  // src/js/player/perf.js
+  // src/player/perf.js
   var PERF_KEY = "cartucho.perf";
   var perf = {
     mode: ls.get(PERF_KEY + ".mode") === "light" ? "light" : "auto",
@@ -1190,7 +1197,7 @@
     ls.set("cartucho.device", device.name);
   });
 
-  // src/js/cast/phone.js
+  // src/cast/phone.js
   var cast = window.__cast = {
     /** @type {RTCPeerConnection | null} */
     pc: null,
@@ -1537,7 +1544,8 @@
       } else if (data.fallback) cast.frameCodec = data.fallback;
       if (data.encMs != null) lag.enc.push(data.encMs);
     };
-    worker.postMessage({ cmd: "start", readable, codec: cast.frameCodec, width: STREAM_W, height: STREAM_H, bitrate: 12e5 }, [readable]);
+    const emu = player.emu || {};
+    worker.postMessage({ cmd: "start", readable, codec: cast.frameCodec, width: emu.streamW || STREAM_W, height: emu.streamH || STREAM_H, bitrate: 12e5 }, [readable]);
     cast.requestKey = () => worker.postMessage({ cmd: "key" });
     cast.pumpStop = () => {
       worker.postMessage({ cmd: "stop" });
@@ -1556,9 +1564,10 @@
     });
   }
   async function legacyJpegPump(track, dc) {
+    const emu = player.emu || {}, sw = emu.streamW || STREAM_W, sh = emu.streamH || STREAM_H;
     const off = document.createElement("canvas");
-    off.width = STREAM_W;
-    off.height = STREAM_H;
+    off.width = sw;
+    off.height = sh;
     const g = off.getContext("2d", { alpha: false });
     const grab = new ImageCapture(track);
     let on = true;
@@ -1568,7 +1577,7 @@
     while (on && track.readyState === "live") {
       try {
         const bmp = await grab.grabFrame();
-        g.drawImage(bmp, 0, 0, STREAM_W, STREAM_H);
+        g.drawImage(bmp, 0, 0, sw, sh);
         const blob = await new Promise((r) => off.toBlob(r, "image/jpeg", 0.85));
         if (blob && dc.readyState === "open" && dc.bufferedAmount < 2e5) {
           dc.send(packFrame(await blob.arrayBuffer(), true, 0));
@@ -1678,7 +1687,7 @@
     }, 2e3);
   }
 
-  // src/js/ui/pickers.js
+  // src/ui/pickers.js
   function pickRom() {
     const i = $("#romInput");
     i.value = "";
@@ -1699,9 +1708,9 @@
       let bytes = new Uint8Array(await f.arrayBuffer());
       let name = f.name;
       if (/\.zip$/i.test(name) || bytes[0] === 80 && bytes[1] === 75) {
-        const inner = await unzipRom(bytes);
+        const inner = await unzipRom(bytes, /\.(gba|gbc|gb|nds)$/i);
         if (!inner) {
-          toast("Não achei uma ROM de GBA ou GB dentro desse .zip.");
+          toast("Não achei uma ROM de GBA, GB ou DS dentro desse .zip.");
           return;
         }
         bytes = inner.bytes;
@@ -1709,10 +1718,10 @@
       }
       const info = parseRom(bytes, name);
       if (!info) {
-        toast("Esse arquivo não parece uma ROM de GBA ou GB.");
+        toast("Esse arquivo não parece uma ROM de GBA, GB ou DS.");
         return;
       }
-      const ext = info.system === "gba" ? "gba" : /\.gbc$/i.test(name) ? "gbc" : "gb";
+      const ext = info.system === "gba" || info.system === "nds" ? info.system : /\.gbc$/i.test(name) ? "gbc" : "gb";
       const id = await identifyRom(bytes, info, name).catch(() => ({ title: info.title, cover: null }));
       await idb.put("roms", info.key, { ...info, title: id.title, cover: id.cover, ident: true, ext, fileName: name, size: bytes.length, addedAt: Date.now(), blob: new Blob([bytes]) });
       await loadRoms();
@@ -1730,8 +1739,9 @@
     savTarget = null;
     try {
       const sav = new Uint8Array(await f.arrayBuffer());
-      if (!sav.length || sav.length > 160 * 1024) {
-        toast("Esse arquivo não parece um save de GBA (tamanho estranho).");
+      const maxSav = meta && meta.system === "nds" ? 33 * 1024 * 1024 : 160 * 1024;
+      if (!sav.length || sav.length > maxSav) {
+        toast("Esse arquivo não parece um save desse jogo (tamanho estranho).");
         return;
       }
       const existing = cloud.docs.get(key);
@@ -1752,7 +1762,7 @@
     }
   });
 
-  // src/js/ui/rename-cover.js
+  // src/ui/rename-cover.js
   async function setGameMeta(key, patch) {
     const rom = roms.get(key);
     if (rom) {
@@ -1825,7 +1835,7 @@
     }
   });
 
-  // src/js/ui/sheets.js
+  // src/ui/sheets.js
   var sheetKey = null;
   function openSheet(id) {
     $("#sheetScrim").hidden = false;
@@ -1910,7 +1920,7 @@
     );
   }
 
-  // src/js/ui/screens.js
+  // src/ui/screens.js
   var localOnly = () => ls.get("cartucho.localOnly") === "1";
   function showWelcome() {
     closeSheets();
@@ -1955,7 +1965,7 @@
     if (sheetKey) fillGameSheet(sheetKey);
   }
 
-  // src/js/ui/dialogs.js
+  // src/ui/dialogs.js
   function dialog(title, text, buttons) {
     return new Promise((resolve) => {
       const root = $("#dialogRoot");
@@ -2026,7 +2036,7 @@
     }
   }
 
-  // src/js/diag.js
+  // src/diag.js
   var DIAG_STEPS = [
     { id: "pad", label: "Controle na tela, horizontal", pad: "h" },
     { id: "padv", label: "Controle na tela, vertical", pad: "v" },
@@ -2285,7 +2295,7 @@
     toast("Configurações do emulador restauradas");
   });
 
-  // src/js/cast/pad.js
+  // src/cast/pad.js
   var padTouches = /* @__PURE__ */ new Map();
   var padState = { rot: 0, geo: null, shownMask: -1, shownOver: "", shownDir: "" };
   function padGeometry() {
@@ -2293,6 +2303,7 @@
     const geo = [];
     for (const n of $$("#pad [data-btn], #pad .pad-dpad")) {
       const r = n.getBoundingClientRect();
+      if (!r.width || !r.height) continue;
       geo.push({
         id: n.classList.contains("pad-dpad") ? "dpad" : n.dataset.btn,
         round: n.classList.contains("pad-face"),
@@ -2402,15 +2413,14 @@
       const pl = $("#player"), bar = $(".pbar").getBoundingClientRect();
       const availH = innerHeight - bar.bottom, availW = innerWidth;
       const upright = availH > availW;
+      const ar = player.isDs && player.emu && player.emu.aspect || 1.5;
       let gw, gh2;
       if (upright) {
-        gw = availW;
-        gh2 = Math.min(availW / 1.5, availH * 0.55);
-        gw = gh2 * 1.5;
+        gh2 = Math.min(availW / ar, availH * (player.isDs ? 0.5 : 0.55));
+        gw = gh2 * ar;
       } else {
-        gh2 = availH;
-        gw = Math.min(availH * 1.5, availW * 0.62);
-        gh2 = gw / 1.5;
+        gw = Math.min(availH * ar, availW * 0.62);
+        gh2 = gw / ar;
       }
       for (const n of [pad, pl]) {
         n.classList.toggle("port", upright);
@@ -2442,6 +2452,7 @@
     });
   }
   window.addEventListener("resize", layoutPad);
+  window.addEventListener("ds-layout", layoutPad);
   if (window.ResizeObserver) new ResizeObserver(() => {
     if (padState.mode === "local") layoutPad();
   }).observe(document.documentElement);
@@ -2506,10 +2517,11 @@
     padTouches.clear();
     cast.localMask = 0;
     applyInput();
-    if (on) padState.mode = "cast";
+    if (on) padState.mode = player.isDs ? "local" : "cast";
     else padState.mode = (player.key || padState.forceLocal) && touchDevice() ? "local" : "off";
     pad.hidden = padState.mode === "off";
     pad.classList.toggle("local", padState.mode === "local");
+    pad.classList.toggle("ds", !!player.isDs);
     $("#player").classList.toggle("casting", padState.mode === "cast");
     $("#player").classList.toggle("touch-pad", padState.mode === "local");
     layoutPad();
@@ -2555,7 +2567,627 @@
     notice("TV pronta! Escolha o jogo: ele roda aqui e aparece na TV. Este celular vira o controle.");
   }
 
-  // src/js/player/player.js
+  // src/ds/ds-emu.js
+  var FPS = 59.8261;
+  var FRAME_MS = 1e3 / FPS;
+  var W = 256;
+  var H = 192;
+  var RETRO_TO_DS = { 0: 6, 1: 8, 2: 4, 3: 5, 4: 3, 5: 2, 6: 1, 7: 0, 8: 7, 9: 9, 10: 10, 11: 11 };
+  var KEYMAP2 = {
+    ArrowRight: 0,
+    ArrowLeft: 1,
+    ArrowDown: 2,
+    ArrowUp: 3,
+    ShiftRight: 4,
+    ShiftLeft: 4,
+    Enter: 5,
+    KeyZ: 6,
+    KeyX: 7,
+    KeyA: 8,
+    KeyS: 9,
+    KeyQ: 10,
+    KeyW: 11,
+    KeyM: 14
+  };
+  var PADMAP = [[0, 6], [1, 7], [2, 8], [3, 9], [4, 10], [5, 11], [8, 4], [9, 5], [12, 3], [13, 2], [14, 1], [15, 0]];
+  var LEVELS = [
+    { latency: 3200, interp: 1, video30: false, skip: 3, name: "qualidade" },
+    { latency: 4800, interp: 0, video30: false, skip: 3, name: "leve" },
+    { latency: 4800, interp: 0, video30: true, skip: 3, name: "vídeo a 30 fps" },
+    { latency: 6400, interp: 0, video30: true, skip: 5, name: "máximo desempenho" }
+  ];
+  var PERF_MODES = ["auto", "60", "30"];
+  var PERF_LABEL = { auto: "Automático", 60: "60 fps", 30: "Vídeo a 30 fps" };
+  var LAYOUT_LABEL = { auto: "Automático", both: "As duas", side: "Lado a lado", top: "Só a de cima", bottom: "Só a de baixo" };
+  var LOCAL_LAYOUTS = ["auto", "both", "top", "bottom"];
+  var CAST_LAYOUTS = ["top", "both", "side"];
+  var ds = {
+    local: ls.get("cartucho.ds.local") || "auto",
+    cast: ls.get("cartucho.ds.cast") || "top",
+    perf: ls.get("cartucho.ds.perf") || "auto",
+    level: Math.min(LEVELS.length - 1, Number(ls.get("cartucho.ds.level") || 1))
+  };
+  var WORKLET_SRC = `
+class DSOut extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    this.cap = 1 << 15; this.mask = this.cap - 1;
+    this.L = new Float32Array(this.cap); this.R = new Float32Array(this.cap);
+    this.w = 0; this.rp = 0; this.target = 4800; this.playing = false;
+    this.lastL = 0; this.lastR = 0; this.underruns = 0; this.reportIn = 0;
+    this.port.onmessage = (e) => {
+      const m = e.data;
+      if (m.t === "s") this.push(m.d);
+      else if (m.t === "target") this.target = m.v;
+      else if (m.t === "reset") { this.rp = this.w; this.playing = false; }
+    };
+  }
+  push(d) {
+    const n = d.length >> 1;
+    for (let i = 0; i < n; i++) { const j = (this.w + i) & this.mask; this.L[j] = d[i * 2]; this.R[j] = d[i * 2 + 1]; }
+    this.w += n;
+    if (this.w - this.rp > this.target * 4) this.rp = this.w - this.target;
+  }
+  process(_, outputs) {
+    const out = outputs[0], oL = out[0], oR = out[1] || out[0], len = oL.length;
+    const fill = this.w - this.rp;
+    if (!this.playing && fill >= this.target) this.playing = true;
+    if (this.playing) {
+      let dev = (fill - this.target) / this.target;
+      if (dev > 1) dev = 1; else if (dev < -1) dev = -1;
+      const ratio = 1 + dev * 0.005;
+      for (let i = 0; i < len; i++) {
+        if (this.w - this.rp < 2) {
+          this.lastL *= 0.995; this.lastR *= 0.995;
+          oL[i] = this.lastL; if (oR !== oL) oR[i] = this.lastR;
+          if (this.playing) { this.playing = false; this.underruns++; }
+          continue;
+        }
+        const i0 = Math.floor(this.rp), f = this.rp - i0, a = i0 & this.mask, b = (i0 + 1) & this.mask;
+        const l = this.L[a] + (this.L[b] - this.L[a]) * f, r = this.R[a] + (this.R[b] - this.R[a]) * f;
+        oL[i] = l; if (oR !== oL) oR[i] = r;
+        this.lastL = l; this.lastR = r;
+        this.rp += ratio;
+      }
+    } else {
+      for (let i = 0; i < len; i++) { this.lastL *= 0.995; this.lastR *= 0.995; oL[i] = this.lastL; if (oR !== oL) oR[i] = this.lastR; }
+    }
+    if (++this.reportIn >= 8) { this.reportIn = 0; this.port.postMessage({ fill: this.w - this.rp, underruns: this.underruns }); }
+    return true;
+  }
+}
+registerProcessor("ds-out", DSOut);
+`;
+  var corePromise = null;
+  function loadCore() {
+    if (corePromise) return corePromise;
+    const simd = WebAssembly.validate(new Uint8Array([
+      0,
+      97,
+      115,
+      109,
+      1,
+      0,
+      0,
+      0,
+      1,
+      5,
+      1,
+      96,
+      0,
+      1,
+      123,
+      3,
+      2,
+      1,
+      0,
+      10,
+      10,
+      1,
+      8,
+      0,
+      65,
+      0,
+      253,
+      15,
+      253,
+      98,
+      11
+    ]));
+    const name = simd ? "nds" : "nds-nosimd";
+    corePromise = new Promise((resolve, reject) => {
+      const w = window;
+      w.wasmReady = () => resolve(w.Module);
+      w.Module = {
+        locateFile: (p) => "ds/" + p.replace(/^nds(-nosimd)?\.wasm$/, name + ".wasm"),
+        print: () => {
+        },
+        printErr: (t) => console.warn("[ds]", t),
+        onAbort: (r) => reject(new Error("core: " + r))
+      };
+      const s = el("script", { src: "ds/" + name + ".js" });
+      s.onerror = () => reject(new Error("ds/" + name + ".js"));
+      document.body.append(s);
+    });
+    corePromise.catch(() => {
+      corePromise = null;
+    });
+    return corePromise;
+  }
+  var audio = {
+    ctx: null,
+    node: null,
+    gain: null,
+    ready: false,
+    fill: 0,
+    fillAt: 0,
+    pushed: 0,
+    underruns: 0,
+    target: 4800,
+    async init() {
+      if (this.ctx) return;
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      try {
+        this.ctx = new AC({ sampleRate: 48e3, latencyHint: "interactive" });
+      } catch (e) {
+        this.ctx = new AC({ latencyHint: "interactive" });
+      }
+      if (!this.ctx.audioWorklet) return;
+      const url = URL.createObjectURL(new Blob([WORKLET_SRC], { type: "application/javascript" }));
+      try {
+        await this.ctx.audioWorklet.addModule(url);
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+      this.node = new AudioWorkletNode(this.ctx, "ds-out", { outputChannelCount: [2] });
+      this.node.port.onmessage = (e) => {
+        this.fill = e.data.fill;
+        this.fillAt = performance.now();
+        this.pushed = 0;
+        this.underruns = e.data.underruns;
+      };
+      this.gain = this.ctx.createGain();
+      this.node.connect(this.gain);
+      this.gain.connect(this.ctx.destination);
+      this.setTarget(this.target);
+      this.ready = true;
+    },
+    rate() {
+      return this.ctx ? Math.min(48e3, this.ctx.sampleRate) : 48e3;
+    },
+    setTarget(v) {
+      this.target = v;
+      if (this.node) this.node.port.postMessage({ t: "target", v });
+    },
+    reset() {
+      if (this.node) this.node.port.postMessage({ t: "reset" });
+      this.fill = 0;
+      this.pushed = 0;
+    },
+    level() {
+      if (!this.ready) return this.target;
+      return this.fill + this.pushed - (performance.now() - this.fillAt) * this.rate() / 1e3;
+    },
+    push(f32) {
+      if (!this.node) return;
+      this.pushed += f32.length >> 1;
+      this.node.port.postMessage({ t: "s", d: f32 }, [f32.buffer]);
+    },
+    resume() {
+      if (this.ctx && this.ctx.state !== "running") this.ctx.resume().catch(() => {
+      });
+    }
+  };
+  for (const ev of ["pointerdown", "keydown", "touchend"]) window.addEventListener(ev, () => audio.resume(), true);
+  async function createDsEmulator(romBytes, gameName) {
+    let M;
+    try {
+      [M] = await Promise.all([loadCore(), audio.init().catch(() => {
+      })]);
+    } catch (e) {
+      console.warn(e);
+      return null;
+    }
+    const box = $("#game");
+    box.replaceChildren();
+    box.classList.add("ds-game");
+    const view = el("canvas", { class: "ds-view", width: String(W), height: String(H * 2), "aria-label": "Telas do DS" });
+    box.append(view);
+    const vctx = view.getContext("2d", { alpha: false });
+    const castCanvas = el("canvas", { class: "ds-cast", width: String(W), height: String(H), "aria-hidden": "true" });
+    document.body.append(castCanvas);
+    const cctx = castCanvas.getContext("2d", { alpha: false });
+    const fb = document.createElement("canvas");
+    fb.width = W;
+    fb.height = H * 2;
+    const fctx = fb.getContext("2d", { alpha: false });
+    const fbPtr = M._getSymbol(4), audioPtr = M._getSymbol(6);
+    let heapBuf = null, img = null;
+    const romLen = romBytes.length;
+    let pendingSav = null;
+    const listeners = {};
+    const emu = {
+      started: false,
+      paused: false,
+      muted: false,
+      volume: 1,
+      isDs: true,
+      canvas: castCanvas,
+      streamW: W,
+      streamH: H,
+      keys: 0,
+      padKeys: 0,
+      kbKeys: 0,
+      gpKeys: 0,
+      touch: false,
+      tx: 0,
+      ty: 0,
+      turbo: 1,
+      frames: 0,
+      on(ev, cb) {
+        if (ev === "start" && emu.started) setTimeout(cb, 0);
+        else (listeners[ev] = listeners[ev] || []).push(cb);
+      },
+      play() {
+        emu.paused = false;
+        audio.reset();
+        acc = 0;
+      },
+      pause() {
+        emu.paused = true;
+      },
+      setVolume(v) {
+        emu.volume = v;
+        if (audio.gain) audio.gain.gain.value = v;
+      },
+      destroy
+    };
+    const gm = emu.gameManager = {
+      getSaveFile() {
+        const size = M._savGetSize();
+        if (size <= 0) return new Uint8Array(0);
+        const p2 = M._savGetPointer(0);
+        return M.HEAPU8.slice(p2, p2 + size);
+      },
+      writeSav(u8) {
+        pendingSav = u8 && u8.length ? new Uint8Array(u8) : null;
+      },
+      loadSaveFiles() {
+      },
+      restart() {
+        if (pendingSav) {
+          const p2 = M._savGetPointer(pendingSav.length);
+          M.HEAPU8.set(pendingSav, p2);
+          pendingSav = null;
+        }
+        bootRom();
+      },
+      getState() {
+        const size = M._stateSave();
+        if (size <= 0) throw new Error("state");
+        const p2 = M._stateGetPointer(0);
+        return M.HEAPU8.slice(p2, p2 + size);
+      },
+      loadState(u8) {
+        const p2 = M._stateGetPointer(u8.length);
+        M.HEAPU8.set(u8, p2);
+        if (M._stateLoad() !== 0) throw new Error("state");
+        audio.reset();
+      },
+      getFrameNum() {
+        return emu.frames;
+      },
+      simulateInput(_player, index, value) {
+        const bit = RETRO_TO_DS[index];
+        if (bit == null) return;
+        if (value) emu.padKeys |= 1 << bit;
+        else emu.padKeys &= ~(1 << bit);
+      },
+      setFastForwardRatio(r) {
+        emu.ffRatio = Math.max(1, Math.min(4, Number(r) || 1));
+      },
+      toggleFastForward(on) {
+        emu.turbo = on ? emu.ffRatio || 2 : 1;
+        if (!on) {
+          audio.reset();
+          acc = 0;
+        }
+      },
+      setVariable() {
+      }
+    };
+    function bootRom() {
+      M._emuSetOpt(0, 1);
+      M._emuSetOpt(1, cfg.interp);
+      const r = M._loadROM(romLen);
+      if (r !== 0) throw new Error(r === -1001 ? "rom-encrypted" : "rom " + r);
+      M._audioSetup(audio.rate());
+      M._savUpdateChangeFlag();
+      audio.reset();
+      acc = 0;
+    }
+    const cfg = { latency: 4800, interp: 0, video30: false, skip: 3 };
+    const tune = { calm: 0, bad: 0, lastUnder: 0 };
+    function applyCfg() {
+      if (ds.perf === "auto") Object.assign(cfg, LEVELS[ds.level]);
+      else Object.assign(cfg, LEVELS[ds.perf === "30" ? 2 : 0], ds.perf === "30" ? {} : { latency: 3200 });
+      audio.setTarget(cfg.latency);
+      M._emuSetOpt(1, cfg.interp);
+    }
+    emu.applyCfg = applyCfg;
+    function autoTune(fps, load) {
+      if (ds.perf !== "auto" || emu.turbo > 1 || emu.paused) return;
+      const under = audio.underruns - tune.lastUnder;
+      tune.lastUnder = audio.underruns;
+      const struggling = load > 80 || fps < 57 || under > 0;
+      tune.bad = struggling ? tune.bad + 1 : 0;
+      if ((under > 0 || tune.bad >= 2) && ds.level < LEVELS.length - 1) {
+        ds.level++;
+        tune.calm = tune.bad = 0;
+        ls.set("cartucho.ds.level", String(ds.level));
+        applyCfg();
+        return;
+      }
+      tune.calm = !struggling && load < 45 ? tune.calm + 1 : 0;
+      if (tune.calm >= 15 && ds.level > 0) {
+        ds.level--;
+        tune.calm = 0;
+        ls.set("cartucho.ds.level", String(ds.level));
+        applyCfg();
+      }
+    }
+    function frameImage() {
+      const buf = M.HEAPU8.buffer;
+      if (buf !== heapBuf) {
+        heapBuf = buf;
+        img = new ImageData(new Uint8ClampedArray(buf, fbPtr, W * H * 2 * 4), W, H * 2);
+      }
+      return img;
+    }
+    const casting = () => !!window.__castCap;
+    function localLayout() {
+      if (casting()) return ds.cast === "bottom" ? "top" : "bottom";
+      if (ds.local !== "auto") return ds.local;
+      return innerWidth > innerHeight * 1.15 ? "side" : "both";
+    }
+    function sizeFor(layout) {
+      return layout === "both" ? [W, H * 2] : layout === "side" ? [W * 2, H] : [W, H];
+    }
+    function blit(ctx, layout) {
+      if (layout === "both") ctx.drawImage(fb, 0, 0);
+      else if (layout === "side") {
+        ctx.drawImage(fb, 0, 0, W, H, 0, 0, W, H);
+        ctx.drawImage(fb, 0, H, W, H, W, 0, W, H);
+      } else ctx.drawImage(fb, 0, layout === "top" ? 0 : H, W, H, 0, 0, W, H);
+    }
+    let shownLocal = "", shownCast = "";
+    function syncSizes() {
+      const lo = localLayout();
+      if (lo !== shownLocal) {
+        shownLocal = lo;
+        const [w, h] = sizeFor(lo);
+        view.width = w;
+        view.height = h;
+        view.dataset.layout = lo;
+        emu.aspect = w / h;
+        window.dispatchEvent(new Event("ds-layout"));
+      }
+      if (casting()) {
+        const [w, h] = sizeFor(ds.cast);
+        if (ds.cast !== shownCast || castCanvas.width !== w) {
+          shownCast = ds.cast;
+          castCanvas.width = w;
+          castCanvas.height = h;
+          emu.streamW = w;
+          emu.streamH = h;
+        }
+      }
+    }
+    emu.localLayout = localLayout;
+    emu.relayout = () => {
+      shownLocal = "";
+      shownCast = "";
+      syncSizes();
+      draw();
+    };
+    function draw() {
+      fctx.putImageData(frameImage(), 0, 0);
+      blit(vctx, shownLocal);
+      if (casting()) blit(cctx, ds.cast);
+    }
+    let touchId = null;
+    function touchAt(e) {
+      const b = view.getBoundingClientRect();
+      const ar = view.width / view.height;
+      const r = { left: b.left, top: b.top, width: b.width, height: b.height };
+      if (b.width / b.height > ar) {
+        r.width = b.height * ar;
+        r.left += (b.width - r.width) / 2;
+      } else {
+        r.height = b.width / ar;
+        r.top += (b.height - r.height) / 2;
+      }
+      const lo = shownLocal;
+      const area = lo === "both" ? [0, 0.5, 1, 0.5] : lo === "side" ? [0.5, 0, 0.5, 1] : lo === "bottom" ? [0, 0, 1, 1] : null;
+      if (!area) return false;
+      const fx = (e.clientX - r.left) / r.width, fy = (e.clientY - r.top) / r.height;
+      const x = (fx - area[0]) / area[2], y = (fy - area[1]) / area[3];
+      if (touchId === null && (x < 0 || x > 1 || y < 0 || y > 1)) return false;
+      emu.tx = Math.max(0, Math.min(255, Math.floor(x * W)));
+      emu.ty = Math.max(0, Math.min(191, Math.floor(y * H)));
+      return true;
+    }
+    view.addEventListener("pointerdown", (e) => {
+      if (!touchAt(e)) return;
+      touchId = e.pointerId;
+      try {
+        view.setPointerCapture(e.pointerId);
+      } catch (x) {
+      }
+      emu.touch = true;
+      e.preventDefault();
+    });
+    view.addEventListener("pointermove", (e) => {
+      if (e.pointerId === touchId) touchAt(e);
+    });
+    const touchUp = (e) => {
+      if (e.pointerId !== touchId) return;
+      touchId = null;
+      emu.touch = false;
+    };
+    view.addEventListener("pointerup", touchUp);
+    view.addEventListener("pointercancel", touchUp);
+    view.addEventListener("contextmenu", (e) => e.preventDefault());
+    const onKey = (down) => (e) => {
+      if (!(e.code in KEYMAP2) || e.target.closest && e.target.closest("input, textarea")) return;
+      const bit = 1 << KEYMAP2[e.code];
+      if (down) emu.kbKeys |= bit;
+      else emu.kbKeys &= ~bit;
+      e.preventDefault();
+    };
+    const kd = onKey(true), ku = onKey(false);
+    window.addEventListener("keydown", kd);
+    window.addEventListener("keyup", ku);
+    function pollGamepad() {
+      if (!navigator.getGamepads) return;
+      let k = 0;
+      for (const gp of navigator.getGamepads()) {
+        if (!gp) continue;
+        for (const [b, bit] of PADMAP) if (gp.buttons[b] && gp.buttons[b].pressed) k |= 1 << bit;
+        const ax = gp.axes[0] || 0, ay = gp.axes[1] || 0;
+        if (ax > 0.5) k |= 1;
+        else if (ax < -0.5) k |= 2;
+        if (ay > 0.5) k |= 4;
+        else if (ay < -0.5) k |= 8;
+      }
+      emu.gpKeys = k;
+    }
+    let acc = 0, last = performance.now(), raf = 0, alive = true, toggle30 = 0;
+    let stF = 0, stBusy = 0, stT0 = performance.now();
+    function drainAudio(push) {
+      const n = M._audioDrain(16384);
+      if (n <= 0 || !push) return;
+      const src = new Int16Array(M.HEAPU8.buffer, audioPtr, n * 2);
+      const out = new Float32Array(n * 2);
+      for (let i = 0; i < out.length; i++) out[i] = src[i] * (1 / 32768);
+      audio.push(out);
+    }
+    function tick(now) {
+      if (!alive) return;
+      raf = requestAnimationFrame(tick);
+      pollGamepad();
+      if (!emu.started || emu.paused || document.visibilityState !== "visible") {
+        last = now;
+        return;
+      }
+      let dt = now - last;
+      last = now;
+      if (dt > 200) dt = 200;
+      const t0 = performance.now();
+      let n;
+      if (emu.turbo > 1) n = emu.turbo;
+      else {
+        acc += dt;
+        n = Math.floor(acc / FRAME_MS);
+        acc -= n * FRAME_MS;
+        if (audio.ready) {
+          const lvl = audio.level();
+          if (lvl < cfg.latency * 0.5) n += 1;
+          else if (lvl > cfg.latency * 2 && n > 0) n -= 1;
+        }
+        n = Math.min(n, cfg.skip);
+      }
+      const keys = emu.padKeys | emu.kbKeys | emu.gpKeys;
+      let drew = false;
+      for (let i = 0; i < n; i++) {
+        const want = i === n - 1 && (!cfg.video30 || (++toggle30 & 1) === 0);
+        M._runFrame(want ? 1 : 0, keys, emu.touch ? 1 : 0, emu.tx, emu.ty);
+        drainAudio(emu.turbo === 1 && !emu.muted);
+        emu.frames++;
+        stF++;
+        if (want) drew = true;
+      }
+      if (drew) {
+        syncSizes();
+        draw();
+      }
+      stBusy += performance.now() - t0;
+      if (now - stT0 >= 1e3) {
+        const secs = (now - stT0) / 1e3;
+        autoTune(stF / secs, stBusy / (now - stT0) * 100);
+        stF = 0;
+        stBusy = 0;
+        stT0 = now;
+      }
+    }
+    function destroy() {
+      alive = false;
+      cancelAnimationFrame(raf);
+      window.removeEventListener("keydown", kd);
+      window.removeEventListener("keyup", ku);
+      castCanvas.remove();
+    }
+    const p = M._prepareRomBuffer(romLen);
+    if (!p) return null;
+    M.HEAPU8.set(romBytes, p);
+    M._savGetPointer(-1);
+    applyCfg();
+    try {
+      bootRom();
+    } catch (e) {
+      toast(String(e.message) === "rom-encrypted" ? 'Essa ROM de DS está criptografada. Use uma versão "decrypted".' : "Não deu para abrir essa ROM de DS.", 5e3);
+      destroy();
+      return null;
+    }
+    syncSizes();
+    emu.started = true;
+    raf = requestAnimationFrame(tick);
+    setTimeout(() => {
+      for (const cb of listeners.start || []) cb();
+    }, 0);
+    return emu;
+  }
+  function nextOf(list, cur) {
+    return list[(list.indexOf(cur) + 1) % list.length];
+  }
+  function dsMenuItems(emu, refresh) {
+    return [
+      {
+        icon: "sliders",
+        label: "Telas aqui: " + LAYOUT_LABEL[ds.local],
+        fn: () => {
+          ds.local = nextOf(LOCAL_LAYOUTS, ds.local);
+          ls.set("cartucho.ds.local", ds.local);
+          emu.relayout();
+          refresh();
+        }
+      },
+      {
+        icon: "sliders",
+        label: "Telas na TV: " + LAYOUT_LABEL[ds.cast],
+        fn: () => {
+          ds.cast = nextOf(CAST_LAYOUTS, ds.cast);
+          ls.set("cartucho.ds.cast", ds.cast);
+          emu.relayout();
+          refresh();
+        }
+      },
+      {
+        icon: "sliders",
+        label: "Desempenho: " + PERF_LABEL[ds.perf] + (ds.perf === "auto" ? ` (${LEVELS[ds.level].name})` : ""),
+        fn: () => {
+          ds.perf = nextOf(PERF_MODES, ds.perf);
+          ls.set("cartucho.ds.perf", ds.perf);
+          emu.applyCfg();
+          refresh();
+        }
+      }
+    ];
+  }
+  var dsStatesOk = false;
+
+  // src/player/player.js
   var player = window.__cartucho = {
     key: null,
     meta: null,
@@ -2605,6 +3237,7 @@
     return gm.getSaveFilePath();
   }
   function writeSav(gm, sav) {
+    if (gm.writeSav) return gm.writeSav(sav);
     const path = savPath(gm);
     const parts = path.split("/");
     let cp = "";
@@ -2927,7 +3560,8 @@
     if (!rom) return;
     const start = await chooseStartSave(key);
     if (start === null) return;
-    const resume = await findResumeState(key, start);
+    const isDs = rom.system === "nds";
+    const resume = isDs && !dsStatesOk ? null : await findResumeState(key, start);
     player.key = key;
     player.meta = { title: rom.title, system: rom.system, code: rom.code };
     player.lastSha = start.upload ? null : start.sha;
@@ -2940,9 +3574,16 @@
       document.title = rom.title + " · Cartuchin";
     } catch (e) {
     }
-    const romBytes = fixSaveChip(new Uint8Array(await rom.blob.arrayBuffer()));
-    const file = new File([romBytes], rom.code ? rom.code + "." + rom.ext : "jogo." + rom.ext);
-    const emu = await createEmulator(file, key, coreOptions());
+    let emu;
+    if (isDs) {
+      emu = await createDsEmulator(new Uint8Array(await rom.blob.arrayBuffer()), key);
+    } else {
+      const romBytes = fixSaveChip(new Uint8Array(await rom.blob.arrayBuffer()));
+      const file = new File([romBytes], rom.code ? rom.code + "." + rom.ext : "jogo." + rom.ext);
+      emu = await createEmulator(file, key, coreOptions());
+    }
+    player.isDs = isDs;
+    $("#player").classList.toggle("ds", isDs);
     if (!emu) {
       toast("Não deu para carregar o emulador. Confira a internet.");
       $("#player").hidden = true;
@@ -3085,7 +3726,7 @@
     return realFetch(input, init);
   };
 
-  // src/js/library.js
+  // src/library.js
   var roms = /* @__PURE__ */ new Map();
   async function loadRoms() {
     roms = /* @__PURE__ */ new Map();
@@ -3131,7 +3772,7 @@
     return t;
   }
   function cleanTitle(raw) {
-    let t = (raw || "").replace(/\.(gba|gbc|gb|zip)$/i, "").replace(/_+/g, " ").replace(/\s*[([][^)\]]*[)\]]/g, " ");
+    let t = (raw || "").replace(/\.(gba|gbc|gb|nds|zip)$/i, "").replace(/_+/g, " ").replace(/\s*[([][^)\]]*[)\]]/g, " ");
     t = t.replace(/\s+(v|ver|version|vesion|versao|versão|rev)\.?\s*\d[\d.]*\s*$/i, "").replace(/\s+v?\d+(\.\d+)+\s*$/i, "");
     t = t.replace(/\s+/g, " ").trim();
     const letters = t.replace(/[^A-Za-z]/g, "");
@@ -3141,7 +3782,7 @@
   var normTitle = (t) => t.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/\(hack\)|\bpokemon\b|\bversion\b/g, "").replace(/[^a-z0-9]/g, "");
   async function identifyRom(bytes, info, fileName) {
     const crc = crc32(bytes).toString(16).toUpperCase().padStart(8, "0");
-    const systems = info.system === "gba" ? ["gba"] : ["gbc", "gb"];
+    const systems = info.system === "gba" ? ["gba"] : info.system === "nds" ? [] : ["gbc", "gb"];
     for (const sys of systems) {
       const db = await gameDb(sys);
       if (!db) continue;
@@ -3197,7 +3838,7 @@
     const coverRev = ix && ix.coverRev || rom && rom.coverRev || "";
     const system = rom && rom.system || save && save.system || crom && crom.system || "gba";
     const code = rom && rom.code || save && save.code || crom && crom.code || "";
-    return { key, rom, save, crom, ix, title, cover, coverRev, system, code, sys: system === "gba" ? "GBA" : rom && rom.ext === "gbc" ? "GBC" : "GB", playable: !!(rom || crom) };
+    return { key, rom, save, crom, ix, title, cover, coverRev, system, code, sys: system === "gba" ? "GBA" : system === "nds" ? "DS" : rom && rom.ext === "gbc" ? "GBC" : "GB", playable: !!(rom || crom) };
   }
   var coverUrls = /* @__PURE__ */ new Map();
   var coverLoading = /* @__PURE__ */ new Set();
@@ -3295,7 +3936,7 @@
     sec.hidden = false;
   }
 
-  // src/js/connect.js
+  // src/connect.js
   function dataRepoName() {
     const seg = location.pathname.split("/").filter(Boolean)[0];
     return (seg && !/\.html?$/.test(seg) ? seg : "cartuchin") + "-dados";
@@ -3510,7 +4151,7 @@
     input.focus();
   });
 
-  // src/js/cloud.js
+  // src/cloud.js
   var GH_API = "https://api.github.com";
   var AUTH_KEY = "cartucho.github";
   var cloud = { db: false, docs: /* @__PURE__ */ new Map(), roms: /* @__PURE__ */ new Map(), ready: false, downloads: true, assets: false, auth: null, index: null, indexSha: null, saveShas: /* @__PURE__ */ new Map() };
@@ -4012,6 +4653,11 @@ Content-Type: ${type}\r
       const s = new Blob([raw]).stream().pipeThrough(new CompressionStream("gzip"));
       const gz = new Uint8Array(await new Response(s).arrayBuffer());
       const path = "roms/" + rom.key + ".gz";
+      if (!isGoogle() && gz.length > 70 * 1024 * 1024) {
+        setBusy(rom.key, null);
+        toast(`${rom.title}: ROM grande demais para o GitHub. Ela fica só neste aparelho (o save sincroniza normal).`, 5e3);
+        return false;
+      }
       await putBinary(path, gz, `ROM: ${rom.title}`);
       await updateIndex((d) => {
         const prev = d.games[rom.key] || {};
@@ -4083,7 +4729,7 @@ Content-Type: ${type}\r
     }
   }
 
-  // src/js/ui/game-menu.js
+  // src/ui/game-menu.js
   var ffState = { ratio: 1, last: Number(ls.get("cartucho.ff") || 2) };
   function setSpeed(r) {
     const gm = player.emu && player.emu.gameManager;
@@ -4114,7 +4760,7 @@ Content-Type: ${type}\r
   });
   function fillGameMenu() {
     const emu = player.emu, acts = $("#gmActions");
-    acts.replaceChildren(
+    acts.replaceChildren(...[
       sheetAction(emu && emu.paused ? "play" : "pause", emu && emu.paused ? "Continuar o jogo" : "Pausar", () => {
         try {
           emu.paused ? emu.play() : emu.pause();
@@ -4137,7 +4783,8 @@ Content-Type: ${type}\r
         closeSheets();
         $("#pullBtn").click();
       }),
-      sheetAction("sliders", $("#player").classList.contains("show-ejs") ? "Esconder opções do emulador" : "Opções avançadas do emulador", () => {
+      ...player.isDs ? dsMenuItems(emu, fillGameMenu).map((it) => sheetAction(it.icon, it.label, it.fn)) : [],
+      player.isDs ? null : sheetAction("sliders", $("#player").classList.contains("show-ejs") ? "Esconder opções do emulador" : "Opções avançadas do emulador", () => {
         const on = !$("#player").classList.contains("show-ejs");
         $("#player").classList.toggle("show-ejs", on);
         closeSheets();
@@ -4155,7 +4802,7 @@ Content-Type: ${type}\r
         } catch (e) {
         }
       }, true)
-    );
+    ].filter(Boolean));
     setSpeed(ffState.ratio);
   }
   function openGameMenu() {
@@ -4167,13 +4814,13 @@ Content-Type: ${type}\r
   $("#menuBtn").addEventListener("click", openGameMenu);
   $("#gmClose").addEventListener("click", closeSheets);
 
-  // src/js/player/reset.js
+  // src/player/reset.js
   if (ls.get("cartucho.reset.v1") !== "done") {
     resetEmulatorSettings();
     ls.set("cartucho.reset.v1", "done");
   }
 
-  // src/js/ui/library-gamepad.js
+  // src/ui/library-gamepad.js
   (() => {
     let was = {}, last = 0;
     function targets() {
@@ -4222,7 +4869,7 @@ Content-Type: ${type}\r
     });
   })();
 
-  // src/js/main.js
+  // src/main.js
   $("#connectBtn").addEventListener("click", () => {
     showWelcome();
     window.scrollTo(0, 0);

@@ -1,4 +1,5 @@
 import { player } from "../player/player.js";
+import { dsMenuItems } from "../ds/ds-emu.js";
 import { dialog } from "./dialogs.js";
 import { closeSheets, openSheet, sheetAction } from "./sheets.js";
 import { $, $$, ls, toast } from "../util.js";
@@ -36,7 +37,7 @@ $("#ffModes").addEventListener("click", (e) => {
 });
 function fillGameMenu() {
   const emu = player.emu, acts = $("#gmActions");
-  acts.replaceChildren(
+  acts.replaceChildren(...[
     sheetAction(emu && emu.paused ? "play" : "pause", emu && emu.paused ? "Continuar o jogo" : "Pausar", () => {
       try { emu.paused ? emu.play() : emu.pause(); } catch (e) {}
       fillGameMenu();
@@ -53,7 +54,8 @@ function fillGameMenu() {
       closeSheets();
       $("#pullBtn").click();
     }),
-    sheetAction("sliders", $("#player").classList.contains("show-ejs") ? "Esconder opções do emulador" : "Opções avançadas do emulador", () => {
+    ...(player.isDs ? dsMenuItems(emu, fillGameMenu).map((it) => sheetAction(it.icon, it.label, it.fn)) : []),
+    player.isDs ? null : sheetAction("sliders", $("#player").classList.contains("show-ejs") ? "Esconder opções do emulador" : "Opções avançadas do emulador", () => {
       const on = !$("#player").classList.contains("show-ejs");
       $("#player").classList.toggle("show-ejs", on);
       closeSheets();
@@ -64,7 +66,7 @@ function fillGameMenu() {
       const ok = await dialog("Reiniciar o jogo?", "O jogo volta para a tela de título. O que não foi salvo dentro do jogo se perde.",
         [{ label: "Reiniciar", value: true, cls: "primary" }, { label: "Cancelar", value: false }]);
       if (ok) try { emu.gameManager.restart(); } catch (e) {}
-    }, true));
+    }, true)].filter(Boolean));
   setSpeed(ffState.ratio);
 }
 function openGameMenu() {
