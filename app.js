@@ -2050,14 +2050,21 @@ void main() {
     $("#notice").hidden = true;
     if (typeof showConnect === "function") showConnect();
   }
+  function showAvatar() {
+    const a = cloud.auth;
+    const name = a && (a.email || a.owner);
+    let letter = name ? name[0].toUpperCase() : "";
+    if (letter) ls.set("cartucho.avatar", letter);
+    else if (a) letter = ls.get("cartucho.avatar") || (a.kind === "google" ? "G" : "?");
+    $("#avatarLetter").textContent = letter || "?";
+  }
   function render() {
     if (!cloud.ready) return;
     const welcome = !cloud.auth && !localOnly();
     $("#connect").hidden = !welcome;
     $("#home").hidden = welcome;
     $("#accountBtn").hidden = welcome;
-    const letter = cloud.auth && cloud.auth.email ? cloud.auth.email[0].toUpperCase() : cloud.auth && cloud.auth.owner ? cloud.auth.owner[0].toUpperCase() : "?";
-    $("#avatarLetter").textContent = letter;
+    showAvatar();
     $("#connText").textContent = isGoogle() ? cloud.db ? `Google Drive${cloud.auth.email ? ": " + cloud.auth.email : ""}` : "Google Drive: reconecte para sincronizar" : cloud.db ? `GitHub: ${cloud.auth.owner}/${cloud.auth.repo}` : cloud.auth ? "GitHub indisponível agora" : "Sem conta: os jogos ficam só neste aparelho.";
     $("#pairOtherBtn").hidden = !cloud.db || isGoogle();
     $("#disconnectBtn").hidden = !cloud.auth;
@@ -4709,6 +4716,7 @@ void main() {
   }
   var isGoogle = () => !!(cloud.auth && cloud.auth.kind === "google");
   var cloudName = () => isGoogle() ? "Google Drive" : "GitHub";
+  var readTimeout = (method, big) => !big && (!method || method === "GET") && AbortSignal.timeout ? AbortSignal.timeout(2e4) : void 0;
   function saveAuth(a) {
     ls.set(AUTH_KEY, JSON.stringify(a));
   }
@@ -4725,7 +4733,7 @@ void main() {
       "X-GitHub-Api-Version": "2022-11-28"
     };
     if (opts.body) headers["Content-Type"] = "application/json";
-    const r = await fetch(GH_API + path, { method: opts.method || "GET", body: opts.body, headers, cache: "no-store", keepalive: !!opts.keepalive });
+    const r = await fetch(GH_API + path, { method: opts.method || "GET", body: opts.body, headers, cache: "no-store", keepalive: !!opts.keepalive, signal: readTimeout(opts.method, opts.raw) });
     if (!r.ok) {
       const e = new Error("github " + r.status);
       e.status = r.status;
@@ -4847,7 +4855,7 @@ void main() {
     async api(url, opts = {}) {
       if (!tokenFresh()) throw needToken();
       const headers = Object.assign({ Authorization: "Bearer " + cloud.auth.token }, opts.headers || {});
-      const r = await fetch(url, { method: opts.method || "GET", headers, body: opts.body, cache: "no-store", keepalive: !!opts.keepalive });
+      const r = await fetch(url, { method: opts.method || "GET", headers, body: opts.body, cache: "no-store", keepalive: !!opts.keepalive, signal: readTimeout(opts.method, opts.big) });
       if (r.status === 401) {
         cloud.auth.exp = 0;
         saveAuth(cloud.auth);
@@ -4916,7 +4924,7 @@ void main() {
         e.status = 404;
         throw e;
       }
-      return this.api(`${DRIVE}/files/${id}?alt=media`);
+      return this.api(`${DRIVE}/files/${id}?alt=media`, { big: true });
     },
     async put(name, bytes, type, keepalive) {
       const id = await this.idFor(name, true);
@@ -5000,6 +5008,7 @@ Content-Type: ${type}\r
   }
   async function connect() {
     cloud.auth = loadAuth();
+    showAvatar();
     if (!cloud.auth) {
       cloud.ready = true;
       showConnect();
@@ -5041,10 +5050,7 @@ Content-Type: ${type}\r
       return;
     }
     try {
-      if (!cloud.auth.email) {
-        cloud.auth.email = await drive.whoami();
-        saveAuth(cloud.auth);
-      }
+      await ensureEmail();
       cloud.db = true;
       cloud.assets = true;
       googleNeedsTap(false);
@@ -5108,11 +5114,21 @@ Content-Type: ${type}\r
   function reconnectGoogle() {
     askGoogleToken(false).then(afterGoogleToken, () => toast("Não deu para reconectar. Tente de novo.", 3500));
   }
+  async function ensureEmail() {
+    if (!isGoogle() || cloud.auth.email || !tokenFresh()) return;
+    try {
+      cloud.auth.email = await drive.whoami();
+      saveAuth(cloud.auth);
+    } catch (e) {
+    }
+    showAvatar();
+  }
   async function afterGoogleToken() {
     googleNeedsTap(false);
     if (player.key) {
       cloud.db = true;
       flush();
+      ensureEmail();
     } else await connectGoogle();
   }
   window.addEventListener("pointerdown", (e) => {

@@ -4,7 +4,7 @@ import { device } from "./device.js";
 import { idb } from "./idb.js";
 import { loadRoms, notice } from "./library.js";
 import { flush, player } from "./player/player.js";
-import { render } from "./ui/screens.js";
+import { render, showAvatar } from "./ui/screens.js";
 import { $, el, ls, rid, sleep, toast } from "./util.js";
 
 /* ---------------- cloud ----------------
@@ -33,6 +33,8 @@ function loadAuth() {
 }
 const isGoogle = () => !!(cloud.auth && cloud.auth.kind === "google");
 const cloudName = () => (isGoogle() ? "Google Drive" : "GitHub");
+/* leituras com prazo: uma requisição presa não deixa a home pela metade (envios não têm prazo) */
+const readTimeout = (method, big) => !big && (!method || method === "GET") && AbortSignal.timeout ? AbortSignal.timeout(20000) : undefined;
 function saveAuth(a) { ls.set(AUTH_KEY, JSON.stringify(a)); }
 function clearAuth() { try { localStorage.removeItem(AUTH_KEY); } catch (e) {} }
 
@@ -43,7 +45,7 @@ async function gh(path, opts = {}, auth = cloud.auth) {
     "X-GitHub-Api-Version": "2022-11-28",
   };
   if (opts.body) headers["Content-Type"] = "application/json";
-  const r = await fetch(GH_API + path, { method: opts.method || "GET", body: opts.body, headers, cache: "no-store", keepalive: !!opts.keepalive });
+  const r = await fetch(GH_API + path, { method: opts.method || "GET", body: opts.body, headers, cache: "no-store", keepalive: !!opts.keepalive, signal: readTimeout(opts.method, opts.raw) });
   if (!r.ok) {
     /** @type {any} */
     /** @type {any} */
@@ -173,7 +175,7 @@ const drive = {
   async api(url, opts = {}) {
     if (!tokenFresh()) throw needToken();
     const headers = Object.assign({ Authorization: "Bearer " + cloud.auth.token }, opts.headers || {});
-    const r = await fetch(url, { method: opts.method || "GET", headers, body: opts.body, cache: "no-store", keepalive: !!opts.keepalive });
+    const r = await fetch(url, { method: opts.method || "GET", headers, body: opts.body, cache: "no-store", keepalive: !!opts.keepalive, signal: readTimeout(opts.method, opts.big) });
     if (r.status === 401) {
       cloud.auth.exp = 0;
       saveAuth(cloud.auth);
@@ -243,7 +245,7 @@ const drive = {
       e.status = 404;
       throw e;
     }
-    return this.api(`${DRIVE}/files/${id}?alt=media`);
+    return this.api(`${DRIVE}/files/${id}?alt=media`, { big: true });
   },
   async put(name, bytes, type, keepalive) {
     const id = await this.idFor(name, true);
@@ -322,6 +324,7 @@ async function refreshLibrary() {
 
 async function connect() {
   cloud.auth = loadAuth();
+  showAvatar();
   if (!cloud.auth) {
     cloud.ready = true;
     showConnect();
@@ -363,10 +366,7 @@ async function connectGoogle() {
     return;
   }
   try {
-    if (!cloud.auth.email) {
-      cloud.auth.email = await drive.whoami();
-      saveAuth(cloud.auth);
-    }
+    await ensureEmail();
     cloud.db = true;
     cloud.assets = true;
     googleNeedsTap(false);
@@ -424,11 +424,20 @@ function googleNeedsTap(on) {
 function reconnectGoogle() {
   askGoogleToken(false).then(afterGoogleToken, () => toast("Não deu para reconectar. Tente de novo.", 3500));
 }
+async function ensureEmail() {
+  if (!isGoogle() || cloud.auth.email || !tokenFresh()) return;
+  try {
+    cloud.auth.email = await drive.whoami();
+    saveAuth(cloud.auth);
+  } catch (e) {}
+  showAvatar();
+}
 async function afterGoogleToken() {
   googleNeedsTap(false);
   if (player.key) {
     cloud.db = true;
     flush();
+    ensureEmail();
   }
   else await connectGoogle();
 }

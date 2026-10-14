@@ -15,6 +15,17 @@ function showWelcome() {
   if (typeof showConnect === "function") showConnect();
 }
 
+/* A letra da conta aparece já no carregamento (antes da rede) e fica guardada:
+   sem e-mail ainda (token vencido, rede lenta) usa a última conhecida. */
+function showAvatar() {
+  const a = cloud.auth;
+  const name = a && (a.email || a.owner);
+  let letter = name ? name[0].toUpperCase() : "";
+  if (letter) ls.set("cartucho.avatar", letter);
+  else if (a) letter = ls.get("cartucho.avatar") || (a.kind === "google" ? "G" : "?");
+  $("#avatarLetter").textContent = letter || "?";
+}
+
 function render() {
   if (!cloud.ready) return;
   const welcome = !cloud.auth && !localOnly();
@@ -22,8 +33,7 @@ function render() {
   $("#home").hidden = welcome;
   $("#accountBtn").hidden = welcome;
   // account
-  const letter = cloud.auth && cloud.auth.email ? cloud.auth.email[0].toUpperCase() : cloud.auth && cloud.auth.owner ? cloud.auth.owner[0].toUpperCase() : "?";
-  $("#avatarLetter").textContent = letter;
+  showAvatar();
   $("#connText").textContent = isGoogle()
     ? (cloud.db ? `Google Drive${cloud.auth.email ? ": " + cloud.auth.email : ""}` : "Google Drive: reconecte para sincronizar")
     : cloud.db ? `GitHub: ${cloud.auth.owner}/${cloud.auth.repo}` : cloud.auth ? "GitHub indisponível agora" : "Sem conta: os jogos ficam só neste aparelho.";
@@ -57,4 +67,4 @@ function render() {
   if (sheetKey) fillGameSheet(sheetKey);
 }
 
-export { showWelcome, render };
+export { showWelcome, render, showAvatar };
