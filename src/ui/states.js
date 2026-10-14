@@ -57,11 +57,15 @@ function thumb() {
   return new Promise((r) => c.toBlob((b) => r(b), "image/webp", 0.75));
 }
 
-let busy = false;
-async function saveState({ auto = false, quiet = false } = {}) {
+/* um salvamento por vez: um segundo toque espera o primeiro terminar */
+let queue = Promise.resolve(false);
+function saveState(opts = {}) {
+  queue = queue.then(() => doSave(opts), () => doSave(opts));
+  return queue;
+}
+async function doSave({ auto = false, quiet = false }) {
   const emu = player.emu, game = player.key;
-  if (!emu || !game || busy) return false;
-  busy = true;
+  if (!emu || !game) return false;
   try {
     const st = await emu.gameManager.getState();
     if (!st || !st.length) throw new Error("vazio");
@@ -85,9 +89,10 @@ async function saveState({ auto = false, quiet = false } = {}) {
     if (!quiet) toast("Estado salvo");
     return true;
   } catch (e) {
+    console.warn("[estados] salvar", e);
     if (!quiet) toast("Não deu para salvar o estado.");
     return false;
-  } finally { busy = false; }
+  }
 }
 async function loadState(game, id) {
   const emu = player.emu;
@@ -138,7 +143,7 @@ async function fillGallery() {
     if (it.thumb) {
       const u = URL.createObjectURL(it.thumb);
       urls.push(u);
-      img = el("img", { src: u, alt: "", loading: "lazy" });
+      img = el("img", { src: u, alt: "" });
     } else img = el("div", { class: "st-noimg" }, "sem imagem");
     const title = it.name || (it.auto ? "Automático" : "Estado");
     grid.append(el("div", { class: "st-card" + (it.auto ? " auto" : ""), "data-id": it.id },

@@ -1109,7 +1109,7 @@ void main() {
   var frameWorkerSource = () => {
     const worker = self;
     let encoder = null, reader = null, running = false, codec = "jpeg";
-    let wantKey = true, framesIn = 0, busy3 = false, lastJpegAt = 0;
+    let wantKey = true, framesIn = 0, busy2 = false, lastJpegAt = 0;
     const KEY_EVERY = 180;
     const inFlight = /* @__PURE__ */ new Map();
     function send(buffer, key, timestamp) {
@@ -1145,11 +1145,11 @@ void main() {
     let canvas = null, ctx = null;
     async function encodeJpeg(frame, width, height) {
       const now = performance.now();
-      if (busy3 || now - lastJpegAt < 30) {
+      if (busy2 || now - lastJpegAt < 30) {
         frame.close();
         return;
       }
-      busy3 = true;
+      busy2 = true;
       lastJpegAt = now;
       try {
         if (!canvas) {
@@ -1163,7 +1163,7 @@ void main() {
       } catch (e) {
         worker.postMessage({ error: String(e) });
       }
-      busy3 = false;
+      busy2 = false;
     }
     async function pump(readable, width, height) {
       reader = readable.getReader();
@@ -5342,11 +5342,14 @@ Content-Type: ${type}\r
     }
     return new Promise((r) => c.toBlob((b) => r(b), "image/webp", 0.75));
   }
-  var busy2 = false;
-  async function saveState({ auto = false, quiet = false } = {}) {
+  var queue = Promise.resolve(false);
+  function saveState(opts = {}) {
+    queue = queue.then(() => doSave(opts), () => doSave(opts));
+    return queue;
+  }
+  async function doSave({ auto = false, quiet = false }) {
     const emu = player.emu, game = player.key;
-    if (!emu || !game || busy2) return false;
-    busy2 = true;
+    if (!emu || !game) return false;
     try {
       const st = await emu.gameManager.getState();
       if (!st || !st.length) throw new Error("vazio");
@@ -5370,10 +5373,9 @@ Content-Type: ${type}\r
       if (!quiet) toast("Estado salvo");
       return true;
     } catch (e) {
+      console.warn("[estados] salvar", e);
       if (!quiet) toast("Não deu para salvar o estado.");
       return false;
-    } finally {
-      busy2 = false;
     }
   }
   async function loadState(game, id) {
@@ -5428,7 +5430,7 @@ Content-Type: ${type}\r
       if (it.thumb) {
         const u = URL.createObjectURL(it.thumb);
         urls.push(u);
-        img = el("img", { src: u, alt: "", loading: "lazy" });
+        img = el("img", { src: u, alt: "" });
       } else img = el("div", { class: "st-noimg" }, "sem imagem");
       const title = it.name || (it.auto ? "Automático" : "Estado");
       grid.append(el(

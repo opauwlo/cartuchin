@@ -119,10 +119,13 @@ if (!ONLY || ONLY === "state") {
   await phone.click("#menuBtn");
   await phone.click("#gmActions .gs-action:has-text('Salvar estado')");
   await phone.waitForFunction(async () => (await window.__states.list(window.__cartucho.key)).length >= 1, null, { timeout: 15000, polling: 300 });
-  const autoOk = await phone.evaluate(async () => { await new Promise((r) => setTimeout(r, 300)); return window.__states.saveState({ auto: true }); });
+  const autoOk = await phone.evaluate(async () => { return window.__states.saveState({ auto: true }); });
   ok(autoOk, "salvamento automático grava");
   await phone.click("#gmActions .gs-action:has-text('Estados salvos')");
   await phone.waitForSelector("#statesSheet:not([hidden]) .st-card", { timeout: 10000 });
+  await phone.waitForFunction(() => [...document.querySelectorAll("#statesSheet img")].every((i) => i.complete), null, { timeout: 5000 }).catch(() => {});
+  const thumbs = await phone.evaluate(async () => (await window.__states.list(window.__cartucho.key)).map((i) => i.thumb ? i.thumb.size : 0));
+  console.log("  miniaturas (bytes):", thumbs.join(", "));
   const g = await phone.evaluate(() => ({ cards: document.querySelectorAll("#statesSheet .st-card").length, imgs: [...document.querySelectorAll("#statesSheet .st-card img")].filter((i) => i.complete && i.naturalWidth > 0).length, auto: document.querySelectorAll("#statesSheet .st-card.auto").length }));
   ok(g.cards === 2 && g.auto === 1, `galeria mostra os estados (${g.cards} cards, ${g.auto} automático)`);
   ok(g.imgs >= 1, `cards com miniatura (${g.imgs})`);
