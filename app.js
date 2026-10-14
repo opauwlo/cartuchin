@@ -1494,7 +1494,8 @@ void main() {
     stopCast();
     setCastUi("wait");
     if (attempt === 0) {
-      const saved = Number(ls.get("cartucho.castMode")) || 0;
+      let saved = Number(ls.get("cartucho.castMode")) || 0;
+      if (!CAST_MODES[saved]) saved = 0;
       cast.order = [saved, ...CAST_MODES.map((m, i) => i).filter((i) => i !== saved)];
     }
     cast.code = code;
