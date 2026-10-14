@@ -124,3 +124,14 @@ jobs:
             sleep 5
           done
           exit 1
+
+      # Os logs do Actions nem sempre dão pra baixar de fora; publica numa branch.
+      - name: Publicar logs na branch ds-ci-logs
+        if: always()
+        run: |
+          set -u
+          mkdir -p /tmp/logs && cp up/*.log /tmp/logs/ 2>/dev/null || true
+          cd /tmp/logs && echo "run ${GITHUB_RUN_ID} sha ${GITHUB_SHA}" > RUN.txt
+          git init -q && git checkout -q -b ds-ci-logs && git add -A
+          git -c user.name=ci -c user.email=ci@local commit -qm "logs ${GITHUB_RUN_ID}"
+          git push -qf "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" ds-ci-logs
