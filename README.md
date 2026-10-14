@@ -29,3 +29,12 @@ Outros aparelhos (TV, tablet) se conectam sem digitar o token: toque em "Conecta
 - ROM hacks de Pokémon que usam um código de jogo próprio recebem o chip de save certo (flash de 128 KB e relógio). Sem isso, vários travam na tela branca.
 - Save states do menu do emulador ficam só no aparelho. O que sincroniza é o save feito dentro do jogo.
 - Licenças: EmulatorJS (GPL-3.0), mGBA (MPL-2.0), qrcode-generator (MIT). Veja a pasta `vendor/`.
+
+## Deploy na Vercel
+
+O site é estático e o `app.js` já vem pronto no repositório: a Vercel só publica os arquivos (veja `vercel.json`; o que não é site fica no `.vercelignore`).
+
+1. Em vercel.com: **Add New → Project**, importe `opauwlo/cartuchin`, Framework **Other**, sem mudar mais nada, e **Deploy**.
+2. Cada push na `main` (inclusive o commit do core do DS feito pelo workflow) publica de novo sozinho.
+3. Login com Google: no Google Cloud Console, no cliente OAuth do `config.js`, adicione o endereço da Vercel (ex.: `https://cartuchin.vercel.app`) em **Origens JavaScript autorizadas**.
+

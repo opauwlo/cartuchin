@@ -1,0 +1,10 @@
+# só o site vai para a Vercel; código-fonte do core, testes e CI ficam no GitHub
+.github
+ds/core
+dsjit
+tests
+node_modules
+package.json
+package-lock.json
+*.md
+src
