@@ -13,14 +13,15 @@ globalThis.wasmReady = () => resolveReady();
 globalThis.Module = { wasmBinary: fs.readFileSync(`${dir}/${name}.wasm`), print: () => {}, printErr: (t) => console.log('[err]', t), onAbort: (r) => console.log('ABORT', r) };
 vm.runInThisContext(fs.readFileSync(`${dir}/${name}.js`, 'utf8'));
 
-ready.then(() => {
+ready.then(async () => {
   const M = globalThis.Module, rom = fs.readFileSync(romPath);
   const p = M._prepareRomBuffer(rom.length); M.HEAPU8.set(rom, p);
   M._savGetPointer(-1);
   if (M._loadROM(rom.length) !== 0) throw new Error('loadROM');
   M._audioSetup(48000);
   const fb = M._getSymbol(4);
-  const run = (jit) => {
+  const tick = () => new Promise((r) => setImmediate(r));   // deixa os lotes do JIT (assíncronos) compilarem
+  const run = async (jit) => {
     M._emuSetOpt(6, jit);
     M._reset();
     const hashes = [];
@@ -28,17 +29,18 @@ ready.then(() => {
     for (let i = 1; i <= frames; i++) {
       M._runFrame(1, 0, 0, 0, 0);
       M._audioDrain(16384);
+      await tick();
       if (i % 30 === 0) hashes.push(crypto.createHash('md5').update(M.HEAPU8.subarray(fb, fb + 256 * 384 * 4)).digest('hex').slice(0, 8));
     }
     const ms = Number(process.hrtime.bigint() - t0) / 1e6 / frames;
     return { hashes, ms };
   };
-  const a = run(0), b = run(1);
+  const a = await run(0), b = await run(1);
   let firstBad = -1;
   for (let i = 0; i < a.hashes.length; i++) if (a.hashes[i] !== b.hashes[i]) { firstBad = i; break; }
   const errs = M.jitErrors || 0;
   console.log(`${romPath}: interpretador ${a.ms.toFixed(2)} ms/quadro, JIT ${b.ms.toFixed(2)} ms/quadro (${(a.ms / b.ms).toFixed(2)}x)` +
-    ` · blocos que não compilaram: ${errs} · ` + (firstBad < 0 ? 'imagens iguais' : `DIFERE a partir do quadro ${(firstBad + 1) * 30}`));
+    ` · blocos compilados: ${M.jitBlocks || 0}, lotes com erro: ${errs} · ` + (firstBad < 0 ? 'imagens iguais' : `DIFERE a partir do quadro ${(firstBad + 1) * 30}`));
   console.log(firstBad < 0 ? 'PASSOU' : 'FALHOU');
   process.exit(firstBad < 0 ? 0 : 1);
 }).catch((e) => { console.error(e); process.exit(1); });

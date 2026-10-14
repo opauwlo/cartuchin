@@ -1289,13 +1289,14 @@ index 073ed64..c6e6acf 100644
  	bool rigorous_timing;
  
 diff --git a/desmume/src/arm_jit.h b/desmume/src/arm_jit.h
-index 60f07ad..a357c50 100644
+index 60f07ad..b1907c6 100644
 --- a/desmume/src/arm_jit.h
 +++ b/desmume/src/arm_jit.h
-@@ -30,6 +30,9 @@ void arm_jit_reset(bool enable, bool suppress_msg = false);
+@@ -30,6 +30,10 @@ void arm_jit_reset(bool enable, bool suppress_msg = false);
  void arm_jit_close();
  void arm_jit_sync();
  template<int PROCNUM> u32 arm_jit_compile();
++void arm_jit_flush();   // wasm: compila os blocos quentes da fila (chamado a cada quadro)
 +#ifdef JIT_IR_NATIVE
 +template<int PROCNUM> u32 arm_jit_run_ir(uintptr_t block);   // teste nativo do JIT wasm
 +#endif
@@ -1304,10 +1305,10 @@ index 60f07ad..a357c50 100644
  //* x86 windows seems faster with NON-DEFINED
 diff --git a/desmume/src/arm_jit_wasm.cpp b/desmume/src/arm_jit_wasm.cpp
 new file mode 100644
-index 0000000..63a63eb
+index 0000000..886aa8f
 --- /dev/null
 +++ b/desmume/src/arm_jit_wasm.cpp
-@@ -0,0 +1,437 @@
+@@ -0,0 +1,494 @@
 +/*
 +	JIT de ARM para WebAssembly (Cartuchin), no lugar do arm_jit.cpp (x86/AsmJit).
 +
@@ -1537,135 +1538,161 @@ index 0000000..63a63eb
 +	void i32c(u32 v) { u8_(0x41); sleb((s32)v); }
 +	void lget(u32 i) { u8_(0x20); uleb(i); }
 +	void lset(u32 i) { u8_(0x21); uleb(i); }
-+	// local[base] + off <- valor (o valor já precisa estar na pilha depois do endereço)
 +	void store32(u32 off) { u8_(0x36); uleb(2); uleb(off); }
 +	void load32(u32 off) { u8_(0x28); uleb(2); uleb(off); }
 +	void load8u(u32 off) { u8_(0x2D); uleb(0); uleb(off); }
-+	void section(u8 id, const WasmOut &body) { u8_(id); uleb((u32)body.b.size()); b.insert(b.end(), body.b.begin(), body.b.end()); }
++	void append(const WasmOut &o) { b.insert(b.end(), o.b.begin(), o.b.end()); }
++	void section(u8 id, const WasmOut &body) { u8_(id); uleb((u32)body.b.size()); append(body); }
 +	void name(const char *s) { uleb((u32)strlen(s)); while (*s) u8_((u8)*s++); }
 +};
 +
-+EM_JS(int, jit_wasm_instantiate, (const u8 *p, int n), {
-+	try {
-+		var mem = typeof wasmMemory != "undefined" ? wasmMemory : wasmExports["memory"];
-+		var tab = typeof wasmTable != "undefined" ? wasmTable : wasmExports["__indirect_function_table"];
-+		var mod = new WebAssembly.Module(HEAPU8.subarray(p, p + n));
-+		var inst = new WebAssembly.Instance(mod, { e: { m: mem, t: tab } });
-+		var idx = tab.grow(1);
-+		tab.set(idx, inst.exports.f);
-+		return idx;
-+	} catch (e) {
-+		if (!Module.jitErrors) { Module.jitErrors = 0; console.warn("[jit] bloco não compilou", e); }
-+		Module.jitErrors++;
-+		return 0;
-+	}
-+});
-+
-+// limite do Chrome para compilação síncrona na thread principal: 4 KB por módulo
-+#define JIT_MAX_MODULE_BYTES 4000
-+
-+static uintptr_t finish_block(u32 start_adr)
++// corpo da função de um bloco (local 0 = base da CPU, local 1 = ciclos)
++static void emit_block_body(WasmOut &body, armcpu_t *c, const std::vector<JitInstr> &blk, bool thumb)
 +{
-+	armcpu_t *const c = cpu;
 +	const u32 base = (u32)(uintptr_t)c;
 +	const u32 oInstr = offsetof(armcpu_t, instruct_adr);
 +	const u32 oNext = offsetof(armcpu_t, next_instruction);
 +	const u32 oR15 = offsetof(armcpu_t, R) + 15 * 4;
 +	const u32 oFlags = offsetof(armcpu_t, CPSR) + 3;
 +	const u32 condTab = (u32)(uintptr_t)arm_cond_table;
-+	const u32 size = bb_thumb ? 2 : 4;
-+
-+	// corpo: local 0 = base da CPU, local 1 = ciclos
-+	WasmOut body;
-+	body.uleb(1); body.uleb(2); body.u8_(0x7F);          // 2 locais i32
++	const u32 size = thumb ? 2 : 4;
++	
++	body.uleb(1); body.uleb(2); body.u8_(0x7F);
 +	body.i32c(base); body.lset(0);
 +	body.i32c(0); body.lset(1);
-+	for (size_t i = 0; i < s_block.size(); i++)
++	for (size_t i = 0; i < blk.size(); i++)
 +	{
-+		const JitInstr &in = s_block[i];
++		const JitInstr &in = blk[i];
 +		body.lget(0); body.i32c(in.adr); body.store32(oInstr);
 +		body.lget(0); body.i32c(in.adr + size); body.store32(oNext);
 +		body.lget(0); body.i32c(in.adr + size * 2); body.store32(oR15);
 +		if (in.condMask)
 +		{
-+			// if (arm_cond_table[(flags & 0xF0) | cond] & mask) { ... } else ciclos += 1
 +			body.lget(0); body.load8u(oFlags);
-+			body.i32c(0xF0); body.u8_(0x71);                 // i32.and
-+			body.i32c(in.cond); body.u8_(0x72);              // i32.or
++			body.i32c(0xF0); body.u8_(0x71);
++			body.i32c(in.cond); body.u8_(0x72);
 +			body.load8u(condTab);
 +			body.i32c(in.condMask); body.u8_(0x71);
-+			body.u8_(0x04); body.u8_(0x40);                  // if (void)
++			body.u8_(0x04); body.u8_(0x40);
 +		}
 +		body.lget(1);
 +		body.i32c(in.opcode);
 +		body.i32c((u32)(uintptr_t)in.fn);
-+		body.u8_(0x11); body.uleb(1); body.uleb(0);          // call_indirect tipo 1, tabela 0
-+		body.u8_(0x6A); body.lset(1);                        // ciclos += resultado
++		body.u8_(0x11); body.uleb(1); body.uleb(0);
++		body.u8_(0x6A); body.lset(1);
 +		if (in.condMask)
 +		{
-+			body.u8_(0x05);                                  // else
++			body.u8_(0x05);
 +			body.lget(1); body.i32c(1); body.u8_(0x6A); body.lset(1);
-+			body.u8_(0x0B);                                  // end
++			body.u8_(0x0B);
 +		}
 +	}
-+	// instruct_adr = next_instruction (o desvio, se houve, já mudou next_instruction)
 +	body.lget(0); body.lget(0); body.load32(oNext); body.store32(oInstr);
 +	body.lget(1);
 +	body.u8_(0x0B);
++}
 +
++/* Compilação em lotes, fora do caminho do jogo: os blocos quentes entram numa fila; no fim
++   de cada quadro (ou com 128 na fila) vira UM módulo com todas as funções, compilado de
++   forma assíncrona pelo navegador. Quando fica pronto, o JS põe as funções na tabela e
++   grava o índice no mapa — só se a entrada ainda tiver a marca de "na fila" e a geração
++   não mudou (código reescrito ou JIT reiniciado no meio do caminho = descarta). */
++struct PendingBlock
++{
++	std::vector<u8> body;
++	u32 slot;     // endereço da entrada no mapa de blocos
++	u32 marker;   // valor que a entrada tem enquanto espera (função do interpretador)
++};
++static std::vector<PendingBlock> s_pending;
++static u32 s_generation = 1;
++static u32 s_compiledBlocks = 0;
++
++EM_JS(void, jit_compile_batch, (const u8 *p, int n, const u32 *slots, const u32 *markers, int count, const u32 *genPtr, u32 gen), {
++	var bytes = HEAPU8.slice(p, p + n);
++	var sl = HEAPU32.slice(slots >> 2, (slots >> 2) + count);
++	var mk = HEAPU32.slice(markers >> 2, (markers >> 2) + count);
++	var mem = typeof wasmMemory != "undefined" ? wasmMemory : wasmExports["memory"];
++	var tab = typeof wasmTable != "undefined" ? wasmTable : wasmExports["__indirect_function_table"];
++	Module.jitPending = (Module.jitPending || 0) + 1;
++	WebAssembly.instantiate(bytes, { e: { m: mem, t: tab } }).then(function (r) {
++		Module.jitPending--;
++		if (HEAPU32[genPtr >> 2] !== gen) return;
++		var ex = r.instance.exports, base = tab.grow(count);
++		for (var i = 0; i < count; i++) {
++			tab.set(base + i, ex["f" + i]);
++			if (HEAPU32[sl[i] >> 2] === mk[i]) HEAPU32[sl[i] >> 2] = base + i;
++		}
++		Module.jitBlocks = (Module.jitBlocks || 0) + count;
++	}, function (e) {
++		Module.jitPending--;
++		Module.jitErrors = (Module.jitErrors || 0) + 1;
++		if (Module.jitErrors < 3) console.warn("[jit] lote não compilou", e);
++	});
++});
++
++void arm_jit_flush()
++{
++	if (s_pending.empty()) return;
++	const size_t n = s_pending.size();
 +	WasmOut m;
 +	const u8 hdr[8] = { 0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00 };
 +	m.b.insert(m.b.end(), hdr, hdr + 8);
 +	WasmOut s;
-+	// tipos: 0 = () -> i32 (o bloco), 1 = (i32) -> i32 (as funções do interpretador)
 +	s.uleb(2);
 +	s.u8_(0x60); s.uleb(0); s.uleb(1); s.u8_(0x7F);
 +	s.u8_(0x60); s.uleb(1); s.u8_(0x7F); s.uleb(1); s.u8_(0x7F);
 +	m.section(1, s);
 +	s.b.clear();
 +	s.uleb(2);
-+	s.name("e"); s.name("m"); s.u8_(0x02); s.u8_(0x00); s.uleb(1);              // memória
-+	s.name("e"); s.name("t"); s.u8_(0x01); s.u8_(0x70); s.u8_(0x00); s.uleb(1);  // tabela funcref
++	s.name("e"); s.name("m"); s.u8_(0x02); s.u8_(0x00); s.uleb(1);
++	s.name("e"); s.name("t"); s.u8_(0x01); s.u8_(0x70); s.u8_(0x00); s.uleb(1);
 +	m.section(2, s);
-+	s.b.clear(); s.uleb(1); s.uleb(0); m.section(3, s);                          // 1 função, tipo 0
-+	s.b.clear(); s.uleb(1); s.name("f"); s.u8_(0x00); s.uleb(0); m.section(7, s);// export "f"
-+	s.b.clear(); s.uleb(1); s.uleb((u32)body.b.size()); s.b.insert(s.b.end(), body.b.begin(), body.b.end());
++	s.b.clear(); s.uleb((u32)n); for (size_t i = 0; i < n; i++) s.uleb(0); m.section(3, s);
++	s.b.clear(); s.uleb((u32)n);
++	for (size_t i = 0; i < n; i++)
++	{
++		char nm[16];
++		snprintf(nm, sizeof(nm), "f%u", (unsigned)i);
++		s.name(nm); s.u8_(0x00); s.uleb((u32)i);
++	}
++	m.section(7, s);
++	s.b.clear(); s.uleb((u32)n);
++	std::vector<u32> slots(n), markers(n);
++	for (size_t i = 0; i < n; i++)
++	{
++		s.uleb((u32)s_pending[i].body.size());
++		s.b.insert(s.b.end(), s_pending[i].body.begin(), s_pending[i].body.end());
++		slots[i] = s_pending[i].slot;
++		markers[i] = s_pending[i].marker;
++	}
 +	m.section(10, s);
-+
-+	if (m.b.size() > JIT_MAX_MODULE_BYTES) return 0;
-+	return (uintptr_t)jit_wasm_instantiate(m.b.data(), (int)m.b.size());
++	s_pending.clear();
++	s_compiledBlocks += (u32)n;
++	jit_compile_batch(m.b.data(), (int)m.b.size(), slots.data(), markers.data(), (int)n, &s_generation, s_generation);
 +}
++#else
++void arm_jit_flush() {}
 +#endif
 +
 +// ---------------------------------------------------------------- compilação
 +
++// quantas vezes um trecho de 16 bytes roda no interpretador antes de virar bloco compilado
++#define JIT_HOT_THRESHOLD 16
++static u8 hot_counts[(1<<26)/16];
++
 +template<int P>
-+static u32 compile_basicblock()
++static void build_block(armcpu_t *c, u32 start_adr)
 +{
-+	armcpu_t *const c = P ? &NDS_ARM7 : &NDS_ARM9;
-+	const u32 start_adr = c->instruct_adr;
-+	bb_thumb = c->CPSR.bits.T;
 +	const u32 size = bb_thumb ? 2 : 4;
-+
-+	if (!JIT_MAPPED(start_adr & 0x0FFFFFFF, P))
-+	{
-+		// código fora das memórias mapeadas: só interpreta (sem cache)
-+		return op_decode[P][bb_thumb]();
-+	}
-+
-+	s_block.clear();
-+	u32 interpreted_cycles = 0;
-+	// blocos curtos o bastante para o módulo caber em 4 KB (~70 bytes por instrução)
 +	u32 maxInstr = CommonSettings.jit_max_block_size;
-+	if (maxInstr > 48) maxInstr = 48;
++	if (maxInstr > 64) maxInstr = 64;
 +	if (maxInstr < 1) maxInstr = 1;
-+
++	s_block.clear();
 +	for (u32 i = 0, end = 0; !end; i++)
 +	{
 +		const u32 adr = start_adr + i * size;
 +		const u32 opcode = bb_thumb ? _MMU_read16<P, MMU_AT_CODE>(adr) : _MMU_read32<P, MMU_AT_CODE>(adr);
 +		end = instr_is_branch(opcode) || (i >= maxInstr - 1);
-+
 +		JitInstr in;
 +		in.adr = adr;
 +		in.opcode = opcode;
@@ -1682,35 +1709,61 @@ index 0000000..63a63eb
 +			in.condMask = (in.cond == 0xE) ? 0 : (u8)(1 << CODE(opcode));
 +		}
 +		s_block.push_back(in);
-+
-+		// executa a instrução agora (como o arm_jit.cpp): o bloco roda uma vez interpretado
-+		interpreted_cycles += op_decode[P][bb_thumb]();
-+		// se ela desviou, a próxima instrução sequencial não é a que roda: fecha o bloco
-+		if (!end && c->instruct_adr != adr + size) end = 1;
 +	}
++}
 +
-+	uintptr_t f = finish_block(start_adr);
-+	// não compilou (módulo grande demais, erro): esse endereço fica com o interpretador,
-+	// em vez de tentar compilar de novo toda vez que passar por ali
-+	if (!f) f = (uintptr_t)op_decode[P][bb_thumb];
-+	JIT_COMPILED_FUNC(start_adr, P) = f;
-+	return interpreted_cycles;
++template<int P>
++static u32 compile_basicblock()
++{
++	armcpu_t *const c = P ? &NDS_ARM7 : &NDS_ARM9;
++	const u32 start_adr = c->instruct_adr;
++	bb_thumb = c->CPSR.bits.T;
++	
++	if (!JIT_MAPPED(start_adr & 0x0FFFFFFF, P))
++		return op_decode[P][bb_thumb]();
++	
++	// trecho frio: só interpreta (código de inicialização roda uma vez e não vale compilar)
++	const u32 h = (start_adr & 0x07FFFFFE) >> 4;
++	if (hot_counts[h] < JIT_HOT_THRESHOLD)
++	{
++		hot_counts[h]++;
++		return op_decode[P][bb_thumb]();
++	}
++	
++	build_block<P>(c, start_adr);
++	uintptr_t &slot = JIT_COMPILED_FUNC(start_adr, P);
++#ifdef __EMSCRIPTEN__
++	// fila para o próximo lote; até lá, a entrada aponta para o interpretador (a "marca")
++	PendingBlock pb;
++	WasmOut body;
++	emit_block_body(body, c, s_block, bb_thumb);
++	pb.body.swap(body.b);
++	pb.marker = (u32)(uintptr_t)op_decode[P][bb_thumb];
++	pb.slot = (u32)(uintptr_t)&slot;
++	slot = pb.marker;
++	s_pending.push_back(pb);
++	if (s_pending.size() >= 128) arm_jit_flush();
++#else
++	slot = finish_block(start_adr);
++#endif
++	return op_decode[P][bb_thumb]();
 +}
 +
 +template<int P> u32 arm_jit_compile()
 +{
 +	PROCNUM = P;
 +	armcpu_t *const c = P ? &NDS_ARM7 : &NDS_ARM9;
-+
++	
 +	// código que se reescreve sem parar: depois de 8 recompilações no mesmo trecho, só interpreta
 +	const u32 adr = c->instruct_adr;
 +	const u32 mask_adr = (adr & 0x07FFFFFE) >> 4;
 +	if (((recompile_counts[mask_adr >> 1] >> 4*(mask_adr & 1)) & 0xF) > 8)
-+	{
 +		return op_decode[P][c->CPSR.bits.T]();
-+	}
-+	recompile_counts[mask_adr >> 1] += 1 << 4*(mask_adr & 1);
-+
++	
++	const u32 h = (adr & 0x07FFFFFE) >> 4;
++	if (hot_counts[h] >= JIT_HOT_THRESHOLD)
++		recompile_counts[mask_adr >> 1] += 1 << 4*(mask_adr & 1);
++	
 +	return compile_basicblock<P>();
 +}
 +
@@ -1737,6 +1790,11 @@ index 0000000..63a63eb
 +		memset(JIT.ARM7_WIRAM, 0, sizeof(JIT.ARM7_WIRAM));
 +		memset(JIT.ARM7_WRAM, 0, sizeof(JIT.ARM7_WRAM));
 +		memset(recompile_counts, 0, sizeof(recompile_counts));
++		memset(hot_counts, 0, sizeof(hot_counts));
++#ifdef __EMSCRIPTEN__
++		s_pending.clear();
++		s_generation++;   // lotes ainda compilando são descartados
++#endif
 +	}
 +}
 +
@@ -2048,7 +2106,7 @@ index 1f8f3b5..423a904 100644
  
  #endif
 diff --git a/desmume/wasm-port/main.cpp b/desmume/wasm-port/main.cpp
-index 44f22c8..82d2ec6 100644
+index 44f22c8..b4d29e4 100644
 --- a/desmume/wasm-port/main.cpp
 +++ b/desmume/wasm-port/main.cpp
 @@ -14,22 +14,22 @@
@@ -2218,7 +2276,7 @@ index 44f22c8..82d2ec6 100644
    if (desiredSize > 0) {
      savFile->truncate(desiredSize);
      savFile->fseek(0, SEEK_SET);
-@@ -241,7 +307,8 @@ int runFrame(int shouldDraw, u32 keys, int touched, u32 touchX, u32 touchY) {
+@@ -241,9 +307,13 @@ int runFrame(int shouldDraw, u32 keys, int touched, u32 touchX, u32 touchY) {
    NDS_exec<false>();
  
    if (shouldDraw) {
@@ -2227,8 +2285,13 @@ index 44f22c8..82d2ec6 100644
 +    else gpu_screen_to_rgb((u32 *)dstFrameBuffer);
    }
  
++  #ifdef HAVE_JIT
++  arm_jit_flush();
++#endif
    return ret;
-@@ -345,10 +412,104 @@ int micWriteSamples(uint8_t *buffer, int len) {
+ }
+ 
+@@ -345,10 +415,104 @@ int micWriteSamples(uint8_t *buffer, int len) {
    return len;
  }
  
