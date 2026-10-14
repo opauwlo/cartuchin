@@ -1,6 +1,6 @@
 /* Cartuchin service worker: the emulator files are big and never change between
    releases, so they come from the cache; the page and app script check the network first. */
-const VERSION = "cartucho-v5";
+const VERSION = "cartucho-v6";
 const CORE = ["vendor/emulator.min.js", "vendor/emulator.min.css", "vendor/mgba_libretro.js", "ejs/cores/mgba_libretro.wasm", "vendor/lang-pt-BR.js", "vendor/qrcode.js", "icon.svg"];
 self.addEventListener("install", (e) => { e.waitUntil(caches.open(VERSION).then((c) => c.addAll(CORE)).then(() => self.skipWaiting())); });
 self.addEventListener("activate", (e) => {
@@ -21,6 +21,29 @@ self.addEventListener("fetch", (e) => {
       h.set("Cross-Origin-Resource-Policy", "same-origin");
       return new Response(r.body, { status: r.status, statusText: r.statusText, headers: h });
     }));
+    return;
+  }
+  // a página do jogo de DS (?ds=) também fica isolada, para o core com threads.
+  // "credentialless" em vez de "require-corp": imagens e scripts de outros sites
+  // (Google, capas) continuam carregando, só que sem cookies.
+  if (e.request.mode === "navigate" && url.searchParams.has("ds")) {
+    e.respondWith(fetch(e.request, { cache: "no-cache" }).then((r) => {
+      const h = new Headers(r.headers);
+      h.set("Cross-Origin-Opener-Policy", "same-origin");
+      h.set("Cross-Origin-Embedder-Policy", "credentialless");
+      return new Response(r.body, { status: r.status, statusText: r.statusText, headers: h });
+    }));
+    return;
+  }
+  // os workers das threads do core carregam ds/nds-mt.js: numa página isolada, o script
+  // de um worker precisa declarar a mesma política
+  if (/\/ds\/nds[^/]*\.(js|wasm)$/.test(url.pathname)) {
+    e.respondWith(fetch(e.request, { cache: "no-cache" }).then((r) => {
+      const h = new Headers(r.headers);
+      h.set("Cross-Origin-Embedder-Policy", "credentialless");
+      h.set("Cross-Origin-Resource-Policy", "same-origin");
+      return new Response(r.body, { status: r.status, statusText: r.statusText, headers: h });
+    }).catch(() => caches.match(e.request)));
     return;
   }
   if (e.request.mode === "navigate" && /\/teste-ds\.html$/.test(url.pathname)) {

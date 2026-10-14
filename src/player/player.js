@@ -332,7 +332,17 @@ async function createEmulator(file, gameName, options) {
   });
 }
 
+/* jogo de DS: abre em ?ds=<jogo>, que o service worker serve com isolamento
+   cross-origin (o core usa threads). O login do Google fica na biblioteca. */
+const dsPage = new URLSearchParams(location.search).get("ds");
 async function play(key) {
+  if (!dsPage) {
+    const r = roms.get(key) || cloud.roms.get(key) || cloud.docs.get(key);
+    if (r && r.system === "nds") {
+      location.href = location.pathname + "?ds=" + encodeURIComponent(key) + (cast.pending ? "#tela-" + cast.pending : "");
+      return;
+    }
+  }
   let rom = roms.get(key);
   if (!rom) rom = await fetchRom(key);
   if (!rom) return;
@@ -447,6 +457,9 @@ $("#pullBtn").addEventListener("click", () => pullSave((m) => m && toast(m)));
 $("#padPull").addEventListener("click", () => pullSave((m) => m && padMsg(m)));
 
 function tokenFromTap() {
+  // na página isolada do DS o popup do Google não consegue responder: o save fica
+  // guardado aqui e sobe quando houver token (na biblioteca ele é renovado)
+  if (window.crossOriginIsolated) return Promise.resolve();
   if (isGoogle() && !tokenFresh() && gauth.client) return askGoogleToken(false).then(() => {
     googleNeedsTap(false);
     cloud.db = true;
@@ -468,7 +481,8 @@ $("#backBtn").addEventListener("click", async () => {
       [{ label: "Voltar mesmo assim", value: true, cls: "primary" }, { label: "Continuar jogando", value: false }]);
     if (!ok) return;
   }
-  location.reload();
+  if (dsPage) location.href = location.pathname;   // sai da página isolada do DS
+  else location.reload();
 });
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "hidden") flush({ leaving: true });
@@ -483,4 +497,4 @@ window.fetch = (input, init) => {
   return realFetch(input, init);
 };
 
-export { player, flush, uploadState, createEmulator, play, tokenFromTap };
+export { player, flush, uploadState, createEmulator, play, tokenFromTap, dsPage };

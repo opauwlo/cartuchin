@@ -2830,7 +2830,9 @@ registerProcessor("ds-out", DSOut);
         } else if (m.t === "init") {
           audioPort = m.audioPort || null;
           g.Module = {
-            locateFile: (p) => m.base + p.replace(/^nds(-nosimd)?\.wasm$/, m.name + ".wasm"),
+            locateFile: (p) => m.base + p.replace(/^nds(-nosimd|-mt)?\.wasm$/, m.name + ".wasm"),
+            // build com threads: cada thread é um worker que carrega este mesmo script
+            mainScriptUrlOrBlob: m.base + m.name + ".js",
             print: () => {
             },
             printErr: (t) => console.warn("[ds]", t),
@@ -2850,12 +2852,7 @@ registerProcessor("ds-out", DSOut);
     };
   }
   var workerUrl = null;
-  function startWorker() {
-    if (!workerUrl) {
-      const src = `const W2 = ${W}, H2 = ${H * 2};
-(${workerMain.toString()})();`;
-      workerUrl = URL.createObjectURL(new Blob([src], { type: "text/javascript" }));
-    }
+  function coreNames() {
     const simd = WebAssembly.validate(new Uint8Array([
       0,
       97,
@@ -2889,6 +2886,15 @@ registerProcessor("ds-out", DSOut);
       98,
       11
     ]));
+    if (!simd) return ["nds-nosimd"];
+    return window.crossOriginIsolated && typeof SharedArrayBuffer === "function" ? ["nds-mt", "nds"] : ["nds"];
+  }
+  function startWorker(name) {
+    if (!workerUrl) {
+      const src = `const W2 = ${W}, H2 = ${H * 2};
+(${workerMain.toString()})();`;
+      workerUrl = URL.createObjectURL(new Blob([src], { type: "text/javascript" }));
+    }
     const worker = new Worker(workerUrl);
     const base = new URL("ds/", location.href).href;
     const ready = new Promise((resolve, reject) => {
@@ -2909,20 +2915,26 @@ registerProcessor("ds-out", DSOut);
       });
     });
     const audioPort = audio.port();
-    worker.postMessage({ t: "init", base, name: simd ? "nds" : "nds-nosimd", audioPort }, audioPort ? [audioPort] : []);
-    return { worker, ready };
+    worker.postMessage({ t: "init", base, name, audioPort }, audioPort ? [audioPort] : []);
+    return { worker, ready, name };
   }
   async function createDsEmulator(romBytes, gameName, startSav) {
     await audio.init().catch(() => {
     });
-    const { worker, ready } = startWorker();
-    try {
-      await ready;
-    } catch (e) {
-      console.warn("ds worker", e);
-      worker.terminate();
-      return null;
+    let worker = null, coreName = "";
+    for (const name of coreNames()) {
+      const w = startWorker(name);
+      try {
+        await w.ready;
+        worker = w.worker;
+        coreName = name;
+        break;
+      } catch (e) {
+        console.warn("ds worker", name, e);
+        w.worker.terminate();
+      }
     }
+    if (!worker) return null;
     let nextId = 1;
     const waiting = /* @__PURE__ */ new Map();
     function call(fn, arg, transfer) {
@@ -2983,6 +2995,7 @@ registerProcessor("ds-out", DSOut);
         emu.volume = v;
         if (audio.gain) audio.gain.gain.value = v;
       },
+      core: coreName,
       audioStats: () => ({ ready: audio.ready, fill: Math.round(audio.fill), target: audio.target, underruns: audio.underruns, state: audio.ctx && audio.ctx.state }),
       destroy
     };
@@ -3692,7 +3705,15 @@ registerProcessor("ds-out", DSOut);
       defaultOptions: options
     });
   }
+  var dsPage = new URLSearchParams(location.search).get("ds");
   async function play(key) {
+    if (!dsPage) {
+      const r = roms.get(key) || cloud.roms.get(key) || cloud.docs.get(key);
+      if (r && r.system === "nds") {
+        location.href = location.pathname + "?ds=" + encodeURIComponent(key) + (cast.pending ? "#tela-" + cast.pending : "");
+        return;
+      }
+    }
     let rom = roms.get(key);
     if (!rom) rom = await fetchRom(key);
     if (!rom) return;
@@ -3823,6 +3844,7 @@ registerProcessor("ds-out", DSOut);
   $("#pullBtn").addEventListener("click", () => pullSave((m) => m && toast(m)));
   $("#padPull").addEventListener("click", () => pullSave((m) => m && padMsg(m)));
   function tokenFromTap() {
+    if (window.crossOriginIsolated) return Promise.resolve();
     if (isGoogle() && !tokenFresh() && gauth.client) return askGoogleToken(false).then(() => {
       googleNeedsTap(false);
       cloud.db = true;
@@ -3848,7 +3870,8 @@ registerProcessor("ds-out", DSOut);
       );
       if (!ok) return;
     }
-    location.reload();
+    if (dsPage) location.href = location.pathname;
+    else location.reload();
   });
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden") flush({ leaving: true });
@@ -5045,8 +5068,26 @@ Content-Type: ${type}\r
     }
   }
   (async () => {
+    if (dsPage) {
+      if (!window.crossOriginIsolated && "serviceWorker" in navigator && !sessionStorage.getItem("cartucho.dsIso")) {
+        sessionStorage.setItem("cartucho.dsIso", "1");
+        try {
+          await Promise.race([navigator.serviceWorker.ready, new Promise((r) => setTimeout(r, 3e3))]);
+          if (navigator.serviceWorker.controller) {
+            location.reload();
+            return;
+          }
+        } catch (e) {
+        }
+      }
+      $("#library").hidden = true;
+    }
     await loadRoms();
     await connect();
+    if (dsPage) {
+      play(dsPage);
+      return;
+    }
     identifyOldRoms();
   })();
 })();

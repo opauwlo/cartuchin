@@ -5,6 +5,8 @@
 #   OUT=dist ./build.sh   -> pasta de saída
 # Teste nativo (só checa se compila/linka, sem emcc):
 #   NATIVE_CHECK=1 ./build.sh
+#   MT=1 ./build.sh       -> build com threads (rasterizador 3D em paralelo); precisa de SIMD
+#                            e de página com isolamento cross-origin (SharedArrayBuffer)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -30,7 +32,7 @@ SOURCES=(
   utils/advanscene.cpp utils/datetime.cpp utils/guid.cpp
   utils/emufat.cpp utils/fsnitro.cpp utils/xstring.cpp
   utils/decrypt/crc.cpp utils/decrypt/decrypt.cpp utils/decrypt/header.cpp
-  utils/vfat.cpp utils/dlditool.cpp
+  utils/vfat.cpp utils/task.cpp utils/dlditool.cpp
   utils/colorspacehandler/colorspacehandler.cpp
   utils/libfat/cache.cpp utils/libfat/directory.cpp utils/libfat/disc.cpp
   utils/libfat/fatdir.cpp utils/libfat/fatfile.cpp utils/libfat/filetime.cpp
@@ -63,6 +65,7 @@ if [[ "$NATIVE_CHECK" == "1" ]]; then
   OBJ="$ROOT/.obj-native"
   COMMON_FLAGS=(-O0 -DHAVE_LIBZ -fno-strict-aliasing -msse2
     -I"$ROOT/tools/native-stub" -I"$SRC" -I"$SRC/libretro-common/include" -w)
+  if [[ "${MT:-0}" == "1" ]]; then OBJ="$ROOT/.obj-native-mt"; COMMON_FLAGS+=(-pthread -DDESMUME_THREADS); fi
 else
   command -v emcc >/dev/null || { echo "emcc não encontrado"; exit 1; }
   WRAP=()   # no emcc o ccache entra pelo EM_COMPILER_WRAPPER
@@ -77,6 +80,11 @@ else
       case "$f" in -O3) dbg+=(-O1) ;; -flto) ;; *) dbg+=("$f") ;; esac
     done
     COMMON_FLAGS=("${dbg[@]}" -g2 -fexceptions)
+  fi
+  if [[ "${MT:-0}" == "1" ]]; then
+    [[ "$SIMD" == "1" ]] || { echo "MT=1 precisa de SIMD=1"; exit 1; }
+    OBJ="$ROOT/.obj-mt"
+    COMMON_FLAGS+=(-pthread -DDESMUME_THREADS)   # todo objeto precisa de -pthread (memória compartilhada)
   fi
   if [[ "$SIMD" == "1" ]]; then
     # wasm SIMD + emulação de SSE2: ativa os caminhos SSE2 do DeSmuME
@@ -130,6 +138,14 @@ fi
 
 NAME="nds"; [[ "$SIMD" == "1" ]] || NAME="nds-nosimd"
 LINK_EXTRA=(-O3 -flto)
+MEM=(-sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=134217728)
+if [[ "${MT:-0}" == "1" ]]; then
+  NAME="nds-mt"
+  # memória fixa de 768 MB (cabe ROM de 512 MB): com threads, crescer a memória deixa
+  # as views do JS desatualizadas; reservada só no endereço, as páginas vêm sob demanda.
+  # Pool de 8 workers pronto antes do main(): rasterizador (até 4) + tarefas da GPU (3).
+  MEM=(-sINITIAL_MEMORY=805306368 -pthread -sPTHREAD_POOL_SIZE=8)
+fi
 if [[ "${DEBUG:-0}" == "1" ]]; then
   NAME="nds-debug"
   LINK_EXTRA=(-O1 -g2 -fexceptions -sEXCEPTION_STACK_TRACES=1 -sASSERTIONS=2)
@@ -139,7 +155,7 @@ EXPORTS='["_main","_malloc","_free","_prepareRomBuffer","_loadROM","_reset","_ru
 
 em++ "${OBJS[@]}" "${LINK_EXTRA[@]}" -sUSE_ZLIB=1 \
   $([[ "$SIMD" == "1" ]] && echo "-msimd128 -mbulk-memory -mnontrapping-fptoint") --profiling-funcs \
-  -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=134217728 -sSTACK_SIZE=1048576 \
+  "${MEM[@]}" -sSTACK_SIZE=1048576 \
   -sENVIRONMENT=web,worker -sFORCE_FILESYSTEM=1 \
   -sEXPORTED_FUNCTIONS="$EXPORTS" \
   -sEXPORTED_RUNTIME_METHODS='["ccall","cwrap","FS","HEAPU8","HEAP16","HEAPU32","UTF8ToString"]' \

@@ -238,7 +238,9 @@ function workerMain() {
       } else if (m.t === "init") {
         audioPort = m.audioPort || null;
         g.Module = {
-          locateFile: (p) => m.base + p.replace(/^nds(-nosimd)?\.wasm$/, m.name + ".wasm"),
+          locateFile: (p) => m.base + p.replace(/^nds(-nosimd|-mt)?\.wasm$/, m.name + ".wasm"),
+          // build com threads: cada thread é um worker que carrega este mesmo script
+          mainScriptUrlOrBlob: m.base + m.name + ".js",
           print: () => {}, printErr: (t) => console.warn("[ds]", t),
           onAbort: (r) => reply({ t: "error", msg: "core: " + r }),
         };
@@ -257,13 +259,19 @@ function workerMain() {
 }
 
 let workerUrl = null;
-function startWorker() {
+/* Qual core usar: com isolamento cross-origin (página do jogo de DS, ?ds=) dá para usar
+   threads — o rasterizador 3D roda em paralelo. Sem isso, o core de uma thread só. */
+function coreNames() {
+  const simd = WebAssembly.validate(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 123, 3,
+    2, 1, 0, 10, 10, 1, 8, 0, 65, 0, 253, 15, 253, 98, 11]));
+  if (!simd) return ["nds-nosimd"];
+  return window.crossOriginIsolated && typeof SharedArrayBuffer === "function" ? ["nds-mt", "nds"] : ["nds"];
+}
+function startWorker(name) {
   if (!workerUrl) {
     const src = `const W2 = ${W}, H2 = ${H * 2};\n(${workerMain.toString()})();`;
     workerUrl = URL.createObjectURL(new Blob([src], { type: "text/javascript" }));
   }
-  const simd = WebAssembly.validate(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 123, 3,
-    2, 1, 0, 10, 10, 1, 8, 0, 65, 0, 253, 15, 253, 98, 11]));
   const worker = new Worker(workerUrl);
   const base = new URL("ds/", location.href).href;
   const ready = new Promise((resolve, reject) => {
@@ -275,19 +283,27 @@ function startWorker() {
     worker.addEventListener("error", (e) => { clearTimeout(t); reject(new Error(e.message || "worker")); });
   });
   const audioPort = audio.port();
-  worker.postMessage({ t: "init", base, name: simd ? "nds" : "nds-nosimd", audioPort }, audioPort ? [audioPort] : []);
-  return { worker, ready };
+  worker.postMessage({ t: "init", base, name, audioPort }, audioPort ? [audioPort] : []);
+  return { worker, ready, name };
 }
 
 /* ---------- o emulador com cara de EmulatorJS ---------- */
 async function createDsEmulator(romBytes, gameName, startSav) {
   await audio.init().catch(() => {});
-  const { worker, ready } = startWorker();
-  try { await ready; } catch (e) {
-    console.warn("ds worker", e);
-    worker.terminate();
-    return null;
+  let worker = null, coreName = "";
+  for (const name of coreNames()) {
+    const w = startWorker(name);
+    try {
+      await w.ready;
+      worker = w.worker;
+      coreName = name;
+      break;
+    } catch (e) {
+      console.warn("ds worker", name, e);
+      w.worker.terminate();
+    }
   }
+  if (!worker) return null;
 
   // chamadas ao worker que devolvem resultado
   let nextId = 1;
@@ -331,6 +347,7 @@ async function createDsEmulator(romBytes, gameName, startSav) {
     play() { emu.paused = false; audio.reset(); acc = 0; },
     pause() { emu.paused = true; },
     setVolume(v) { emu.volume = v; if (audio.gain) audio.gain.gain.value = v; },
+    core: coreName,
     audioStats: () => ({ ready: audio.ready, fill: Math.round(audio.fill), target: audio.target, underruns: audio.underruns, state: audio.ctx && audio.ctx.state }),
     destroy,
   };

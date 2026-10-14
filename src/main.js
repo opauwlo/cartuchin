@@ -26,6 +26,7 @@ import { handleScreenLink } from "./cast/pad.js";
 import { connect } from "./cloud.js";
 import { diag, runDiagnostic } from "./diag.js";
 import { APP_V, identifyOldRoms, loadRoms } from "./library.js";
+import { dsPage, play } from "./player/player.js";
 import { showWelcome } from "./ui/screens.js";
 import { $ } from "./util.js";
 
@@ -60,7 +61,20 @@ handleScreenLink();
   }
 }
 (async () => {
+  if (dsPage) {
+    // página do jogo de DS: na primeira visita o service worker ainda não controla a
+    // página, então ela não veio isolada; recarrega uma vez para ganhar as threads
+    if (!window.crossOriginIsolated && "serviceWorker" in navigator && !sessionStorage.getItem("cartucho.dsIso")) {
+      sessionStorage.setItem("cartucho.dsIso", "1");
+      try {
+        await Promise.race([navigator.serviceWorker.ready, new Promise((r) => setTimeout(r, 3000))]);
+        if (navigator.serviceWorker.controller) { location.reload(); return; }
+      } catch (e) {}
+    }
+    $("#library").hidden = true;
+  }
   await loadRoms();
   await connect();
+  if (dsPage) { play(dsPage); return; }
   identifyOldRoms();
 })();

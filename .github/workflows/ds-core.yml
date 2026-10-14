@@ -74,7 +74,7 @@ jobs:
           version: ${{ env.EMSDK_VERSION }}
           actions-cache-folder: emsdk-cache
 
-      - name: Build wasm (sem SIMD e com SIMD)
+      - name: Build wasm (sem SIMD, com SIMD e com threads)
         working-directory: up
         run: |
           set -uo pipefail
@@ -83,6 +83,11 @@ jobs:
             echo "::warning::Build SIMD falhou; publicando só a versão sem SIMD"
             cp dist/nds-nosimd.js dist/nds.js
             cp dist/nds-nosimd.wasm dist/nds.wasm
+          fi
+          # threads (3D em paralelo): opcional; sem ele a página usa o core sem threads
+          if ! CCACHE=1 SIMD=1 MT=1 OUT=dist ./build.sh > ../logs/build-mt.log 2>&1; then
+            echo "::warning::Build com threads falhou"
+            grep -iE "error|ERRO" ../logs/build-mt.log | head -8 | sed 's/^/::warning::MT /' || true
           fi
           ccache -s | tail -4 || true
 
@@ -123,7 +128,9 @@ jobs:
           done
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          for f in nds-mt.js nds-mt.wasm; do if [ -s "up/dist/$f" ]; then cp "up/dist/$f" "ds/$f"; fi; done
           git add ds/nds.js ds/nds.wasm ds/nds-nosimd.js ds/nds-nosimd.wasm
+          git add ds/nds-mt.js ds/nds-mt.wasm 2>/dev/null || true
           if git diff --cached --quiet; then echo "core igual, nada a commitar"; exit 0; fi
           git commit -m "ds: core compilado (${GITHUB_SHA::7}) [skip ci]"
           for i in 1 2 3; do

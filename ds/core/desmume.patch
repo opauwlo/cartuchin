@@ -1,3 +1,16 @@
+diff --git a/desmume/src/NDSSystem.h b/desmume/src/NDSSystem.h
+index 073ed64..c6e6acf 100644
+--- a/desmume/src/NDSSystem.h
++++ b/desmume/src/NDSSystem.h
+@@ -600,7 +600,7 @@ extern struct TCommonSettings
+ 	
+ 	bool cheatsDisable;
+ 
+-	const int num_cores = 1;
++	int num_cores = 1;   // wasm: no build com threads o main.cpp ajusta pelo aparelho
+ 	bool single_core() { return num_cores==1; }
+ 	bool rigorous_timing;
+ 
 diff --git a/desmume/src/emufile.h b/desmume/src/emufile.h
 index c2f781f..7addf7f 100644
 --- a/desmume/src/emufile.h
@@ -61,6 +74,75 @@ index 2cd4273..f5dc36e 100644
  #endif
  }
  
+diff --git a/desmume/src/rasterize.cpp b/desmume/src/rasterize.cpp
+index 6bf210f..b287cf5 100644
+--- a/desmume/src/rasterize.cpp
++++ b/desmume/src/rasterize.cpp
+@@ -1740,16 +1740,16 @@ SoftRasterizerRenderer::SoftRasterizerRenderer()
+ 	_HACK_viewer_rasterizerUnit.SetSLI(0, _framebufferHeight, false);
+ 	
+ 	const size_t coreCount = CommonSettings.num_cores;
+-	//_threadCount = coreCount;
++	_threadCount = coreCount;
+ 	
+ 	if (_threadCount > SOFTRASTERIZER_MAX_THREADS)
+ 	{
+-		//	_threadCount = SOFTRASTERIZER_MAX_THREADS;
++		_threadCount = SOFTRASTERIZER_MAX_THREADS;
+ 	}
+ 	
+-	if (true) //(_threadCount < 2)
++	if (_threadCount < 2)
+ 	{
+-		//_threadCount = 0;
++		_threadCount = 0;
+ 		
+ 		_nativeLinesPerThread = GPU_FRAMEBUFFER_NATIVE_HEIGHT;
+ 		_nativePixelsPerThread = GPU_FRAMEBUFFER_NATIVE_WIDTH * GPU_FRAMEBUFFER_NATIVE_HEIGHT;
+@@ -1803,8 +1803,8 @@ SoftRasterizerRenderer::SoftRasterizerRenderer()
+ 			//_task[i].start(false, 43);
+ #else
+ 			char name[16];
+-			snprintf(name, 16, "rasterizer %d", i);
+-			//_task[i].start(false, 0, name);
++			snprintf(name, 16, "rasterizer %d", (int)i);
++			_task[i].start(false, 0, name);
+ #endif
+ 		}
+ 	}
+diff --git a/desmume/src/rasterize.h b/desmume/src/rasterize.h
+index 929cdc2..5d5ee5f 100644
+--- a/desmume/src/rasterize.h
++++ b/desmume/src/rasterize.h
+@@ -25,7 +25,11 @@
+ #include <emmintrin.h>
+ #endif
+ 
++#ifdef DESMUME_THREADS
++#define SOFTRASTERIZER_MAX_THREADS 8
++#else
+ #define SOFTRASTERIZER_MAX_THREADS 1
++#endif
+ 
+ extern GPU3DInterface gpu3DRasterize;
+ 
+@@ -148,14 +152,14 @@ private:
+ 	void __InitTables();
+ 	
+ protected:
+-	Task *_task;
++	Task *_task = nullptr;
+ 	SoftRasterizerClearParam _threadClearParam[SOFTRASTERIZER_MAX_THREADS];
+ 	SoftRasterizerPostProcessParams _threadPostprocessParam[SOFTRASTERIZER_MAX_THREADS];
+ 	
+ 	RasterizerUnit<true> _rasterizerUnit[SOFTRASTERIZER_MAX_THREADS];
+ 	RasterizerUnit<false> _HACK_viewer_rasterizerUnit;
+ 	
+-	const size_t _threadCount = 0;
++	size_t _threadCount = 0;
+ 	size_t _nativeLinesPerThread;
+ 	size_t _nativePixelsPerThread;
+ 	size_t _customLinesPerThread;
 diff --git a/desmume/src/slot1.cpp b/desmume/src/slot1.cpp
 index 50e8bd1..2fb6b76 100644
 --- a/desmume/src/slot1.cpp
@@ -89,8 +171,120 @@ index 9118aaf..7874d29 100644
  		{
  			type = (NDS_SLOT2_TYPE)i;
  			return true;
+diff --git a/desmume/src/utils/task.cpp b/desmume/src/utils/task.cpp
+index 0e59186..9ca06c3 100644
+--- a/desmume/src/utils/task.cpp
++++ b/desmume/src/utils/task.cpp
+@@ -15,6 +15,8 @@
+ 	along with the this software.  If not, see <http://www.gnu.org/licenses/>.
+ */
+ 
++// wasm: só existe no build com threads (DESMUME_THREADS); no resto o task.h é um stub
++#ifdef DESMUME_THREADS
+ #include <stdio.h>
+ 
+ #include "types.h"
+@@ -85,27 +87,27 @@ Task::Impl::~Impl()
+ 	shutdown();
+ 	slock_free(mutex);
+ 	scond_free(condWork);
+-}
+-
+-void Task::Impl::start(bool spinlock, int threadPriority, const char *name)
+-{
+-	slock_lock(this->mutex);
+-	
+-	if (this->_isThreadRunning) {
+-		slock_unlock(this->mutex);
+-		return;
+-	}
+-	
+-	this->workFunc = NULL;
+-	this->workFuncParam = NULL;
+-	this->ret = NULL;
+-	this->exitThread = false;
+-	this->_thread = sthread_create_with_priority(&taskProc, this, threadPriority);
+-	this->_isThreadRunning = true;
+-	if (name)
+-		sthread_setname(this->_thread, name);
+-	
+-	slock_unlock(this->mutex);
++}
++
++void Task::Impl::start(bool spinlock, int threadPriority, const char *name)
++{
++	slock_lock(this->mutex);
++	
++	if (this->_isThreadRunning) {
++		slock_unlock(this->mutex);
++		return;
++	}
++	
++	this->workFunc = NULL;
++	this->workFuncParam = NULL;
++	this->ret = NULL;
++	this->exitThread = false;
++	this->_thread = sthread_create_with_priority(&taskProc, this, threadPriority);
++	this->_isThreadRunning = true;
++	if (name)
++		sthread_setname(this->_thread, name);
++	
++	slock_unlock(this->mutex);
+ }
+ 
+ void Task::Impl::execute(const TWork &work, void *param)
+@@ -170,12 +172,13 @@ void Task::Impl::shutdown()
+ 	slock_unlock(this->mutex);
+ }
+ 
+-void Task::start(bool spinlock) { impl->start(spinlock, 0, nullptr); }
++void Task::start(bool spinlock) { impl->start(spinlock, 0, nullptr); }
+ void Task::start(bool spinlock, int threadPriority, const char *name) { impl->start(spinlock, threadPriority, name); }
+ void Task::shutdown() { impl->shutdown(); }
+ Task::Task() : impl(new Task::Impl()) {}
+ Task::~Task() { delete impl; }
+ void Task::execute(const TWork &work, void* param) { impl->execute(work,param); }
+ void* Task::finish() { return impl->finish(); }
++#endif
+ 
+ 
+diff --git a/desmume/src/utils/task.h b/desmume/src/utils/task.h
+index 1f8f3b5..423a904 100644
+--- a/desmume/src/utils/task.h
++++ b/desmume/src/utils/task.h
+@@ -18,6 +18,23 @@
+ #ifndef _TASK_H_
+ #define _TASK_H_
+ 
++#ifdef DESMUME_THREADS
++// wasm com threads: a classe de verdade (utils/task.cpp, sobre rthreads/pthreads)
++class Task
++{
++public:
++	Task();
++	~Task();
++	typedef void * (*TWork)(void *);
++	void start(bool spinlock);
++	void start(bool spinlock, int threadPriority, const char *name = nullptr);
++	void execute(const TWork &work, void* param);
++	void* finish();
++	void shutdown();
++	class Impl;
++	Impl *impl;
++};
++#else
+ //Sort of like a single-thread thread pool.
+ //You hand it a worker function and then call finish() to synch with its completion
+ class Task
+@@ -60,5 +77,6 @@ public:
+ 	//Impl *impl;
+ 
+ };
++#endif
+ 
+ #endif
 diff --git a/desmume/wasm-port/main.cpp b/desmume/wasm-port/main.cpp
-index 44f22c8..9f3e491 100644
+index 44f22c8..0487309 100644
 --- a/desmume/wasm-port/main.cpp
 +++ b/desmume/wasm-port/main.cpp
 @@ -14,22 +14,18 @@
@@ -157,7 +351,23 @@ index 44f22c8..9f3e491 100644
                                   NULL};
  
  SoundInterface_struct *SNDCoreList[] = {&SNDDummy, &SndWasm, NULL};
-@@ -139,6 +149,7 @@ int main() {
+@@ -132,6 +142,15 @@ void setSampleRate(int r) {
+ int main() {
+   srand(time(NULL));
+ 
++#ifdef DESMUME_THREADS
++  // threads extras para o rasterizador 3D (e as limpezas assíncronas da GPU):
++  // metade dos núcleos, no máximo 4. O pool de workers (PTHREAD_POOL_SIZE) cobre isso.
++  {
++    int hc = EM_ASM_INT({ return (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) || 4; });
++    CommonSettings.num_cores = hc >= 8 ? 4 : hc >= 4 ? 2 : 1;
++    printf("threads 3D: %d (nucleos: %d)\n", CommonSettings.num_cores, hc);
++  }
++#endif
+   NDS_Init();
+   SPU_ChangeSoundCore(1, 16384);
+ 
+@@ -139,6 +158,7 @@ int main() {
    cheatsExport = new CHEATSEXPORT();
    printf("wasm ready.\n");
    EM_ASM(wasmReady(););
@@ -165,7 +375,7 @@ index 44f22c8..9f3e491 100644
  }
  
  void *prepareRomBuffer(int rl) {
-@@ -184,7 +195,9 @@ int loadROM(int romLen) {
+@@ -184,7 +204,9 @@ int loadROM(int romLen) {
    if (!NDS_LoadROM("rom.nds")) {
      return emuLastError;
    }
@@ -176,7 +386,7 @@ index 44f22c8..9f3e491 100644
    SPU_SetVolume(100);
    cheatsExport->load("usrcheat.dat");
    return 0;
-@@ -207,6 +220,13 @@ static inline void convertFB(u8 *dst, u8 *src) {
+@@ -207,6 +229,13 @@ static inline void convertFB(u8 *dst, u8 *src) {
  int savGetSize() { return savFile->size(); }
  
  void *savGetPointer(int desiredSize) {
@@ -190,7 +400,7 @@ index 44f22c8..9f3e491 100644
    if (desiredSize > 0) {
      savFile->truncate(desiredSize);
      savFile->fseek(0, SEEK_SET);
-@@ -349,6 +369,60 @@ int emuSetOpt(int k, int v) {
+@@ -349,6 +378,60 @@ int emuSetOpt(int k, int v) {
      if (k == 0) {
        CommonSettings.fwConfig.language = v;
      }
