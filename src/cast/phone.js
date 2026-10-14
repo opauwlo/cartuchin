@@ -40,7 +40,7 @@ const cast = window.__cast = {
    once, so a quick turn never sends two directions together. */
 const MIN_HOLD = 70;
 /* latency samples (ms): touch → button in the game; encoder time in "quadros" mode */
-const lag = { touch: [], enc: [] };
+const lag = { touch: [], enc: [], glass: [] };
 const avgMs = (arr, keep = 20) => { if (arr.length > keep) arr.splice(0, arr.length - keep); return arr.length ? Math.round(arr.reduce((a, b) => a + b, 0) / arr.length) : null; };
 const DIR_MASK = ["UP", "DOWN", "LEFT", "RIGHT"].reduce((m, k) => m | (1 << PAD_BITS.indexOf(k)), 0);
 const pressedAt = new Array(PAD_BITS.length).fill(0);
@@ -147,7 +147,12 @@ const CAST_MODES = [
   // over the data channel, and the TV draws it. Slower to encode, but it depends on
   // nothing the two browsers have to agree on.
   { name: "quadros", frames: true },
+  // DS: como o cloud gaming (Game Pass/xCloud): cada quadro do jogo vai direto para um
+  // codificador em tempo real (H.264 de hardware ou VP8) assim que é desenhado, sem
+  // captura de canvas nem buffer de vídeo; a TV decodifica e mostra na hora.
+  { name: "Tempo real", frames: true, direct: true },
 ];
+const DIRECT_MODE = 3;
 const chromeVer = () => {
   const ua = navigator.userAgent;
   const c = ua.match(/Chrom(?:e|ium)\/(\d+)/), t = ua.match(/Tizen (\d+(?:\.\d+)?)/), w = ua.match(/Web0S|webOS/);
@@ -163,7 +168,8 @@ async function castTo(code, attempt = 0) {
   setCastUi("wait");
   if (attempt === 0) {
     const saved = Number(ls.get("cartucho.castMode")) || 0;
-    cast.order = [saved, ...CAST_MODES.map((m, i) => i).filter((i) => i !== saved)];
+    const first = player.isDs && window.VideoEncoder && window.VideoFrame ? DIRECT_MODE : saved;
+    cast.order = [first, ...CAST_MODES.map((m, i) => i).filter((i) => i !== first && (i !== DIRECT_MODE || player.isDs))];
   }
   cast.code = code;
   cast.attempt = attempt;
@@ -234,6 +240,7 @@ async function castTo(code, attempt = 0) {
           if (j.hello) cast.tvHello = j.hello;
           if (j.key && cast.requestKey) cast.requestKey();
           if (j.ping) { try { dc.send(JSON.stringify({ pong: j.ping })); } catch (x) {} }   // the TV measures the control round trip
+          if (j.shown) lag.glass.push(performance.now() - j.shown / 1000);   // quadro pronto no celular → na tela da TV
         } catch (x) {}
         return;
       }
@@ -254,7 +261,8 @@ async function castTo(code, attempt = 0) {
           p.encodings = (p.encodings && p.encodings.length ? p.encodings : [{}]).map((e) => ({ ...e, maxBitrate: opt.kbps * 1000, maxFramerate: 60, scaleResolutionDownBy: 1, priority: "high", networkPriority: "high" }));
           p.degradationPreference = isDs ? "maintain-resolution" : "maintain-framerate";
           send.setParameters(p).catch((e) => { cast.paramErr = String(e); });
-        } else startFramePump(vtrack, cast.frameChannel);
+        } else if (mode.direct) startDirectPump(vtrack, cast.frameChannel);
+        else startFramePump(vtrack, cast.frameChannel);
         watchCast(pc, vt ? vt.sender : null, dc, emu);
       } else if (pc.connectionState === "failed") stopCast("Não deu para conectar com a segunda tela. Os dois aparelhos estão na mesma rede Wi-Fi?");
       else if (pc.connectionState === "disconnected" || pc.connectionState === "closed") { if (cast.pc === pc) stopCast("A segunda tela desconectou."); }
@@ -312,6 +320,59 @@ async function startFramePump(track, dc) {
   worker.postMessage({ cmd: "start", readable, codec: cast.frameCodec, width: emu.streamW || STREAM_W, height: emu.streamH || STREAM_H, bitrate: 1_200_000 }, [readable]);
   cast.requestKey = () => worker.postMessage({ cmd: "key" });
   cast.pumpStop = () => { worker.postMessage({ cmd: "stop" }); cast.requestKey = null; };
+}
+/* Cabeçalho v2 (modo tempo real): byte 0 = 0x80 | 1 (chave) | 2 (H.264); 1-4 = número do
+   quadro (a TV vê buraco e pede chave, em vez de mostrar imagem quebrada); 5-12 = instante
+   em que o quadro ficou pronto no celular (µs, relógio do celular, ecoado pela TV). */
+const FRAME_HEADER2 = 13;
+function packFrame2(buffer, key, h264, seq, timestamp) {
+  const out = new Uint8Array(FRAME_HEADER2 + buffer.byteLength);
+  out[0] = 0x80 | (key ? 1 : 0) | (h264 ? 2 : 0);
+  const dv = new DataView(out.buffer);
+  dv.setUint32(1, seq >>> 0, true);
+  dv.setFloat64(5, timestamp, true);
+  out.set(new Uint8Array(buffer), FRAME_HEADER2);
+  return out.buffer;
+}
+window.__castTxTest = { frameWorkerSource, packFrame2 };   // teste automático
+async function startDirectPump(track, dc) {
+  cast.pumped = 0;
+  const hello = await waitForTvHello(1500);
+  const want = hello && hello.h264 ? "h264" : hello && hello.vp8 ? "vp8" : null;
+  const emu = player.emu || {};
+  if (!want || !window.VideoEncoder || !window.VideoFrame) { startFramePump(track, dc); return; }
+  const source = `(${frameWorkerSource.toString()})();`;
+  const worker = new Worker(URL.createObjectURL(new Blob([source], { type: "text/javascript" })));
+  let inflight = 0, seq = 0, alive = true;
+  worker.onmessage = ({ data }) => {
+    if (data.ack) { inflight = Math.max(0, inflight - 1); return; }
+    if (data.codec && !data.frame) { cast.frameCodec = data.codec; return; }
+    if (data.fail) { stop(); startFramePump(track, dc); return; }
+    if (data.frame) {
+      // canal atrasado: descarta (a TV vê o buraco no número e pede quadro-chave)
+      if (dc.readyState !== "open" || dc.bufferedAmount > 150000) { seq++; return; }
+      try { dc.send(packFrame2(data.frame, data.key, data.codec === "h264", seq++, data.timestamp)); cast.pumped++; } catch (e) {}
+    }
+    if (data.encMs != null) lag.enc.push(data.encMs);
+  };
+  const stop = () => {
+    if (!alive) return;
+    alive = false;
+    window.__castFrameHook = null;
+    try { worker.postMessage({ cmd: "stop" }); } catch (e) {}
+    cast.requestKey = null;
+  };
+  worker.postMessage({ cmd: "direct", codec: want, width: emu.streamW || 512, height: emu.streamH || 384, bitrate: 4_000_000 });
+  // o emulador chama isto logo depois de desenhar o quadro da segunda tela
+  window.__castFrameHook = (canvas) => {
+    if (!alive || inflight > 1) return;    // codificador atrás: pula este quadro
+    let frame;
+    try { frame = new VideoFrame(canvas, { timestamp: Math.round(performance.now() * 1000) }); } catch (e) { return; }
+    inflight++;
+    worker.postMessage({ cmd: "frame", frame }, [frame]);
+  };
+  cast.requestKey = () => worker.postMessage({ cmd: "key" });
+  cast.pumpStop = stop;
 }
 function waitForTvHello(ms) {
   return new Promise((resolve) => {
@@ -377,7 +438,7 @@ function watchCast(pc, sender, dc, emu) {
     if (tx) { lag.encT = tx.totalEncodeTime || 0; lag.encN = tx.framesEncoded || 0; }
     const sendMs = tx && tx.packetsSent ? Math.round((tx.totalPacketSendDelay || 0) / tx.packetsSent * 1000) : null;
     const speedPct = speed.pct ? Math.round(speed.pct * 100) : null;
-    const st = { lat: { touch: avgMs(lag.touch), enc: encMs, send: sendMs, speed: speedPct }, br, ua: chromeVer(), mode: `${CAST_MODES[cast.mode].name}${codec ? ` = ${codec}` : cast.frameCodec ? ` = ${cast.frameCodec === "vp8" ? "VP8 WebCodecs" : "JPEG"}` : ""} (${cast.attempt + 1}/${CAST_MODES.length})`,
+    const st = { lat: { touch: avgMs(lag.touch), glass: avgMs(lag.glass), enc: encMs, send: sendMs, speed: speedPct }, br, ua: chromeVer(), mode: `${CAST_MODES[cast.mode].name}${codec ? ` = ${codec}` : cast.frameCodec ? ` = ${cast.frameCodec === "vp8" ? "VP8 WebCodecs" : "JPEG"}` : ""} (${cast.attempt + 1}/${CAST_MODES.length})`,
       enc: (tx && tx.encoderImplementation) || "", keys: tx ? tx.keyFramesEncoded || 0 : 0, pli: tx ? tx.pliCount || 0 : 0, pk: tx ? tx.packetsSent || 0 : 0, sent: tx ? tx.framesSent || 0 : cast.pumped || 0, w: (tx && tx.frameWidth) || 0, h: (tx && tx.frameHeight) || 0, lim: (tx && tx.qualityLimitationReason) || "",
       cw: emu.canvas ? emu.canvas.width : 0, ch: emu.canvas ? emu.canvas.height : 0, track: tr ? tr.readyState + (tr.muted ? " (sem quadros)" : "") : "sem trilha" };
     if (dc.readyState === "open") { try { dc.send(JSON.stringify({ st })); } catch (e) {} }

@@ -470,6 +470,8 @@ async function createDsEmulator(romBytes, gameName, startSav) {
     if (casting()) {
       if (castGl) castGl.draw(fb, ds.cast, false, S);
       else blit(cctx, ds.cast);
+      // modo "Tempo real": o quadro vai para o codificador assim que fica pronto
+      if (window.__castFrameHook) window.__castFrameHook(castCanvas);
     }
   }
 

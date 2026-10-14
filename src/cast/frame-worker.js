@@ -22,6 +22,47 @@ export const frameWorkerSource = () => {
     worker.postMessage({ frame: buffer, key, timestamp }, [buffer]);
   }
 
+  // "Tempo real" (DS): os quadros chegam um a um do jogo ({ cmd: "frame" }), sem captura de
+  // canvas no meio. H.264 de hardware quando a TV decodifica, senão VP8. Nunca enfileira.
+  let cfg = null;
+  async function startDirect(want, width, height, bitrate) {
+    const tries = want === "h264"
+      ? [{ codec: "avc1.42E028", avc: { format: "annexb" }, hardwareAcceleration: "prefer-hardware" }, { codec: "vp8" }]
+      : [{ codec: "vp8" }];
+    for (const t of tries) {
+      const c = { ...t, width, height, bitrate, framerate: 60, latencyMode: "realtime" };
+      try { if ((await worker.VideoEncoder.isConfigSupported(c)).supported) { cfg = c; break; } } catch (e) {}
+    }
+    if (!cfg) throw new Error("sem codificador");
+    codec = cfg.codec === "vp8" ? "vp8" : "h264";
+    encoder = new worker.VideoEncoder({
+      output: (chunk) => {
+        const buf = new ArrayBuffer(chunk.byteLength);
+        chunk.copyTo(buf);
+        const started = inFlight.get(chunk.timestamp); inFlight.delete(chunk.timestamp);
+        worker.postMessage({ frame: buf, key: chunk.type === "key", timestamp: chunk.timestamp, codec, encMs: started ? performance.now() - started : null }, [buf]);
+      },
+      error: (e) => worker.postMessage({ error: String(e) }),
+    });
+    encoder.configure(cfg);
+    worker.postMessage({ codec });
+  }
+  function encodeDirect(frame) {
+    // um quadro atrasado vale menos que o próximo: com o codificador ocupado, descarta
+    if (!encoder || encoder.state !== "configured" || encoder.encodeQueueSize > 0) { frame.close(); return; }
+    if (frame.displayWidth !== cfg.width || frame.displayHeight !== cfg.height) {
+      cfg = { ...cfg, width: frame.displayWidth, height: frame.displayHeight };
+      encoder.configure(cfg);
+      wantKey = true;
+    }
+    framesIn++;
+    const key = wantKey || framesIn % KEY_EVERY === 0;
+    wantKey = false;
+    inFlight.set(frame.timestamp, performance.now());
+    encoder.encode(frame, { keyFrame: key });
+    frame.close();
+  }
+
   async function startVp8(width, height, bitrate) {
     encoder = new worker.VideoEncoder({
       output: (chunk) => {
@@ -74,7 +115,14 @@ export const frameWorkerSource = () => {
   }
 
   worker.onmessage = async ({ data }) => {
-    if (data.cmd === "start") {
+    if (data.cmd === "frame") {
+      if (running) encodeDirect(data.frame); else data.frame.close();
+      worker.postMessage({ ack: 1 });
+    } else if (data.cmd === "direct") {
+      running = true;
+      try { await startDirect(data.codec, data.width, data.height, data.bitrate); }
+      catch (e) { running = false; worker.postMessage({ fail: String(e) }); }
+    } else if (data.cmd === "start") {
       running = true; codec = data.codec;
       try {
         if (codec === "vp8") await startVp8(data.width, data.height, data.bitrate);
