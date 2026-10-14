@@ -65,6 +65,7 @@
   #menu .row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 0;
     border-bottom: 1px solid var(--line); }
   #menu .row:last-of-type { border-bottom: 0; }
+  #menu select:disabled { opacity: .55; }
   #menu select, #menu button { background: var(--btn); color: var(--text); border: 1px solid var(--line);
     border-radius: 8px; padding: 6px 10px; font: inherit; }
   #menu .slots { display: flex; gap: 6px; }
@@ -122,11 +123,18 @@
     <h3>Menu</h3>
     <div class="row"><span>Salvar estado</span><div class="slots" id="saveSlots"></div></div>
     <div class="row"><span>Carregar estado</span><div class="slots" id="loadSlots"></div></div>
+    <div class="row"><span>Desempenho</span>
+      <select id="optPerf">
+        <option value="0" selected>Automático</option>
+        <option value="1">Manual (60 fps)</option>
+        <option value="2">Manual (vídeo a 30 fps)</option>
+      </select></div>
     <div class="row"><span>Latência do áudio</span>
       <select id="optLatency">
         <option value="2048">Baixa (~43 ms)</option>
         <option value="3200" selected>Normal (~67 ms)</option>
         <option value="4800">Alta (~100 ms, celular fraco)</option>
+        <option value="6400">Muito alta (~133 ms)</option>
       </select></div>
     <div class="row"><span>Interpolação do som</span>
       <select id="optInterp">
@@ -150,6 +158,7 @@
       <div class="slots"><button id="btnExportSav">Exportar</button><button id="btnImportSav">Importar</button></div></div>
     <div class="row"><span>Reiniciar jogo</span><button id="btnReset">Reset</button></div>
     <div class="hint">Teclado: setas, Z=B, X=A, A=Y, S=X, Q=L, W=R, Enter=Start, Shift=Select, Espaço=acelerar. Controle USB/Bluetooth também funciona.</div>
+    <div class="hint" id="autoInfo"></div>
     <div class="hint" id="buildInfo"></div>
   </div>
 </div>
@@ -182,7 +191,7 @@ function toast(text, ms = 2200) {
 }
 
 const prefs = (() => {
-  const defaults = { latency: 3200, interp: 1, skip: 3, lang: 1, smooth: 0 };
+  const defaults = { perf: 0, latency: 3200, interp: 1, skip: 3, lang: 1, smooth: 0 };
   let saved = {};
   try { saved = JSON.parse(localStorage.getItem('dsweb-prefs') || '{}'); } catch (e) { saved = {}; }
   const p = Object.assign({}, defaults, saved);
@@ -342,7 +351,7 @@ const audio = {
       this.underruns = e.data.underruns;
     };
     this.node.connect(this.ctx.destination);
-    this.setTarget(prefs.latency);
+    this.setTarget(cfg.latency);
     // se o navegador não aceitou 48 kHz, o core passa a gerar na taxa real
     if (this.ctx.sampleRate !== SAMPLE_RATE && emu.M) emu.M._audioSetup(Math.min(48000, this.ctx.sampleRate));
     this.ready = true;
@@ -352,7 +361,7 @@ const audio = {
   reset() { if (this.node) this.node.port.postMessage({ t: 'reset' }); this.fill = 0; this.pushedSince = 0; },
   // nível estimado agora = último relatório + o que mandei - o que já tocou
   level() {
-    if (!this.ready) return prefs.latency;
+    if (!this.ready) return cfg.latency;
     const played = (performance.now() - this.fillAt) * this.rate() / 1000;
     return this.fill + this.pushedSince - played;
   },
@@ -448,7 +457,7 @@ async function startRom(bytes, name) {
   }
 
   M._emuSetOpt(0, prefs.lang | 0);
-  M._emuSetOpt(1, prefs.interp | 0);
+  M._emuSetOpt(1, cfg.interp | 0);
   const r = M._loadROM(bytes.length);
   if (r !== 0) {
     toast(r === -1001 ? 'ROM com área segura encriptada: use uma ROM “decrypted”.' : 'Falha ao carregar a ROM (código ' + r + ')', 6000);
@@ -503,7 +512,54 @@ async function loadState(slot) {
   toast('Estado ' + slot + ' carregado');
 }
 
+// ---------- Ajuste de desempenho ----------
+// cfg é o que o loop usa de fato. No automático, sobe/desce de nível olhando
+// carga da CPU, fps emulado e estouros do buffer de áudio.
+const LEVELS = [
+  { latency: 3200, interp: 1, video30: false, skip: 3, name: 'qualidade' },
+  { latency: 4800, interp: 0, video30: false, skip: 3, name: 'leve' },
+  { latency: 4800, interp: 0, video30: true,  skip: 3, name: 'vídeo 30 fps' },
+  { latency: 6400, interp: 0, video30: true,  skip: 5, name: 'máximo desempenho' },
+];
+const cfg = { latency: 3200, interp: 1, video30: false, skip: 3 };
+const tune = { level: 1, calm: 0, bad: 0, lastUnder: 0 };
+
+function applyCfg() {
+  if (prefs.perf === 0) {
+    Object.assign(cfg, LEVELS[tune.level]);
+  } else {
+    cfg.latency = prefs.latency; cfg.interp = prefs.interp; cfg.skip = prefs.skip;
+    cfg.video30 = prefs.perf === 2;
+  }
+  audio.setTarget(cfg.latency);
+  if (emu.M) emu.M._emuSetOpt(1, cfg.interp);
+  const auto = prefs.perf === 0;
+  for (const id of ['optLatency', 'optInterp', 'optSkip']) $(id).disabled = auto;
+  if (auto) { $('optLatency').value = cfg.latency; $('optInterp').value = cfg.interp; $('optSkip').value = cfg.skip; }
+  $('autoInfo').textContent = auto ? 'Automático agora em: ' + LEVELS[tune.level].name : '';
+}
+
+function autoTune(fps, load) {
+  if (prefs.perf !== 0 || emu.turbo || !emu.running) return;
+  const under = audio.underruns - tune.lastUnder;
+  tune.lastUnder = audio.underruns;
+  const struggling = load > 80 || fps < 57 || under > 0;
+  tune.bad = struggling ? tune.bad + 1 : 0;
+  // estouro de áudio sobe na hora; carga alta precisa de 2 s seguidos (evita pico de loading)
+  if ((under > 0 || tune.bad >= 2) && tune.level < LEVELS.length - 1) {
+    tune.level++; tune.calm = 0; tune.bad = 0; prefs.autoLevel = tune.level; prefs.save(); applyCfg();
+    toast('Ajuste automático: ' + LEVELS[tune.level].name, 1500);
+    return;
+  }
+  // folga sustentada por 15 s: tenta voltar um nível de qualidade
+  if (!struggling && load < 45) tune.calm++; else tune.calm = 0;
+  if (tune.calm >= 15 && tune.level > 0) {
+    tune.level--; tune.calm = 0; prefs.autoLevel = tune.level; prefs.save(); applyCfg();
+  }
+}
+
 // ---------- Loop principal ----------
+let video30Toggle = 0;
 let acc = 0, last = 0;
 let statFrames = 0, statDrawn = 0, statT0 = 0, statBusy = 0;
 function tick(now) {
@@ -524,18 +580,20 @@ function tick(now) {
     // correção pelo nível do áudio: mantém o buffer perto do alvo
     if (audio.ready) {
       const lvl = audio.level();
-      if (lvl < prefs.latency * 0.5) n += 1;               // atrasado: roda um a mais
-      else if (lvl > prefs.latency * 2 && n > 0) n -= 1;  // adiantado: segura um
+      if (lvl < cfg.latency * 0.5) n += 1;               // atrasado: roda um a mais
+      else if (lvl > cfg.latency * 2 && n > 0) n -= 1;  // adiantado: segura um
     }
-    n = Math.min(n, prefs.skip | 0);
+    n = Math.min(n, cfg.skip | 0);
   }
+  const statDrawnBefore = statDrawn;
   for (let i = 0; i < n; i++) {
-    const draw = i === n - 1;
+    // vídeo a 30 fps: o jogo roda a 60, mas só desenha um frame sim, um não
+    const draw = i === n - 1 && (!cfg.video30 || (++video30Toggle & 1) === 0);
     emu.step(draw, !emu.turbo);
     statFrames++;
     if (draw) statDrawn++;
   }
-  if (n > 0) emu.draw();
+  if (n > 0 && statDrawnBefore !== statDrawn) emu.draw();
   statBusy += performance.now() - t0;
 
   if (now - statT0 >= 1000) {
@@ -543,6 +601,7 @@ function tick(now) {
     const fps = statFrames / secs, vis = statDrawn / secs, load = statBusy / (now - statT0) * 100;
     $('stats').textContent = fps.toFixed(0) + 'fps ' + vis.toFixed(0) + 'v ' + load.toFixed(0) + '%';
     $('stats').style.color = fps < 55 ? 'var(--warn)' : '';
+    autoTune(fps, load);
     statFrames = statDrawn = 0; statBusy = 0; statT0 = now;
   }
 }
@@ -673,9 +732,12 @@ function bindPref(id, key, apply) {
   el.value = String(prefs[key]);
   el.onchange = () => { prefs[key] = +el.value; prefs.save(); if (apply) apply(prefs[key]); };
 }
-bindPref('optLatency', 'latency', (v) => audio.setTarget(v));
-bindPref('optInterp', 'interp', (v) => emu.M && emu.M._emuSetOpt(1, v));
-bindPref('optSkip', 'skip');
+bindPref('optPerf', 'perf', applyCfg);
+bindPref('optLatency', 'latency', applyCfg);
+bindPref('optInterp', 'interp', applyCfg);
+bindPref('optSkip', 'skip', applyCfg);
+tune.level = Math.min(LEVELS.length - 1, Math.max(0, prefs.autoLevel == null ? 1 : prefs.autoLevel | 0));
+applyCfg();
 bindPref('optLang', 'lang', () => toast('Vale a partir do próximo carregamento da ROM'));
 bindPref('optSmooth', 'smooth', (v) => document.body.classList.toggle('smooth', !!v));
 document.body.classList.toggle('smooth', !!prefs.smooth);
