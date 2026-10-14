@@ -2643,6 +2643,9 @@
   var LAYOUT_LABEL = { auto: "Automático", both: "As duas", side: "Lado a lado", top: "Só a de cima", bottom: "Só a de baixo" };
   var LOCAL_LAYOUTS = ["auto", "both", "top", "bottom"];
   var CAST_LAYOUTS = ["top", "both", "side"];
+  var MAX_SCALE = 6;
+  var GPU_LABEL = { auto: "Automático", on: "GPU sempre", off: "Software" };
+  var expOpen = false;
   var ds = {
     local: ls.get("cartucho.ds.local") || "auto",
     cast: ls.get("cartucho.ds.cast") || "top",
@@ -2650,9 +2653,10 @@
     tvq: ls.get("cartucho.ds.tvq") || "suave",
     // canal do core: "estavel" (padrão) ou "teste" (ds/nds-test: resolução interna 2x-3x etc.)
     core: ls.get("cartucho.ds.core") === "teste" ? "teste" : "estavel",
-    scale: Math.min(3, Math.max(1, Number(ls.get("cartucho.ds.scale")) || 1)),
-    // 3D na GPU (WebGL2): só no core de teste; "off" volta para o rasterizador por software
-    gpu: ls.get("cartucho.ds.gpu") !== "off",
+    scale: Math.min(MAX_SCALE, Math.max(1, Number(ls.get("cartucho.ds.scale")) || 1)),
+    // 3D na GPU (WebGL2), só no core de teste: "auto" = GPU só em 2x ou mais (em 1x o software
+    // é mais leve: sem leitura de volta da GPU), "on" = sempre GPU, "off" = sempre software
+    gpu: ["auto", "on", "off"].includes(ls.get("cartucho.ds.gpu")) ? ls.get("cartucho.ds.gpu") : "auto",
     perf: ls.get("cartucho.ds.perf") || "auto",
     level: Math.min(LEVELS.length - 1, Number(ls.get("cartucho.ds.level") || 1))
   };
@@ -3084,9 +3088,10 @@ registerProcessor("ds-out", DSOut);
     emu.canScale = canScale;
     emu.setScale = (v) => {
       if (!canScale) return false;
-      v = Math.min(3, Math.max(1, v | 0));
+      v = Math.min(MAX_SCALE, Math.max(1, v | 0));
       if (M._emuSetOpt(3, v) !== 0) return false;
       S = v;
+      emu.applyRenderer();
       fb.width = W * S;
       fb.height = H * 2 * S;
       img = null;
@@ -3111,6 +3116,12 @@ registerProcessor("ds-out", DSOut);
       }
       emu.gpu3d = !!on && r === 0;
       return on ? emu.gpu3d : r === 0;
+    };
+    emu.applyRenderer = () => {
+      if (!canScale) return true;
+      const want = ds.gpu === "on" || ds.gpu === "auto" && S > 1;
+      if (want === emu.gpu3d) return true;
+      return emu.setGpu3d(want) || !want;
     };
     function draw() {
       const im = frameImage();
@@ -3282,8 +3293,8 @@ registerProcessor("ds-out", DSOut);
       destroy();
       return null;
     }
-    if (canScale && ds.gpu && !emu.setGpu3d(true)) toast("3D na GPU indisponível neste aparelho; usando o modo software.", 4e3);
     if (canScale && ds.scale > 1) emu.setScale(ds.scale);
+    if (canScale && !emu.applyRenderer()) toast("3D na GPU indisponível neste aparelho; usando o modo software.", 4e3);
     syncSizes();
     emu.started = true;
     stage("Iniciando…");
@@ -3452,36 +3463,6 @@ void main() {
       },
       {
         icon: "sliders",
-        label: "Core: " + (ds.core === "teste" ? "Teste (experimental)" : "Estável"),
-        fn: () => {
-          ds.core = ds.core === "teste" ? "estavel" : "teste";
-          ls.set("cartucho.ds.core", ds.core);
-          toast(ds.core === "teste" ? "Core de teste: vale quando abrir o jogo de novo. Se algo der errado, volte para o estável aqui." : "Core estável: vale quando abrir o jogo de novo.", 5e3);
-          refresh();
-        }
-      },
-      ...emu.canScale ? [{
-        icon: "sliders",
-        label: `Resolução: ${ds.scale}x` + (ds.scale > 1 ? " (pesado)" : ""),
-        fn: () => {
-          ds.scale = ds.scale >= 3 ? 1 : ds.scale + 1;
-          ls.set("cartucho.ds.scale", String(ds.scale));
-          if (!emu.setScale(ds.scale)) toast("Não deu para mudar a resolução.");
-          refresh();
-        }
-      }] : [],
-      ...emu.canScale ? [{
-        icon: "sliders",
-        label: "3D: " + (emu.gpu3d ? "GPU (rápido)" : "Software"),
-        fn: () => {
-          ds.gpu = !emu.gpu3d;
-          ls.set("cartucho.ds.gpu", ds.gpu ? "on" : "off");
-          if (!emu.setGpu3d(ds.gpu) && ds.gpu) toast("3D na GPU indisponível neste aparelho.", 4e3);
-          refresh();
-        }
-      }] : [],
-      {
-        icon: "sliders",
         label: "Imagem na 2ª tela: " + TVQ_LABEL[ds.tvq],
         fn: () => {
           ds.tvq = nextOf(TVQ_MODES, ds.tvq);
@@ -3500,7 +3481,49 @@ void main() {
           emu.applyCfg();
           refresh();
         }
-      }
+      },
+      { icon: "sliders", label: (expOpen ? "▾ " : "▸ ") + "Experimental", fn: () => {
+        expOpen = !expOpen;
+        refresh();
+      } },
+      ...expOpen ? expItems(emu, refresh) : []
+    ];
+  }
+  function expItems(emu, refresh) {
+    return [
+      {
+        sub: true,
+        icon: "sliders",
+        label: "Core: " + (ds.core === "teste" ? "Teste" : "Estável"),
+        fn: () => {
+          ds.core = ds.core === "teste" ? "estavel" : "teste";
+          ls.set("cartucho.ds.core", ds.core);
+          toast(ds.core === "teste" ? "Core de teste: vale quando abrir o jogo de novo. Se algo der errado, volte para o estável aqui." : "Core estável: vale quando abrir o jogo de novo.", 5e3);
+          refresh();
+        }
+      },
+      ...emu.canScale ? [{
+        sub: true,
+        icon: "sliders",
+        label: `Resolução: ${ds.scale}x` + (ds.scale > 3 ? " (muito pesado)" : ds.scale > 1 ? " (pesado)" : ""),
+        fn: () => {
+          ds.scale = ds.scale >= MAX_SCALE ? 1 : ds.scale + 1;
+          ls.set("cartucho.ds.scale", String(ds.scale));
+          if (!emu.setScale(ds.scale)) toast("Não deu para mudar a resolução.");
+          refresh();
+        }
+      }, {
+        sub: true,
+        icon: "sliders",
+        label: "3D: " + GPU_LABEL[ds.gpu] + " (agora: " + (emu.gpu3d ? "GPU" : "software") + ")",
+        fn: () => {
+          ds.gpu = nextOf(["auto", "on", "off"], ds.gpu);
+          ls.set("cartucho.ds.gpu", ds.gpu);
+          if (!emu.applyRenderer()) toast("3D na GPU indisponível neste aparelho.", 4e3);
+          refresh();
+        }
+      }] : [{ sub: true, icon: "sliders", label: "Resolução e 3D na GPU: só no core de teste", fn: () => {
+      } }]
     ];
   }
   var dsStatesOk = true;
@@ -4050,8 +4073,14 @@ void main() {
       );
       if (!ok) return;
     }
+    player.leaving = true;
     if (dsPage) location.href = location.pathname;
     else location.reload();
+  });
+  window.addEventListener("beforeunload", (e) => {
+    if (!player.emu || player.leaving) return;
+    e.preventDefault();
+    e.returnValue = "";
   });
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden") flush({ leaving: true });
@@ -5159,7 +5188,11 @@ Content-Type: ${type}\r
         closeSheets();
         $("#pullBtn").click();
       }),
-      ...player.isDs ? dsMenuItems(emu, fillGameMenu).map((it) => sheetAction(it.icon, it.label, it.fn)) : [],
+      ...player.isDs ? dsMenuItems(emu, fillGameMenu).map((it) => {
+        const b = sheetAction(it.icon, it.label, it.fn);
+        if (it.sub) b.classList.add("sub");
+        return b;
+      }) : [],
       player.isDs ? null : sheetAction("sliders", $("#player").classList.contains("show-ejs") ? "Esconder opções do emulador" : "Opções avançadas do emulador", () => {
         const on = !$("#player").classList.contains("show-ejs");
         $("#player").classList.toggle("show-ejs", on);

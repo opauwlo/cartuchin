@@ -494,8 +494,15 @@ $("#backBtn").addEventListener("click", async () => {
       [{ label: "Voltar mesmo assim", value: true, cls: "primary" }, { label: "Continuar jogando", value: false }]);
     if (!ok) return;
   }
+  player.leaving = true;   // saída pedida: não perguntar no beforeunload
   if (dsPage) location.href = location.pathname;   // sai da página isolada do DS
   else location.reload();
+});
+// F5 / puxar para atualizar com jogo aberto: o navegador pede confirmação
+window.addEventListener("beforeunload", (e) => {
+  if (!player.emu || player.leaving) return;
+  e.preventDefault();
+  e.returnValue = "";
 });
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "hidden") flush({ leaving: true });

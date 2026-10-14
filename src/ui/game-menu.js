@@ -54,7 +54,7 @@ function fillGameMenu() {
       closeSheets();
       $("#pullBtn").click();
     }),
-    ...(player.isDs ? dsMenuItems(emu, fillGameMenu).map((it) => sheetAction(it.icon, it.label, it.fn)) : []),
+    ...(player.isDs ? dsMenuItems(emu, fillGameMenu).map((it) => { const b = sheetAction(it.icon, it.label, it.fn); if (it.sub) b.classList.add("sub"); return b; }) : []),
     player.isDs ? null : sheetAction("sliders", $("#player").classList.contains("show-ejs") ? "Esconder opções do emulador" : "Opções avançadas do emulador", () => {
       const on = !$("#player").classList.contains("show-ejs");
       $("#player").classList.toggle("show-ejs", on);
