@@ -343,6 +343,12 @@
     watch: null,
     /** @type {any} last report from the phone */
     phoneStats: null,
+    /** @type {any} */
+    view: null,
+    // DS: como ampliar ({ mode, grid }), mandado pelo celular
+    /** @type {any} */
+    gl: void 0,
+    // ampliação WebGL (null = indisponível)
     gen: 0,
     // bumped on every new connection; loops of an older one stop
     sharp: false,
@@ -453,7 +459,10 @@
           try {
             const d = JSON.parse(m.data);
             if (d && d.st) tvScreen.phoneStats = d.st;
-            if (d && d.view) $("#screen").classList.toggle("smooth", !!d.view.smooth);
+            if (d && d.view) {
+              tvScreen.view = d.view;
+              $("#screen").classList.toggle("smooth", !!d.view.smooth);
+            }
             if (d && d.pong) {
               tvScreen.rtt.push(performance.now() - d.pong);
               if (tvScreen.rtt.length > 10) tvScreen.rtt.shift();
@@ -616,6 +625,90 @@
       }
     };
   }
+  function tvUpscaler() {
+    if (tvScreen.gl !== void 0) return tvScreen.gl;
+    tvScreen.gl = null;
+    const canvas = document.createElement("canvas");
+    canvas.id = "scrGl";
+    canvas.hidden = true;
+    const gl = canvas.getContext("webgl", { alpha: false, antialias: false, preserveDrawingBuffer: true });
+    if (!gl) return null;
+    const vs = "attribute vec2 p; varying vec2 uv; void main(){ uv = vec2(p.x * 0.5 + 0.5, 0.5 - p.y * 0.5); gl_Position = vec4(p, 0.0, 1.0); }";
+    const fs = `precision highp float;
+varying vec2 uv;
+uniform sampler2D t;
+uniform vec2 vid;        // tamanho do vídeo
+uniform float grid;      // pixels do vídeo por pixel do jogo
+uniform bool epx;
+vec3 px(vec2 c) { vec2 n = vid / grid; c = clamp(c, vec2(0.0), n - 1.0); return texture2D(t, (c * grid + grid * 0.5) / vid).rgb; }
+bool eq(vec3 a, vec3 b) { return all(lessThan(abs(a - b), vec3(0.06))); }
+void main() {
+  vec2 s = uv * vid / grid, c = floor(s);
+  vec3 E = px(c);
+  if (!epx) { gl_FragColor = vec4(E, 1.0); return; }
+  vec3 A = px(c + vec2(0.0, -1.0)), B = px(c + vec2(1.0, 0.0)), C = px(c + vec2(-1.0, 0.0)), D = px(c + vec2(0.0, 1.0));
+  vec2 f = s - c;
+  vec3 o = E;
+  if (f.y < 0.5) {
+    if (f.x < 0.5) { if (eq(C, A) && !eq(C, D) && !eq(A, B)) o = A; }
+    else { if (eq(A, B) && !eq(A, C) && !eq(B, D)) o = B; }
+  } else {
+    if (f.x < 0.5) { if (eq(D, C) && !eq(D, B) && !eq(C, A)) o = C; }
+    else { if (eq(B, D) && !eq(B, A) && !eq(D, C)) o = D; }
+  }
+  gl_FragColor = vec4(o, 1.0);
+}`;
+    try {
+      const sh = (type, src) => {
+        const x = gl.createShader(type);
+        gl.shaderSource(x, src);
+        gl.compileShader(x);
+        if (!gl.getShaderParameter(x, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(x));
+        return x;
+      };
+      const prog = gl.createProgram();
+      gl.attachShader(prog, sh(gl.VERTEX_SHADER, vs));
+      gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, fs));
+      gl.linkProgram(prog);
+      if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+      gl.useProgram(prog);
+      gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+      const loc = gl.getAttribLocation(prog, "p");
+      gl.enableVertexAttribArray(loc);
+      gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+      gl.bindTexture(gl.TEXTURE_2D, gl.createTexture());
+      for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.NEAREST], [gl.TEXTURE_MAG_FILTER, gl.NEAREST], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, k, v);
+      const uVid = gl.getUniformLocation(prog, "vid"), uGrid = gl.getUniformLocation(prog, "grid"), uEpx = gl.getUniformLocation(prog, "epx");
+      $("#screen").appendChild(canvas);
+      tvScreen.gl = {
+        canvas,
+        draw(video, view) {
+          const vw = video.videoWidth, vh = video.videoHeight, grid = Math.max(1, view.grid | 0);
+          const ow = Math.round(vw / grid) * 4, oh = Math.round(vh / grid) * 4;
+          if (canvas.width !== ow || canvas.height !== oh) {
+            canvas.width = ow;
+            canvas.height = oh;
+          }
+          gl.viewport(0, 0, ow, oh);
+          try {
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, video);
+          } catch (e) {
+            return false;
+          }
+          gl.uniform2f(uVid, vw, vh);
+          gl.uniform1f(uGrid, grid);
+          gl.uniform1i(uEpx, view.mode === "suave" && grid > 1 ? 1 : 0);
+          gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+          return true;
+        }
+      };
+    } catch (e) {
+      console.warn("[tv] ampliação WebGL", e);
+    }
+    return tvScreen.gl;
+  }
+  window.__tvUpscaler = tvUpscaler;
   function drawVideoSharp() {
     const v = $("#scrVideo"), canvas = $("#scrCanvas");
     if (tvScreen.sharp) return;
@@ -630,7 +723,15 @@
         if (gen === tvScreen.gen) tvScreen.sharp = false;
         return;
       }
-      if (v.readyState >= 2 && v.videoWidth) {
+      const view = tvScreen.view;
+      const glr = view && view.grid && v.readyState >= 2 && v.videoWidth ? tvUpscaler() : null;
+      if (glr) {
+        if (glr.draw(v, view)) tvScreen.drawnSharp++;
+        glr.canvas.hidden = false;
+        canvas.hidden = true;
+      } else if (v.readyState >= 2 && v.videoWidth) {
+        if (tvScreen.gl) tvScreen.gl.canvas.hidden = true;
+        canvas.hidden = false;
         if (canvas.width !== v.videoWidth || canvas.height !== v.videoHeight) {
           canvas.width = v.videoWidth;
           canvas.height = v.videoHeight;
@@ -711,7 +812,8 @@
         }
       }
       const shown = v.getVideoPlaybackQuality ? v.getVideoPlaybackQuality().totalVideoFrames : "?";
-      const bright = frames || tvScreen.sharp ? brightness($("#scrCanvas")) : v.readyState >= 2 ? brightness(v) : -1;
+      const glOn = tvScreen.gl && !tvScreen.gl.canvas.hidden;
+      const bright = glOn ? brightness(tvScreen.gl.canvas) : frames || tvScreen.sharp ? brightness($("#scrCanvas")) : v.readyState >= 2 ? brightness(v) : -1;
       const box = v.getBoundingClientRect();
       if (v.paused && dec > 0) playScreenVideo();
       let problem = "";
@@ -818,6 +920,8 @@
     tvScreen.framesMode = false;
     $("#scrInfo").hidden = true;
     $("#scrCanvas").hidden = true;
+    if (tvScreen.gl) tvScreen.gl.canvas.hidden = true;
+    tvScreen.view = null;
     $("#scrVideo").hidden = false;
   }
   function stopScreen() {
@@ -1412,7 +1516,8 @@
         vtrack.contentHint = "motion";
       } catch (e) {
       }
-      const opt = { red: !!mode.red, kbps: 2500, layers: "", ...window.__castOpts || {} };
+      const isDs = !!player.isDs;
+      const opt = { red: !!mode.red, kbps: isDs ? 4e3 : 2500, layers: "", ...window.__castOpts || {} };
       let vt = null;
       if (mode.frames) {
         cast.frameChannel = pc.createDataChannel("quadros", { ordered: false, maxRetransmits: 0 });
@@ -1487,7 +1592,7 @@
           if (vt) {
             const send = vt.sender, p = send.getParameters();
             p.encodings = (p.encodings && p.encodings.length ? p.encodings : [{}]).map((e) => ({ ...e, maxBitrate: opt.kbps * 1e3, maxFramerate: 60, scaleResolutionDownBy: 1, priority: "high", networkPriority: "high" }));
-            p.degradationPreference = "maintain-framerate";
+            p.degradationPreference = isDs ? "maintain-resolution" : "maintain-framerate";
             send.setParameters(p).catch((e) => {
               cast.paramErr = String(e);
             });
@@ -3055,9 +3160,8 @@ registerProcessor("ds-out", DSOut);
     function sizeFor(layout) {
       return layout === "both" ? [W * S, H * 2 * S] : layout === "side" ? [W * 2 * S, H * S] : [W * S, H * S];
     }
-    function castScale(layout) {
-      if (!castGl || ds.tvq === "x1" || S > 1) return 1;
-      return layout === "top" || layout === "bottom" ? 4 : 3;
+    function castScale() {
+      return castGl && S === 1 ? 2 : 1;
     }
     function blit(ctx, layout) {
       const w = W * S, h = H * S;
@@ -3092,6 +3196,7 @@ registerProcessor("ds-out", DSOut);
       }
     }
     emu.localLayout = localLayout;
+    emu.castGrid = () => castGl ? castScale() : 0;
     emu.canScale = canScale;
     emu.setScale = (v) => {
       if (!canScale) return false;
@@ -3161,7 +3266,7 @@ registerProcessor("ds-out", DSOut);
       }
       blit(vctx, shownLocal);
       if (casting()) {
-        if (castGl) castGl.draw(fb, ds.cast, ds.tvq === "suave" && S === 1, S);
+        if (castGl) castGl.draw(fb, ds.cast, false, S);
         else blit(cctx, ds.cast);
       }
     }
@@ -3343,8 +3448,8 @@ registerProcessor("ds-out", DSOut);
     }, 0);
     return emu;
   }
-  var TVQ_MODES = ["suave", "nitida", "x1"];
-  var TVQ_LABEL = { suave: "Suave 4x", nitida: "Nítida 4x", x1: "Original 1x" };
+  var TVQ_MODES = ["suave", "nitida"];
+  var TVQ_LABEL = { suave: "Suave (filtro de pixel art)", nitida: "Nítida (pixels exatos)", x1: "Nítida (pixels exatos)" };
   var LAYOUT_ID = { top: 0, bottom: 1, both: 2, side: 3 };
   function makeCastGl(canvas) {
     const gl = canvas.getContext("webgl", { alpha: false, antialias: false, preserveDrawingBuffer: true });
@@ -3424,9 +3529,11 @@ void main() {
   window.__dsCastGl = makeCastGl;
   function sendTvView() {
     const c = window.__cast;
+    const emu = window.__cartucho && window.__cartucho.emu;
+    const grid = emu && emu.castGrid ? emu.castGrid() : 0;
     if (c && c.dc && c.dc.readyState === "open") {
       try {
-        c.dc.send(JSON.stringify({ view: { smooth: ds.tvq === "suave" } }));
+        c.dc.send(JSON.stringify({ view: { smooth: ds.tvq === "suave", mode: ds.tvq, grid } }));
       } catch (e) {
       }
     }

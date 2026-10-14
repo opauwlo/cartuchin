@@ -248,8 +248,8 @@ button { cursor: pointer; }
    this box had no size and the picture inside it was 0x0, a black screen */
 #screen { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: #000; z-index: 15; }
 /* the picture is the video itself, visible and full screen: the simplest path, the one every TV browser plays */
-#screen.smooth #scrVideo, #screen.smooth #scrCanvas { image-rendering: auto; }
-#scrVideo, #scrCanvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: contain; background: #000; image-rendering: pixelated; image-rendering: crisp-edges; }
+#screen.smooth #scrVideo, #screen.smooth #scrCanvas, #screen.smooth #scrGl { image-rendering: auto; }
+#scrVideo, #scrCanvas, #scrGl { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: contain; background: #000; image-rendering: pixelated; image-rendering: crisp-edges; }
 .scr-info { position: fixed; left: 16px; bottom: 16px; max-width: 90%; padding: 10px 14px; border-radius: 10px; background: rgba(0, 0, 0, 0.8); color: #e9ebf2; font: 600 16px/1.4 sans-serif; white-space: pre-line; z-index: 20; }
 @media (min-width: 1100px) { .scr-info { font-size: 22px; } }
 .scr-wait { position: absolute; top: 0; left: 0; width: 100%; height: 100%; box-sizing: border-box; display: grid; place-items: center; padding: 24px; background: var(--bg); overflow: auto; }
@@ -649,9 +649,9 @@ body { margin: 0; }
 
 <div id="dialogRoot"></div>
 
-<script src="config.js?v=20261014190945"></script>
+<script src="config.js?v=20261014191217"></script>
 <script src="vendor/lang-pt-BR.js?v=20261013202456"></script>
 <script src="vendor/qrcode.js"></script>
-<script src="app.js?v=20261014190945"></script>
+<script src="app.js?v=20261014191217"></script>
 </body>
 </html>

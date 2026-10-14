@@ -368,9 +368,11 @@ async function createDsEmulator(romBytes, gameName, startSav) {
   function sizeFor(layout) {
     return layout === "both" ? [W * S, H * 2 * S] : layout === "side" ? [W * 2 * S, H * S] : [W * S, H * S];
   }
-  function castScale(layout) {
-    if (!castGl || ds.tvq === "x1" || S > 1) return 1;
-    return layout === "top" || layout === "bottom" ? 4 : 3;   // 1024x768; as duas telas: 768x1152 / 1536x576
+  // A imagem vai crua para a TV, que amplia (EPX/exata) na GPU dela. Em 1x cada pixel vira um
+  // bloco 2x2 (a compressão do vídeo guarda cor a cada 2x2: sem isso pixels finos borram);
+  // em 2x+ a resolução interna já basta. Bem menos pixels para codificar que a antiga 4x.
+  function castScale() {
+    return castGl && S === 1 ? 2 : 1;
   }
   function blit(ctx, layout) {
     const w = W * S, h = H * S;
@@ -403,6 +405,8 @@ async function createDsEmulator(romBytes, gameName, startSav) {
     }
   }
   emu.localLayout = localLayout;
+  // pixels do vídeo por pixel do jogo no que vai para a TV (0 = TV antiga: imagem já pronta)
+  emu.castGrid = () => (castGl ? castScale() : 0);
   emu.canScale = canScale;
   emu.setScale = (v) => {
     if (!canScale) return false;
@@ -464,7 +468,7 @@ async function createDsEmulator(romBytes, gameName, startSav) {
     }
     blit(vctx, shownLocal);
     if (casting()) {
-      if (castGl) castGl.draw(fb, ds.cast, ds.tvq === "suave" && S === 1, S);
+      if (castGl) castGl.draw(fb, ds.cast, false, S);
       else blit(cctx, ds.cast);
     }
   }
@@ -630,8 +634,8 @@ async function createDsEmulator(romBytes, gameName, startSav) {
    Modo "suave": Scale2x (EPX) calculado por pixel de saída, o mesmo filtro dos emuladores
    de pixel art: arredonda diagonais e curvas sem borrar. Modo "nítida": vizinho mais
    próximo, pixels exatos. Uma passada só, na GPU; a textura é o quadro 256x384. */
-const TVQ_MODES = ["suave", "nitida", "x1"];
-const TVQ_LABEL = { suave: "Suave 4x", nitida: "Nítida 4x", x1: "Original 1x" };
+const TVQ_MODES = ["suave", "nitida"];
+const TVQ_LABEL = { suave: "Suave (filtro de pixel art)", nitida: "Nítida (pixels exatos)", x1: "Nítida (pixels exatos)" };
 const LAYOUT_ID = { top: 0, bottom: 1, both: 2, side: 3 };
 function makeCastGl(canvas) {
   const gl = canvas.getContext("webgl", { alpha: false, antialias: false, preserveDrawingBuffer: true });
@@ -703,7 +707,9 @@ window.__dsCastGl = makeCastGl;   // usado pelo teste automático do filtro
 /* avisa a TV se a imagem é suave (ela amplia com suavização) ou de pixels (ampliação exata) */
 function sendTvView() {
   /** @type {any} */ const c = window.__cast;
-  if (c && c.dc && c.dc.readyState === "open") { try { c.dc.send(JSON.stringify({ view: { smooth: ds.tvq === "suave" } })); } catch (e) {} }
+  const emu = window.__cartucho && window.__cartucho.emu;
+  const grid = emu && emu.castGrid ? emu.castGrid() : 0;
+  if (c && c.dc && c.dc.readyState === "open") { try { c.dc.send(JSON.stringify({ view: { smooth: ds.tvq === "suave", mode: ds.tvq, grid } })); } catch (e) {} }
 }
 setInterval(sendTvView, 3000);   // também cobre a TV que conectou depois
 

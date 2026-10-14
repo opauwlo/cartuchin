@@ -183,7 +183,10 @@ async function castTo(code, attempt = 0) {
     const vtrack = stream.getVideoTracks()[0];
     try { vtrack.contentHint = "motion"; } catch (e) {}
     // tuned for a so-so Wi-Fi (see test/net.js, which measures them under loss and jitter)
-    const opt = { red: !!mode.red, kbps: 2500, layers: "", ...(window.__castOpts || {}) };
+    // DS: imagem crua em blocos 2x2 (a TV amplia): mais bits e resolução sempre fixa,
+    // senão a TV perde a grade dos pixels
+    const isDs = !!player.isDs;
+    const opt = { red: !!mode.red, kbps: isDs ? 4000 : 2500, layers: "", ...(window.__castOpts || {}) };
     let vt = null;
     if (mode.frames) {
       cast.frameChannel = pc.createDataChannel("quadros", { ordered: false, maxRetransmits: 0 });
@@ -249,7 +252,7 @@ async function castTo(code, attempt = 0) {
         if (vt) {
           const send = vt.sender, p = send.getParameters();
           p.encodings = (p.encodings && p.encodings.length ? p.encodings : [{}]).map((e) => ({ ...e, maxBitrate: opt.kbps * 1000, maxFramerate: 60, scaleResolutionDownBy: 1, priority: "high", networkPriority: "high" }));
-          p.degradationPreference = "maintain-framerate";
+          p.degradationPreference = isDs ? "maintain-resolution" : "maintain-framerate";
           send.setParameters(p).catch((e) => { cast.paramErr = String(e); });
         } else startFramePump(vtrack, cast.frameChannel);
         watchCast(pc, vt ? vt.sender : null, dc, emu);
