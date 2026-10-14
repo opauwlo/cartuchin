@@ -14,6 +14,12 @@ OUT="${OUT:-$ROOT/dist}"
 SIMD="${SIMD:-1}"
 NATIVE_CHECK="${NATIVE_CHECK:-0}"
 JOBS="${JOBS:-$(nproc)}"
+# CCACHE=1: reaproveita objetos já compilados entre execuções (o CI guarda ~/.cache/ccache)
+WRAP=()
+if [[ "${CCACHE:-0}" == "1" ]] && command -v ccache >/dev/null; then
+  WRAP=(ccache)
+  export EM_COMPILER_WRAPPER=ccache
+fi
 
 SOURCES=(
   armcpu.cpp arm_instructions.cpp bios.cpp cp15.cpp commandline.cpp common.cpp
@@ -59,6 +65,7 @@ if [[ "$NATIVE_CHECK" == "1" ]]; then
     -I"$ROOT/tools/native-stub" -I"$SRC" -I"$SRC/libretro-common/include" -w)
 else
   command -v emcc >/dev/null || { echo "emcc não encontrado"; exit 1; }
+  WRAP=()   # no emcc o ccache entra pelo EM_COMPILER_WRAPPER
   CC=emcc; CXX=em++
   OBJ="$ROOT/.obj-simd$SIMD"
   COMMON_FLAGS+=(-flto -sUSE_ZLIB=1)
@@ -86,11 +93,11 @@ compile_one() {
   local path="$s"; [[ "$s" = /* ]] || path="$SRC/$s"
   o="$OBJ/$(echo "$s" | tr '/' '_').o"
   if [[ "$path" == *.c ]]; then
-    "$CC" "${COMMON_FLAGS[@]}" -c "$path" -o "$o"
+    "${WRAP[@]}" "$CC" "${COMMON_FLAGS[@]}" -c "$path" -o "$o"
   else
     local extra=()
     [[ "$NATIVE_CHECK" == "1" && "$path" == *wasm-port/main.cpp ]] && extra=(-Dmain=wasm_main)
-    "$CXX" "${COMMON_FLAGS[@]}" "${extra[@]}" -std=gnu++14 -c "$path" -o "$o"
+    "${WRAP[@]}" "$CXX" "${COMMON_FLAGS[@]}" "${extra[@]}" -std=gnu++14 -c "$path" -o "$o"
   fi
 }
 

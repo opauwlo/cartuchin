@@ -3,8 +3,20 @@ name: Teste de velocidade
 on:
   push:
     branches: [main]
+    # o core do DS e os docs não mudam a velocidade do app de GBA
+    paths-ignore:
+      - "ds/**"
+      - ".github/workflows/ds-core.yml"
+      - "**.md"
   pull_request:
+    paths-ignore:
+      - "ds/**"
+      - "**.md"
   workflow_dispatch:
+
+concurrency:
+  group: speed-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: write   # to comment the result on the commit when the test fails

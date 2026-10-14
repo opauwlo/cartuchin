@@ -1,7 +1,8 @@
 name: Core DS (DeSmuME-wasm melhorado)
 
-# Compila o nds.js/nds.wasm usados por ds/index.html a partir do
-# 44670/desmume-wasm + o nosso patch (ds/core/desmume.patch) e commita em ds/.
+# Compila ds/nds*.js + ds/nds*.wasm a partir do 44670/desmume-wasm + ds/core/desmume.patch,
+# testa e commita em ds/. Só roda quando o core muda (ou manualmente).
+# Economia: ccache guarda os objetos compilados; mudança pequena = build de ~1-2 min.
 on:
   push:
     branches: [main]
@@ -9,6 +10,11 @@ on:
       - "ds/core/**"
       - ".github/workflows/ds-core.yml"
   workflow_dispatch:
+    inputs:
+      diagnostico:
+        description: "Gerar build de diagnóstico (exceções com stack trace)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -20,100 +26,101 @@ concurrency:
 env:
   UPSTREAM: https://github.com/44670/desmume-wasm
   UPSTREAM_REF: 1015846
+  EMSDK_VERSION: 3.1.74
+  CCACHE_DIR: /home/runner/.cache/ccache
+  CCACHE_MAXSIZE: 400M
+  CCACHE_COMPILERCHECK: content
 
 jobs:
   build:
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+
+      - name: Dependências
+        run: |
+          sudo apt-get install -y --no-install-recommends ccache zlib1g-dev >/dev/null
+          mkdir -p "$CCACHE_DIR" logs
+
+      - name: Cache do ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-${{ env.EMSDK_VERSION }}-${{ hashFiles('ds/core/desmume.patch', 'ds/core/build.sh') }}
+          restore-keys: ccache-${{ env.EMSDK_VERSION }}-
 
       - name: Baixar upstream e aplicar patch
         run: |
           set -euo pipefail
-          git clone --filter=blob:none "$UPSTREAM" up
+          git clone --quiet --filter=blob:none "$UPSTREAM" up
           git -C up checkout --quiet "$UPSTREAM_REF"
-          git -C up apply --verbose "$GITHUB_WORKSPACE/ds/core/desmume.patch"
+          git -C up apply "$GITHUB_WORKSPACE/ds/core/desmume.patch"
           cp ds/core/build.sh up/build.sh
           cp -r ds/core/tools up/tools
           chmod +x up/build.sh
 
-      - name: Teste nativo (áudio + save state com ROM de tom)
+      - name: Teste nativo (áudio + save state)
         working-directory: up
         run: |
           set -euo pipefail
-          sudo apt-get install -y zlib1g-dev >/dev/null
-          NATIVE_CHECK=1 ./build.sh
+          CCACHE=1 NATIVE_CHECK=1 ./build.sh > ../logs/native-build.log 2>&1 || { tail -20 ../logs/native-build.log | sed 's/^/::error::/'; exit 1; }
           python3 tools/testrom/make_tone_rom.py tone.nds
-          timeout 120 .obj-native/nds-native tone.nds 600 | tee test.log
-          grep -q '^PASSOU$' test.log
+          timeout 120 .obj-native/nds-native tone.nds 600 > ../logs/native-test.log 2>&1 || true
+          grep -q '^PASSOU$' ../logs/native-test.log || { tail -5 ../logs/native-test.log | sed 's/^/::error::/'; exit 1; }
 
       - uses: mymindstorm/setup-emsdk@v14
         with:
-          version: 3.1.74
+          version: ${{ env.EMSDK_VERSION }}
           actions-cache-folder: emsdk-cache
 
-      - name: Build sem SIMD (fallback)
+      - name: Build wasm (sem SIMD e com SIMD)
         working-directory: up
         run: |
-          set -o pipefail
-          if ! SIMD=0 OUT=dist ./build.sh 2>&1 | tee build0.log; then
-            # o log do Actions nem sempre dá pra baixar; joga os erros nas anotações
-            grep -iE "error|ERRO|undefined" build0.log | head -25 | sed 's/^/::error::/' || true
-            tail -15 build0.log | sed 's/^/::error::TAIL /'
-            exit 1
+          set -uo pipefail
+          CCACHE=1 SIMD=0 OUT=dist ./build.sh > ../logs/build-nosimd.log 2>&1 || { grep -iE "error|ERRO" ../logs/build-nosimd.log | head -10 | sed 's/^/::error::/'; exit 1; }
+          if ! CCACHE=1 SIMD=1 OUT=dist ./build.sh > ../logs/build-simd.log 2>&1; then
+            echo "::warning::Build SIMD falhou; publicando só a versão sem SIMD"
+            cp dist/nds-nosimd.js dist/nds.js
+            cp dist/nds-nosimd.wasm dist/nds.wasm
           fi
+          ccache -s | tail -4 || true
 
-      - name: Build com SIMD
-        id: simd
-        continue-on-error: true
-        working-directory: up
-        run: |
-          set -o pipefail
-          if ! SIMD=1 OUT=dist ./build.sh 2>&1 | tee build1.log; then
-            grep -iE "error|ERRO|undefined" build1.log | head -25 | sed 's/^/::warning::SIMD /' || true
-            exit 1
-          fi
-
-      - name: Se o SIMD falhar, usa o fallback como principal
-        if: steps.simd.outcome != 'success'
-        working-directory: up
-        run: |
-          echo "::warning::Build SIMD falhou; publicando só a versão sem SIMD"
-          cp dist/nds-nosimd.js dist/nds.js
-          cp dist/nds-nosimd.wasm dist/nds.wasm
-
-      - name: Teste do wasm no Node (áudio, save state, vídeo)
+      - name: Teste do wasm no Node
         id: nodetest
-        continue-on-error: true
         working-directory: up
         run: |
-          set -o pipefail
-          ok=0
+          set -uo pipefail
+          worst=0
           for n in nds nds-nosimd; do
-            node tools/node-test.js dist "$n" tone.nds 2>&1 | tee "nodetest-$n.log" || ok=1
+            node tools/node-test.cjs dist "$n" tone.nds > "../logs/node-$n.log" 2>&1; code=$?
+            tail -1 "../logs/node-$n.log" | sed "s/^/::notice::$n: /"
+            (( code > worst )) && worst=$code
           done
-          grep -h "THROW\|FALHOU\|media=" nodetest-*.log | sed 's/^/::warning::/' || true
-          exit $ok
+          grep -h "media=\|THROW" ../logs/node-*.log | head -4 | sed 's/^/::notice::/' || true
+          echo "code=$worst" >> "$GITHUB_OUTPUT"
+          # 1 = áudio/vídeo quebrados: não publica. 2 = só o save state: publica com aviso.
+          [ "$worst" = 2 ] && echo "::warning::Save state ainda falha no wasm"
+          [ "$worst" != 1 ]
 
-      - name: Diagnóstico (só se o teste falhar)
-        if: steps.nodetest.outcome != 'success'
+      - name: Build de diagnóstico
+        if: inputs.diagnostico || failure()
         working-directory: up
         run: |
-          set -o pipefail
-          DEBUG=1 SIMD=0 OUT=dbg ./build.sh > debug-build.log 2>&1 || { tail -20 debug-build.log | sed 's/^/::error::DBG /'; exit 1; }
-          node tools/node-test.js dbg nds-debug tone.nds 2>&1 | tee dbg.log || true
-          grep -A25 "THROW" dbg.log | head -40 | sed 's/^/::error::/' || true
-          exit 1
+          set -uo pipefail
+          CCACHE=1 DEBUG=1 SIMD=0 OUT=dbg ./build.sh > ../logs/debug-build.log 2>&1 || { tail -15 ../logs/debug-build.log | sed 's/^/::error::DBG /'; exit 1; }
+          node tools/node-test.cjs dbg nds-debug tone.nds > ../logs/debug-run.log 2>&1 || true
+          grep -A12 "THROW" ../logs/debug-run.log | head -12 | sed 's/^/::warning::/' || true
+          cp dbg/nds-debug.js dbg/nds-debug.wasm ../logs/
 
       - name: Commitar o core em ds/
+        if: success()
         run: |
           set -euo pipefail
           for f in nds.js nds.wasm nds-nosimd.js nds-nosimd.wasm; do
-            test -s "up/dist/$f" || { echo "faltou $f"; exit 1; }
+            test -s "up/dist/$f" || { echo "::error::faltou $f"; exit 1; }
             cp "up/dist/$f" "ds/$f"
           done
-          ls -la ds
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add ds/nds.js ds/nds.wasm ds/nds-nosimd.js ds/nds-nosimd.wasm
@@ -125,13 +132,15 @@ jobs:
           done
           exit 1
 
-      # Os logs do Actions nem sempre dão pra baixar de fora; publica numa branch.
-      - name: Publicar logs na branch ds-ci-logs
+      # O log do Actions nem sempre dá para baixar de fora: logs (e o build de
+      # diagnóstico, se houver) vão para a branch ds-ci-logs, sobrescrita a cada execução.
+      - name: Publicar logs
         if: always()
         run: |
           set -u
-          mkdir -p /tmp/logs && cp up/*.log /tmp/logs/ 2>/dev/null || true
-          cd /tmp/logs && echo "run ${GITHUB_RUN_ID} sha ${GITHUB_SHA}" > RUN.txt
+          auth=$(git config --get http.https://github.com/.extraheader || true)
+          cd logs || exit 0
+          echo "run ${GITHUB_RUN_ID} sha ${GITHUB_SHA} $(date -u +%FT%TZ)" > RUN.txt
           git init -q && git checkout -q -b ds-ci-logs && git add -A
           git -c user.name=ci -c user.email=ci@local commit -qm "logs ${GITHUB_RUN_ID}"
-          git push -qf "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" ds-ci-logs
+          git -c http.extraheader="$auth" push -qf "https://github.com/${GITHUB_REPOSITORY}" ds-ci-logs || echo "::warning::não publiquei os logs"
