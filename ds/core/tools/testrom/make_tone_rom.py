@@ -36,6 +36,7 @@ rom[0:12] = b'TONETEST\0\0\0\0'
 rom[0x0C:0x10] = b'TONE'
 rom[0x10:0x12] = b'00'
 rom[0x12] = 0  # unitcode NDS
+rom[0xC0:0xC4] = bytes([0x24, 0xFF, 0xAE, 0x51])  # começo do logo (o Cartuchin reconhece DS por ele)
 struct.pack_into('<IIII', rom, 0x20, 0x200, 0x02000000, 0x02000000, len(arm9))
 struct.pack_into('<IIII', rom, 0x30, 0x400, ARM7_BASE, ARM7_BASE, len(arm7))
 struct.pack_into('<II', rom, 0x80, len(rom), 0x4000)

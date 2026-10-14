@@ -81,7 +81,10 @@ else
   if [[ "$SIMD" == "1" ]]; then
     # wasm SIMD + emulação de SSE2: ativa os caminhos SSE2 do DeSmuME
     # (compositor 2D da GPU e conversão de cor), que são o grosso do custo de vídeo.
-    COMMON_FLAGS+=(-msimd128 -msse2)
+    # bulk-memory: memcpy/memset viram uma instrução só (o core copia muito buffer).
+    # nontrapping-fptoint: float→int sem checagem (o rasterizador 3D faz isso o tempo todo).
+    # Todo navegador com SIMD já tem esses dois.
+    COMMON_FLAGS+=(-msimd128 -msse2 -mbulk-memory -mnontrapping-fptoint)
   fi
 fi
 
@@ -97,7 +100,7 @@ compile_one() {
   else
     local extra=()
     [[ "$NATIVE_CHECK" == "1" && "$path" == *wasm-port/main.cpp ]] && extra=(-Dmain=wasm_main)
-    "${WRAP[@]}" "$CXX" "${COMMON_FLAGS[@]}" "${extra[@]}" -std=gnu++14 -c "$path" -o "$o"
+    "${WRAP[@]}" "$CXX" "${COMMON_FLAGS[@]}" "${extra[@]}" -std=gnu++14 -fno-rtti -c "$path" -o "$o"
   fi
 }
 
@@ -135,9 +138,9 @@ fi
 EXPORTS='["_main","_malloc","_free","_prepareRomBuffer","_loadROM","_reset","_runFrame","_getSymbol","_savGetSize","_savGetPointer","_savUpdateChangeFlag","_audioDrain","_audioSetup","_micWriteSamples","_emuSetOpt","_chtGetList","_chtAddItem","_utilStrLen","_zlibCompress","_zlibDecompress","_stateSave","_stateLoad","_stateGetPointer"]'
 
 em++ "${OBJS[@]}" "${LINK_EXTRA[@]}" -sUSE_ZLIB=1 \
-  $([[ "$SIMD" == "1" ]] && echo "-msimd128") \
+  $([[ "$SIMD" == "1" ]] && echo "-msimd128 -mbulk-memory -mnontrapping-fptoint") --profiling-funcs \
   -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=134217728 -sSTACK_SIZE=1048576 \
-  -sENVIRONMENT=web -sFORCE_FILESYSTEM=1 \
+  -sENVIRONMENT=web,worker -sFORCE_FILESYSTEM=1 \
   -sEXPORTED_FUNCTIONS="$EXPORTS" \
   -sEXPORTED_RUNTIME_METHODS='["ccall","cwrap","FS","HEAPU8","HEAP16","HEAPU32","UTF8ToString"]' \
   -o "$OUT/$NAME.js"

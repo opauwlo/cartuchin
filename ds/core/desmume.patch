@@ -1,3 +1,15 @@
+diff --git a/desmume/src/emufile.h b/desmume/src/emufile.h
+index c2f781f..7addf7f 100644
+--- a/desmume/src/emufile.h
++++ b/desmume/src/emufile.h
+@@ -269,6 +269,7 @@ public:
+ 			default:
+ 				assert(false);
+ 		}
++		if (pos < 0) pos = 0;   // posição negativa não existe; evita reserve((u32)-1)
+ 		reserve(pos);
+ 		return 0;
+ 	}
 diff --git a/desmume/src/libretro-common/rthreads/rthreads.c b/desmume/src/libretro-common/rthreads/rthreads.c
 index 45d84f5..6365ebb 100644
 --- a/desmume/src/libretro-common/rthreads/rthreads.c
@@ -12,7 +24,7 @@ index 45d84f5..6365ebb 100644
  #endif
  }
 diff --git a/desmume/src/mc.cpp b/desmume/src/mc.cpp
-index 2cd4273..61028ea 100644
+index 2cd4273..f5dc36e 100644
 --- a/desmume/src/mc.cpp
 +++ b/desmume/src/mc.cpp
 @@ -410,9 +410,12 @@ BackupDevice::BackupDevice()
@@ -36,6 +48,17 @@ index 2cd4273..61028ea 100644
 -	delete fpMC;
 +	if (fpMC != savFile) delete fpMC;
  	fpMC = NULL;
+ }
+ 
+@@ -982,7 +985,9 @@ void BackupDevice::ensure(u32 addr, u8 val, EMUFILE *fpOut)
+ 	//IDEALLY, no assumptions about the file pointer can be made.
+ 	//but someone (actually, not really) so very carefully profiled the save IO code and discovered that not fseeking for every byte read/write was a great optimization.
+ 	//so, now all this code is depending/assuming on the FP being kept in a precise position, and I dont think its smart to change the main user of this assumption to paper over this bug by making it fseek before read/write, while leaving other unknown assuming clients intact
+-	fpMC->fseek(addr-1, SEEK_SET);
++	// wasm: com addr 0 (jogo ainda sem save) isto virava fseek(-1) e o EMUFILE_MEMORY
++	// tentava crescer para 4 GB (std::length_error no wasm32, travando o load state)
++	fpMC->fseek(addr > 0 ? addr-1 : 0, SEEK_SET);
+ #endif
  }
  
 diff --git a/desmume/src/slot1.cpp b/desmume/src/slot1.cpp
