@@ -1,0 +1,244 @@
+diff --git a/desmume/src/mc.cpp b/desmume/src/mc.cpp
+index 2cd4273..61028ea 100644
+--- a/desmume/src/mc.cpp
++++ b/desmume/src/mc.cpp
+@@ -410,9 +410,12 @@ BackupDevice::BackupDevice()
+ 	reset();
+ }
+ 
++// wasm: fpMC aponta para o savFile global (dono é o main.cpp). Apagá-lo aqui
++// deixava um ponteiro solto e derrubava o emulador no reset/troca de ROM/load state.
++extern EMUFILE_MEMORY* savFile;
+ BackupDevice::~BackupDevice()
+ {
+-	delete fpMC;
++	if (fpMC != savFile) delete fpMC;
+ 	fpMC = NULL;
+ }
+ 
+@@ -634,7 +637,7 @@ void BackupDevice::reset()
+ void BackupDevice::close_rom()
+ {
+ 	fpMC->fflush();
+-	delete fpMC;
++	if (fpMC != savFile) delete fpMC;
+ 	fpMC = NULL;
+ }
+ 
+diff --git a/desmume/src/slot1.cpp b/desmume/src/slot1.cpp
+index 50e8bd1..2fb6b76 100644
+--- a/desmume/src/slot1.cpp
++++ b/desmume/src/slot1.cpp
+@@ -176,7 +176,8 @@ bool slot1_getTypeByID(u8 ID, NDS_SLOT1_TYPE &type)
+ {
+ 	for (u8 i = 0; i < NDS_SLOT1_COUNT; i++)
+ 	{
+-		if (slot1_List[i]->info()->id() == ID)
++		// wasm: R4 e DEBUG foram desativados no port (entradas NULL)
++		if (slot1_List[i] && slot1_List[i]->info()->id() == ID)
+ 		{
+ 			type = (NDS_SLOT1_TYPE)i;
+ 			return true;
+diff --git a/desmume/src/slot2.cpp b/desmume/src/slot2.cpp
+index 9118aaf..7874d29 100644
+--- a/desmume/src/slot2.cpp
++++ b/desmume/src/slot2.cpp
+@@ -179,7 +179,8 @@ bool slot2_getTypeByID(u8 ID, NDS_SLOT2_TYPE &type)
+ {
+ 	for (u8 i = 0; i < NDS_SLOT2_COUNT; i++)
+ 	{
+-		if (slot2_List[i]->info()->id() == ID)
++		// wasm: só o slot2 "None" é construído no port (demais NULL)
++		if (slot2_List[i] && slot2_List[i]->info()->id() == ID)
+ 		{
+ 			type = (NDS_SLOT2_TYPE)i;
+ 			return true;
+diff --git a/desmume/wasm-port/main.cpp b/desmume/wasm-port/main.cpp
+index 44f22c8..9f3e491 100644
+--- a/desmume/wasm-port/main.cpp
++++ b/desmume/wasm-port/main.cpp
+@@ -14,22 +14,18 @@
+ #include "SPU.h"
+ #include "mc.h"
+ #include "rasterize.h"
++#include "saves.h"
+ 
+ CHEATSEXPORT *cheatsExport = NULL;
+ 
+ int emuLastError = 0;
+ 
+-EM_JS(int, aa, (const char* str), {
+-  return eval(UTF8ToString(str));
+-});
+ 
+ 
+ 
+ 
+-extern "C" 
+-int bb(int a0, int a1, int a2, int a3) {
+-  return 0;
+-}
++
++
+ 
+ 
+ int DESMUME_SAMPLE_RATE = 48000;
+@@ -58,12 +54,26 @@ void SNDWasmMuteAudio() {}
+ void SNDWasmUnMuteAudio() {}
+ void SNDWasmSetVolume(int volume) {}
+ void SNDWasmClearBuffer() {}
++// ---- Ring buffer de áudio (versão melhorada) ----
++// O core gera ~sampleRate/59.83 amostras por frame. Em vez de passar pelo
++// sincronizador "N" (que estica/corta amostras e causa estalos quando o
++// frame atrasa), guardamos as amostras cruas aqui. O JS drena após cada
++// frame e o AudioWorklet faz o ajuste fino de taxa (dynamic rate control).
++#define AUDIO_RING_FRAMES 32768  // potência de 2
++static s16 audioRing[AUDIO_RING_FRAMES * 2];
++static u32 audioRingW = 0, audioRingR = 0;
+ void SNDWasmFetchSamples(s16 *sampleBuffer, size_t sampleCount,
+                          ESynchMode synchMode,
+                          ISynchronizingAudioBuffer *theSynchronizer) {
+-  if (synchMode == ESynchMode_Synchronous) {
+-    theSynchronizer->enqueue_samples(sampleBuffer, sampleCount);
++  for (size_t i = 0; i < sampleCount; i++) {
++    u32 w = audioRingW & (AUDIO_RING_FRAMES - 1);
++    audioRing[w * 2] = sampleBuffer[i * 2];
++    audioRing[w * 2 + 1] = sampleBuffer[i * 2 + 1];
++    audioRingW++;
+   }
++  // se o JS parar de drenar, descarta o mais antigo
++  if (audioRingW - audioRingR > AUDIO_RING_FRAMES)
++    audioRingR = audioRingW - AUDIO_RING_FRAMES;
+ }
+ 
+ // The NDS reads audio samples in the following format:
+@@ -106,7 +116,7 @@ SoundInterface_struct SndWasm = {1,
+                                  SNDWasmUnMuteAudio,
+                                  SNDWasmSetVolume,
+                                  SNDWasmClearBuffer,
+-                                 NULL,
++                                 SNDWasmFetchSamples,
+                                  NULL};
+ 
+ SoundInterface_struct *SNDCoreList[] = {&SNDDummy, &SndWasm, NULL};
+@@ -139,6 +149,7 @@ int main() {
+   cheatsExport = new CHEATSEXPORT();
+   printf("wasm ready.\n");
+   EM_ASM(wasmReady(););
++  return 0;
+ }
+ 
+ void *prepareRomBuffer(int rl) {
+@@ -184,7 +195,9 @@ int loadROM(int romLen) {
+   if (!NDS_LoadROM("rom.nds")) {
+     return emuLastError;
+   }
+-  SPU_SetSynchMode(ESynchMode_Synchronous, ESynchMethod_N);
++  // Synchronous mantém a mixagem no core; as amostras vão p/ o ring buffer.
++  SPU_SetSynchMode(ESynchMode_Synchronous, ESynchMethod_Z);
++  audioRingR = audioRingW = 0;
+   SPU_SetVolume(100);
+   cheatsExport->load("usrcheat.dat");
+   return 0;
+@@ -207,6 +220,13 @@ static inline void convertFB(u8 *dst, u8 *src) {
+ int savGetSize() { return savFile->size(); }
+ 
+ void *savGetPointer(int desiredSize) {
++  // -1 = jogo novo sem save: zera o save do jogo anterior
++  if (desiredSize < 0) {
++    savFile->truncate(0);
++    savFile->fseek(0, SEEK_SET);
++    savFile->changed = 0;
++    return savFile->buf();
++  }
+   if (desiredSize > 0) {
+     savFile->truncate(desiredSize);
+     savFile->fseek(0, SEEK_SET);
+@@ -349,6 +369,60 @@ int emuSetOpt(int k, int v) {
+     if (k == 0) {
+       CommonSettings.fwConfig.language = v;
+     }
++    if (k == 1) {  // 0=nenhuma 1=linear 2=cosseno
++      if (v >= 0 && v <= 2) CommonSettings.spuInterpolationMode = v;
++    }
++    if (k == 2) {  // 1 = mixagem avançada (mais precisa, mais lenta)
++      CommonSettings.spu_advanced = v ? true : false;
++    }
+     return 0;
+ }
++
++// Define a taxa de saída do áudio (a do AudioContext do navegador).
++void audioSetup(int sampleRate) {
++  // SPU_core aloca o buffer por hline com base em 48 kHz no NDS_Init;
++  // taxas maiores estourariam esse buffer, então limitamos.
++  if (sampleRate < 8000 || sampleRate > 48000) return;
++  setSampleRate(sampleRate);
++  audioRingR = audioRingW = 0;
++}
++
++// Copia até maxFrames amostras estéreo do ring para audioBuffer (getSymbol 6).
++// Retorna quantas foram copiadas.
++int audioDrain(int maxFrames) {
++  u32 avail = audioRingW - audioRingR;
++  if (maxFrames > 16384) maxFrames = 16384;
++  if (avail > (u32)maxFrames) avail = maxFrames;
++  for (u32 i = 0; i < avail; i++) {
++    u32 r = (audioRingR + i) & (AUDIO_RING_FRAMES - 1);
++    audioBuffer[i * 2] = audioRing[r * 2];
++    audioBuffer[i * 2 + 1] = audioRing[r * 2 + 1];
++  }
++  audioRingR += avail;
++  return (int)avail;
++}
++
++// ---- Save state em memória ----
++static EMUFILE_MEMORY *stateFile = NULL;
++int stateSave() {
++  if (stateFile) delete stateFile;
++  stateFile = new EMUFILE_MEMORY();
++  if (!savestate_save(*stateFile, 0)) return -1;
++  return stateFile->size();
++}
++void *stateGetPointer(int desiredSize) {
++  if (desiredSize > 0) {
++    if (stateFile) delete stateFile;
++    stateFile = new EMUFILE_MEMORY();
++    stateFile->truncate(desiredSize);
++  }
++  return stateFile ? stateFile->buf() : NULL;
++}
++int stateLoad() {
++  if (!stateFile) return -1;
++  stateFile->fseek(0, SEEK_SET);
++  bool ok = savestate_load(*stateFile);
++  audioRingR = audioRingW = 0;
++  return ok ? 0 : -1;
++}
+ }
+diff --git a/desmume/wasm-port/stubs.cpp b/desmume/wasm-port/stubs.cpp
+new file mode 100644
+index 0000000..be6ff52
+--- /dev/null
++++ b/desmume/wasm-port/stubs.cpp
+@@ -0,0 +1,21 @@
++// Funções que o port removeu dos fontes originais e que o core ainda chama.
++// O microfone real fica em main.cpp (Mic_ReadSample com FIFO vindo do JS).
++#include "types.h"
++#include "emufile.h"
++#include "utils/decrypt/header.h"
++
++BOOL Mic_Init(void) { return TRUE; }
++void Mic_DeInit(void) {}
++void Mic_Reset(void) {}
++void mic_savestate(EMUFILE &os) { os.write_32LE(-1); }
++bool mic_loadstate(EMUFILE &is, int size) { is.fseek(size, SEEK_CUR); return true; }
++
++// Secure area: ROMs já decriptadas (o caso comum) passam direto.
++// Decriptar exigiria as chaves da BIOS, que não vão no repositório.
++extern int emuLastError;
++bool DecryptSecureArea(u8 *romheader, u8 *secure) {
++  int romType = DetectRomType(*(Header *)romheader, (char *)secure);
++  if (romType == ROMTYPE_INVALID) return false;
++  if (romType == ROMTYPE_ENCRSECURE) { emuLastError = -1001; return false; }
++  return true;
++}

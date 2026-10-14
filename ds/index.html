@@ -1,0 +1,768 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#14161a">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>DS Web+</title>
+<style>
+  :root {
+    --bg: #14161a; --panel: #1d2026; --line: #2c3038; --text: #e8eaed;
+    --muted: #8a9099; --accent: #6cc4a1; --warn: #e8b35c; --btn: #2a2e36; --btn-on: #3d434e;
+  }
+  [hidden] { display: none !important; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    overscroll-behavior: none; touch-action: none; user-select: none; -webkit-user-select: none; }
+  #app { display: flex; flex-direction: column; height: 100dvh; max-width: 560px; margin: 0 auto;
+    padding: env(safe-area-inset-top) 8px env(safe-area-inset-bottom); }
+  header { display: flex; align-items: center; gap: 6px; padding: 6px 0; flex-wrap: wrap; }
+  header .title { font-weight: 600; letter-spacing: .02em; margin-right: auto; }
+  header button, header select, header label.file {
+    background: var(--btn); color: var(--text); border: 1px solid var(--line); border-radius: 8px;
+    padding: 6px 10px; font: inherit; font-size: 13px; cursor: pointer; }
+  header button.on { background: var(--btn-on); border-color: var(--accent); color: var(--accent); }
+  #stats { font: 12px ui-monospace, Menlo, monospace; color: var(--muted); min-width: 92px; text-align: right; }
+  #screens { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+  canvas { width: 100%; max-width: 512px; aspect-ratio: 4 / 3; background: #000; border-radius: 4px;
+    image-rendering: pixelated; display: block; }
+  body.smooth canvas { image-rendering: auto; }
+  #bottom { touch-action: none; }
+  #pad { flex: 1; display: grid; grid-template-columns: 1fr auto 1fr; grid-template-rows: auto 1fr auto;
+    gap: 8px; padding: 8px 4px; min-height: 210px; }
+  .shoulder { grid-row: 1; height: 38px; }
+  #bL { grid-column: 1; } #bR { grid-column: 3; }
+  #dpad { grid-row: 2; grid-column: 1; position: relative; width: 150px; height: 150px; align-self: center; justify-self: center; }
+  #dpad .arm { position: absolute; background: var(--btn); border: 1px solid var(--line); }
+  #dpad .h { left: 0; right: 0; top: 50px; height: 50px; border-radius: 10px; }
+  #dpad .v { top: 0; bottom: 0; left: 50px; width: 50px; border-radius: 10px; }
+  #dpad .dot { position: absolute; width: 26px; height: 26px; border-radius: 50%; background: var(--line);
+    left: 62px; top: 62px; }
+  #dpad.u .dot { top: 18px } #dpad.d .dot { top: 106px } #dpad.l .dot { left: 18px } #dpad.r .dot { left: 106px }
+  #face { grid-row: 2; grid-column: 3; position: relative; width: 156px; height: 156px; align-self: center; justify-self: center; }
+  #face .b { position: absolute; width: 56px; height: 56px; border-radius: 50%; }
+  #bX { left: 50px; top: 0 } #bY { left: 0; top: 50px } #bA { left: 100px; top: 50px } #bB { left: 50px; top: 100px }
+  #mid { grid-row: 2; grid-column: 2; display: flex; flex-direction: column; justify-content: center; gap: 10px; }
+  .b { background: var(--btn); border: 1px solid var(--line); color: var(--text); border-radius: 10px;
+    display: flex; align-items: center; justify-content: center; font-weight: 600; font-size: 15px; }
+  .b.small { font-size: 11px; height: 30px; padding: 0 10px; border-radius: 15px; }
+  .b.down, #dpad .arm.down { background: var(--btn-on); border-color: var(--accent); }
+  #msg { position: fixed; left: 50%; bottom: calc(16px + env(safe-area-inset-bottom)); transform: translateX(-50%);
+    background: var(--panel); border: 1px solid var(--line); padding: 8px 14px; border-radius: 10px;
+    max-width: 90vw; opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 10; }
+  #msg.show { opacity: 1; }
+  #drop { position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
+    background: rgba(0,0,0,.6); font-size: 18px; z-index: 20; }
+  #menu { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: none; z-index: 30;
+    align-items: flex-end; justify-content: center; }
+  #menu.open { display: flex; }
+  #menu .sheet { background: var(--panel); width: 100%; max-width: 560px; border-radius: 14px 14px 0 0;
+    padding: 14px 16px calc(16px + env(safe-area-inset-bottom)); border-top: 1px solid var(--line); }
+  #menu h3 { margin: 4px 0 10px; font-size: 15px; }
+  #menu .row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 0;
+    border-bottom: 1px solid var(--line); }
+  #menu .row:last-of-type { border-bottom: 0; }
+  #menu select, #menu button { background: var(--btn); color: var(--text); border: 1px solid var(--line);
+    border-radius: 8px; padding: 6px 10px; font: inherit; }
+  #menu .slots { display: flex; gap: 6px; }
+  #menu .hint { color: var(--muted); font-size: 12px; margin-top: 8px; }
+  #intro { color: var(--muted); text-align: center; padding: 30px 12px; }
+  #intro button { margin-top: 10px; }
+  input[type=file] { display: none; }
+  @media (orientation: landscape) and (max-height: 520px) {
+    #app { max-width: none; flex-direction: row; flex-wrap: wrap; }
+    header { width: 100%; }
+    #screens { flex-direction: row; flex: 1; }
+    canvas { max-height: calc(100dvh - 60px); width: auto; height: calc(100dvh - 60px); }
+    #pad { position: fixed; inset: 50px 0 0 0; pointer-events: none; opacity: .55; }
+    #pad > * { pointer-events: auto; }
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <span class="title">DS Web+</span>
+    <span id="stats">--</span>
+    <label class="file">ROM<input id="romInput" type="file" accept=".nds,.zip,application/octet-stream"></label>
+    <button id="btnTurbo" title="Acelerar (segure Espaço no teclado)">⏩</button>
+    <button id="btnPause" title="Pausar">⏸</button>
+    <button id="btnMenu" title="Menu">☰</button>
+  </header>
+  <div id="screens">
+    <canvas id="top" width="256" height="192"></canvas>
+    <canvas id="bottom" width="256" height="192"></canvas>
+  </div>
+  <div id="intro">
+    Carregando o emulador…
+  </div>
+  <div id="pad" hidden>
+    <div class="b shoulder" id="bL" data-k="10">L</div>
+    <div class="b shoulder" id="bR" data-k="11">R</div>
+    <div id="dpad"><div class="arm h"></div><div class="arm v"></div><div class="dot"></div></div>
+    <div id="mid">
+      <div class="b small" data-k="4">SELECT</div>
+      <div class="b small" data-k="5">START</div>
+      <div class="b small" data-k="14" title="Soprar no microfone">MIC</div>
+    </div>
+    <div id="face">
+      <div class="b" id="bX" data-k="9">X</div>
+      <div class="b" id="bY" data-k="8">Y</div>
+      <div class="b" id="bA" data-k="7">A</div>
+      <div class="b" id="bB" data-k="6">B</div>
+    </div>
+  </div>
+</div>
+
+<div id="menu">
+  <div class="sheet">
+    <h3>Menu</h3>
+    <div class="row"><span>Salvar estado</span><div class="slots" id="saveSlots"></div></div>
+    <div class="row"><span>Carregar estado</span><div class="slots" id="loadSlots"></div></div>
+    <div class="row"><span>Latência do áudio</span>
+      <select id="optLatency">
+        <option value="2048">Baixa (~43 ms)</option>
+        <option value="3200" selected>Normal (~67 ms)</option>
+        <option value="4800">Alta (~100 ms, celular fraco)</option>
+      </select></div>
+    <div class="row"><span>Interpolação do som</span>
+      <select id="optInterp">
+        <option value="0">Nenhuma (mais rápido)</option>
+        <option value="1" selected>Linear</option>
+        <option value="2">Cosseno (melhor)</option>
+      </select></div>
+    <div class="row"><span>Frameskip máximo</span>
+      <select id="optSkip">
+        <option value="1">0</option><option value="2">1</option>
+        <option value="3" selected>2</option><option value="5">4</option>
+      </select></div>
+    <div class="row"><span>Idioma do DS</span>
+      <select id="optLang">
+        <option value="1" selected>Inglês</option><option value="5">Espanhol</option>
+        <option value="2">Francês</option><option value="3">Alemão</option>
+        <option value="4">Italiano</option><option value="0">Japonês</option>
+      </select></div>
+    <div class="row"><span>Imagem suavizada</span><select id="optSmooth"><option value="0">Não</option><option value="1">Sim</option></select></div>
+    <div class="row"><span>Save do jogo</span>
+      <div class="slots"><button id="btnExportSav">Exportar</button><button id="btnImportSav">Importar</button></div></div>
+    <div class="row"><span>Reiniciar jogo</span><button id="btnReset">Reset</button></div>
+    <div class="hint">Teclado: setas, Z=B, X=A, A=Y, S=X, Q=L, W=R, Enter=Start, Shift=Select, Espaço=acelerar. Controle USB/Bluetooth também funciona.</div>
+    <div class="hint" id="buildInfo"></div>
+  </div>
+</div>
+<input id="savInput" type="file" accept=".sav,.dsv,application/octet-stream">
+<div id="drop">Solte a ROM aqui</div>
+<div id="msg"></div>
+
+<script>
+'use strict';
+/* =========================================================================
+   DS Web+ — frontend do DeSmuME-wasm (versão melhorada)
+   - Áudio: AudioWorklet com ring buffer e controle dinâmico de taxa (DRC)
+   - Loop: compassado pelo relógio + nível do buffer de áudio, frameskip automático
+   - Saves automáticos e save states no IndexedDB
+   ========================================================================= */
+
+const FPS = 59.8261;
+const FRAME_MS = 1000 / FPS;
+const SAMPLE_RATE = 48000;
+const $ = (id) => document.getElementById(id);
+
+// ---------- Utilidades ----------
+let msgTimer = 0;
+function toast(text, ms = 2200) {
+  const el = $('msg');
+  el.textContent = text;
+  el.classList.add('show');
+  clearTimeout(msgTimer);
+  msgTimer = setTimeout(() => el.classList.remove('show'), ms);
+}
+
+const prefs = (() => {
+  const defaults = { latency: 3200, interp: 1, skip: 3, lang: 1, smooth: 0 };
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem('dsweb-prefs') || '{}'); } catch (e) { saved = {}; }
+  const p = Object.assign({}, defaults, saved);
+  p.save = () => { try { localStorage.setItem('dsweb-prefs', JSON.stringify(p)); } catch (e) {} };
+  return p;
+})();
+
+// ---------- IndexedDB ----------
+const db = {
+  _p: null,
+  open() {
+    if (this._p) return this._p;
+    this._p = new Promise((resolve, reject) => {
+      const req = indexedDB.open('dsweb', 1);
+      req.onupgradeneeded = () => {
+        const d = req.result;
+        for (const s of ['saves', 'states', 'roms']) if (!d.objectStoreNames.contains(s)) d.createObjectStore(s);
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+    return this._p;
+  },
+  async get(store, key) {
+    const d = await this.open();
+    return new Promise((res, rej) => {
+      const r = d.transaction(store).objectStore(store).get(key);
+      r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+    });
+  },
+  async put(store, key, val) {
+    const d = await this.open();
+    return new Promise((res, rej) => {
+      const tx = d.transaction(store, 'readwrite');
+      tx.objectStore(store).put(val, key);
+      tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error);
+    });
+  },
+};
+
+async function gzip(u8) {
+  if (typeof CompressionStream === 'undefined') return { raw: true, data: u8 };
+  const s = new Blob([u8]).stream().pipeThrough(new CompressionStream('gzip'));
+  return { raw: false, data: new Uint8Array(await new Response(s).arrayBuffer()) };
+}
+async function gunzip(obj) {
+  if (obj.raw) return obj.data;
+  const s = new Blob([obj.data]).stream().pipeThrough(new DecompressionStream('gzip'));
+  return new Uint8Array(await new Response(s).arrayBuffer());
+}
+
+function download(name, u8) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([u8]));
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+
+// ---------- Áudio (AudioWorklet com DRC) ----------
+// O core gera 48000 amostras/s de tempo emulado. Pequenas diferenças entre o
+// relógio do navegador e o do emulador são absorvidas variando a taxa de
+// leitura em até ±0,5% (inaudível), em vez de cortar/repetir amostras.
+const WORKLET_SRC = `
+class DSOut extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    this.cap = 1 << 15;                 // 32768 frames (~680 ms)
+    this.mask = this.cap - 1;
+    this.L = new Float32Array(this.cap);
+    this.R = new Float32Array(this.cap);
+    this.w = 0;                         // total escrito (frames)
+    this.rp = 0;                        // posição de leitura (fracionária)
+    this.target = 3200;
+    this.playing = false;
+    this.lastL = 0; this.lastR = 0;
+    this.underruns = 0;
+    this.reportIn = 0;
+    this.port.onmessage = (e) => {
+      const m = e.data;
+      if (m.t === 's') this.push(m.d);
+      else if (m.t === 'target') this.target = m.v;
+      else if (m.t === 'reset') { this.rp = this.w; this.playing = false; }
+    };
+  }
+  push(d) {
+    const n = d.length >> 1;
+    for (let i = 0; i < n; i++) {
+      const j = (this.w + i) & this.mask;
+      this.L[j] = d[i * 2]; this.R[j] = d[i * 2 + 1];
+    }
+    this.w += n;
+    // latência crescendo demais (ex.: aba em segundo plano): volta para o alvo
+    if (this.w - this.rp > this.target * 4) this.rp = this.w - this.target;
+  }
+  process(_, outputs) {
+    const out = outputs[0];
+    const oL = out[0], oR = out[1] || out[0];
+    const len = oL.length;
+    let fill = this.w - this.rp;
+    if (!this.playing && fill >= this.target) this.playing = true;
+    if (this.playing) {
+      // controle dinâmico de taxa: mais cheio -> lê um pouco mais rápido
+      let dev = (fill - this.target) / this.target;
+      if (dev > 1) dev = 1; else if (dev < -1) dev = -1;
+      const ratio = 1 + dev * 0.005;
+      for (let i = 0; i < len; i++) {
+        if (this.w - this.rp < 2) {     // faltou amostra: decai suave, sem estalo
+          this.lastL *= 0.995; this.lastR *= 0.995;
+          oL[i] = this.lastL; if (oR !== oL) oR[i] = this.lastR;
+          if (this.playing) { this.playing = false; this.underruns++; }
+          continue;
+        }
+        const i0 = Math.floor(this.rp), f = this.rp - i0;
+        const a = i0 & this.mask, b = (i0 + 1) & this.mask;
+        const l = this.L[a] + (this.L[b] - this.L[a]) * f;
+        const r = this.R[a] + (this.R[b] - this.R[a]) * f;
+        oL[i] = l; if (oR !== oL) oR[i] = r;
+        this.lastL = l; this.lastR = r;
+        this.rp += ratio;
+      }
+    } else {
+      for (let i = 0; i < len; i++) {
+        this.lastL *= 0.995; this.lastR *= 0.995;
+        oL[i] = this.lastL; if (oR !== oL) oR[i] = this.lastR;
+      }
+    }
+    if (++this.reportIn >= 8) {
+      this.reportIn = 0;
+      this.port.postMessage({ fill: this.w - this.rp, underruns: this.underruns });
+    }
+    return true;
+  }
+}
+registerProcessor('ds-out', DSOut);
+`;
+
+const audio = {
+  ctx: null, node: null, ready: false,
+  fill: 0, fillAt: 0, pushedSince: 0, underruns: 0,
+  async init() {
+    if (this.ctx) return;
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) { toast('Navegador sem Web Audio'); return; }
+    try {
+      this.ctx = new AC({ sampleRate: SAMPLE_RATE, latencyHint: 'interactive' });
+    } catch (e) {
+      this.ctx = new AC({ latencyHint: 'interactive' });
+    }
+    if (!this.ctx.audioWorklet) { toast('Navegador sem AudioWorklet: sem som'); return; }
+    const url = URL.createObjectURL(new Blob([WORKLET_SRC], { type: 'application/javascript' }));
+    await this.ctx.audioWorklet.addModule(url);
+    URL.revokeObjectURL(url);
+    this.node = new AudioWorkletNode(this.ctx, 'ds-out', { outputChannelCount: [2] });
+    this.node.port.onmessage = (e) => {
+      this.fill = e.data.fill; this.fillAt = performance.now(); this.pushedSince = 0;
+      this.underruns = e.data.underruns;
+    };
+    this.node.connect(this.ctx.destination);
+    this.setTarget(prefs.latency);
+    // se o navegador não aceitou 48 kHz, o core passa a gerar na taxa real
+    if (this.ctx.sampleRate !== SAMPLE_RATE && emu.M) emu.M._audioSetup(Math.min(48000, this.ctx.sampleRate));
+    this.ready = true;
+  },
+  rate() { return this.ctx ? Math.min(48000, this.ctx.sampleRate) : SAMPLE_RATE; },
+  setTarget(v) { if (this.node) this.node.port.postMessage({ t: 'target', v: v | 0 }); },
+  reset() { if (this.node) this.node.port.postMessage({ t: 'reset' }); this.fill = 0; this.pushedSince = 0; },
+  // nível estimado agora = último relatório + o que mandei - o que já tocou
+  level() {
+    if (!this.ready) return prefs.latency;
+    const played = (performance.now() - this.fillAt) * this.rate() / 1000;
+    return this.fill + this.pushedSince - played;
+  },
+  push(f32) {
+    if (!this.node) return;
+    this.pushedSince += f32.length >> 1;
+    this.node.port.postMessage({ t: 's', d: f32 }, [f32.buffer]);
+  },
+  resume() { if (this.ctx && this.ctx.state !== 'running') this.ctx.resume(); },
+};
+
+// ---------- Emulador ----------
+const emu = {
+  M: null, loaded: false, running: false, paused: false, turbo: false,
+  fbPtr: 0, audioPtr: 0, gameKey: '', romName: '',
+  keys: 0, touch: false, tx: 0, ty: 0,
+  imgTop: null, imgBot: null, heapBuf: null,
+  ctxTop: $('top').getContext('2d'), ctxBot: $('bottom').getContext('2d'),
+
+  views() {
+    // memória do wasm pode crescer: recria as views quando o buffer muda
+    const buf = this.M.HEAPU8.buffer;
+    if (buf !== this.heapBuf) {
+      this.heapBuf = buf;
+      this.imgTop = new ImageData(new Uint8ClampedArray(buf, this.fbPtr, 256 * 192 * 4), 256, 192);
+      this.imgBot = new ImageData(new Uint8ClampedArray(buf, this.fbPtr + 256 * 192 * 4, 256 * 192 * 4), 256, 192);
+    }
+  },
+  draw() {
+    this.views();
+    this.ctxTop.putImageData(this.imgTop, 0, 0);
+    this.ctxBot.putImageData(this.imgBot, 0, 0);
+  },
+  drainAudio(push) {
+    const n = this.M._audioDrain(16384);
+    if (n <= 0 || !push) return;
+    const src = new Int16Array(this.M.HEAPU8.buffer, this.audioPtr, n * 2);
+    const out = new Float32Array(n * 2);
+    for (let i = 0; i < out.length; i++) out[i] = src[i] * (1 / 32768);
+    audio.push(out);
+  },
+  step(draw, pushAudio) {
+    this.M._runFrame(draw ? 1 : 0, this.keys, this.touch ? 1 : 0, this.tx, this.ty);
+    this.drainAudio(pushAudio);
+  },
+};
+
+async function loadCore() {
+  const simd = WebAssembly.validate(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 123, 3,
+    2, 1, 0, 10, 10, 1, 8, 0, 65, 0, 253, 15, 253, 98, 11]));
+  const name = simd ? 'nds' : 'nds-nosimd';
+  $('buildInfo').textContent = 'Core: ' + name + (simd ? ' (wasm SIMD)' : ' (sem SIMD)');
+  return new Promise((resolve, reject) => {
+    window.wasmReady = () => resolve(window.Module);
+    window.Module = {
+      locateFile: (p) => p.replace(/^nds(-nosimd)?\.wasm$/, name + '.wasm'),
+      print: (t) => console.log('[core]', t),
+      printErr: (t) => console.warn('[core]', t),
+      onAbort: (r) => { toast('O core abortou: ' + r, 6000); reject(new Error(String(r))); },
+    };
+    const s = document.createElement('script');
+    s.src = name + '.js';
+    s.onerror = () => reject(new Error('não achei ' + name + '.js (rodou o build?)'));
+    document.body.appendChild(s);
+  });
+}
+
+function readHeaderKey(u8) {
+  const txt = (a, b) => String.fromCharCode(...u8.subarray(a, b)).replace(/[^\x20-\x7e]/g, '').trim();
+  return (txt(0x0C, 0x10) || 'XXXX') + '-' + (txt(0, 12) || 'NOTITLE');
+}
+
+async function startRom(bytes, name) {
+  const M = emu.M;
+  if (!M) return;
+  if (bytes.length < 0x200) { toast('Arquivo pequeno demais para ser uma ROM'); return; }
+  await flushSave();
+  emu.running = false;
+  const key = readHeaderKey(bytes);
+  emu.gameKey = key;
+  emu.romName = name.replace(/\.[^.]+$/, '');
+
+  const ptr = M._prepareRomBuffer(bytes.length);
+  if (!ptr) { toast('Sem memória para a ROM'); return; }
+  M.HEAPU8.set(bytes, ptr);
+
+  const sav = await db.get('saves', key).catch(() => null);
+  if (sav && sav.length) {
+    const p = M._savGetPointer(sav.length);
+    M.HEAPU8.set(sav, p);
+  } else {
+    M._savGetPointer(-1);
+  }
+
+  M._emuSetOpt(0, prefs.lang | 0);
+  M._emuSetOpt(1, prefs.interp | 0);
+  const r = M._loadROM(bytes.length);
+  if (r !== 0) {
+    toast(r === -1001 ? 'ROM com área segura encriptada: use uma ROM “decrypted”.' : 'Falha ao carregar a ROM (código ' + r + ')', 6000);
+    return;
+  }
+  M._audioSetup(audio.rate());
+  M._savUpdateChangeFlag();
+  audio.reset();
+  emu.loaded = true; emu.running = true; emu.paused = false;
+  $('intro').hidden = true; $('pad').hidden = false;
+  $('btnPause').classList.remove('on');
+  toast((sav ? 'Save carregado · ' : '') + key);
+  wakeLock();
+  // guarda a última ROM para retomar rápido (até ~256 MB)
+  if (bytes.length <= 256 * 1024 * 1024) db.put('roms', 'last', { name, bytes }).catch(() => {});
+}
+
+async function flushSave() {
+  const M = emu.M;
+  if (!M || !emu.loaded) return;
+  if (!M._savUpdateChangeFlag()) return;
+  const size = M._savGetSize();
+  if (size <= 0) return;
+  const p = M._savGetPointer(0);
+  const data = M.HEAPU8.slice(p, p + size);
+  try { await db.put('saves', emu.gameKey, data); toast('Jogo salvo', 1200); }
+  catch (e) { toast('Erro ao salvar: ' + e.message, 4000); }
+}
+
+async function saveState(slot) {
+  const M = emu.M;
+  if (!emu.loaded) return;
+  const size = M._stateSave();
+  if (size <= 0) { toast('Falha ao criar save state'); return; }
+  const p = M._stateGetPointer(0);
+  const raw = M.HEAPU8.slice(p, p + size);
+  const z = await gzip(raw);
+  await db.put('states', emu.gameKey + ':' + slot, z);
+  toast('Estado salvo no slot ' + slot + ' (' + Math.round(z.data.length / 1024) + ' KB)');
+}
+
+async function loadState(slot) {
+  const M = emu.M;
+  if (!emu.loaded) return;
+  const z = await db.get('states', emu.gameKey + ':' + slot);
+  if (!z) { toast('Slot ' + slot + ' vazio'); return; }
+  const raw = await gunzip(z);
+  const p = M._stateGetPointer(raw.length);
+  M.HEAPU8.set(raw, p);
+  if (M._stateLoad() !== 0) { toast('Falha ao carregar o estado'); return; }
+  audio.reset();
+  toast('Estado ' + slot + ' carregado');
+}
+
+// ---------- Loop principal ----------
+let acc = 0, last = 0;
+let statFrames = 0, statDrawn = 0, statT0 = 0, statBusy = 0;
+function tick(now) {
+  requestAnimationFrame(tick);
+  pollGamepad();
+  if (!emu.running || emu.paused) { last = now; return; }
+  let dt = now - last; last = now;
+  if (dt > 200) dt = 200;                       // voltou do background: não tenta compensar tudo
+  const t0 = performance.now();
+
+  let n;
+  if (emu.turbo) {
+    n = 3;
+  } else {
+    acc += dt;
+    n = Math.floor(acc / FRAME_MS);
+    acc -= n * FRAME_MS;
+    // correção pelo nível do áudio: mantém o buffer perto do alvo
+    if (audio.ready) {
+      const lvl = audio.level();
+      if (lvl < prefs.latency * 0.5) n += 1;               // atrasado: roda um a mais
+      else if (lvl > prefs.latency * 2 && n > 0) n -= 1;  // adiantado: segura um
+    }
+    n = Math.min(n, prefs.skip | 0);
+  }
+  for (let i = 0; i < n; i++) {
+    const draw = i === n - 1;
+    emu.step(draw, !emu.turbo);
+    statFrames++;
+    if (draw) statDrawn++;
+  }
+  if (n > 0) emu.draw();
+  statBusy += performance.now() - t0;
+
+  if (now - statT0 >= 1000) {
+    const secs = (now - statT0) / 1000;
+    const fps = statFrames / secs, vis = statDrawn / secs, load = statBusy / (now - statT0) * 100;
+    $('stats').textContent = fps.toFixed(0) + 'fps ' + vis.toFixed(0) + 'v ' + load.toFixed(0) + '%';
+    $('stats').style.color = fps < 55 ? 'var(--warn)' : '';
+    statFrames = statDrawn = 0; statBusy = 0; statT0 = now;
+  }
+}
+
+// ---------- Entrada ----------
+// bits: 0 dir,1 esq,2 baixo,3 cima,4 select,5 start,6 B,7 A,8 Y,9 X,10 L,11 R,14 mic
+const KEYMAP = {
+  ArrowRight: 0, ArrowLeft: 1, ArrowDown: 2, ArrowUp: 3, ShiftRight: 4, ShiftLeft: 4, Enter: 5,
+  KeyZ: 6, KeyX: 7, KeyA: 8, KeyS: 9, KeyQ: 10, KeyW: 11, KeyM: 14,
+};
+let kbKeys = 0, touchKeys = 0, padKeys = 0, dpadKeys = 0;
+function updateKeys() { emu.keys = kbKeys | touchKeys | padKeys | dpadKeys; }
+
+addEventListener('keydown', (e) => {
+  if (e.code === 'Space') { setTurbo(true); e.preventDefault(); return; }
+  if (e.code in KEYMAP) { kbKeys |= 1 << KEYMAP[e.code]; updateKeys(); e.preventDefault(); }
+  audio.resume();
+});
+addEventListener('keyup', (e) => {
+  if (e.code === 'Space') { setTurbo(false); return; }
+  if (e.code in KEYMAP) { kbKeys &= ~(1 << KEYMAP[e.code]); updateKeys(); }
+});
+
+// botões da tela: multitoque com pointer capture
+const btnPointers = new Map();
+document.querySelectorAll('#pad [data-k]').forEach((el) => {
+  const bit = 1 << (+el.dataset.k);
+  el.addEventListener('pointerdown', (e) => {
+    el.setPointerCapture(e.pointerId);
+    btnPointers.set(e.pointerId, bit);
+    touchKeys |= bit; el.classList.add('down'); updateKeys();
+    audio.resume();
+    if (navigator.vibrate) navigator.vibrate(8);
+    e.preventDefault();
+  });
+  const up = (e) => {
+    if (!btnPointers.has(e.pointerId)) return;
+    btnPointers.delete(e.pointerId);
+    touchKeys &= ~bit; el.classList.remove('down'); updateKeys();
+  };
+  el.addEventListener('pointerup', up);
+  el.addEventListener('pointercancel', up);
+});
+
+// D-pad: uma zona só, com diagonais
+const dpad = $('dpad');
+let dpadPointer = null;
+function dpadAt(e) {
+  const r = dpad.getBoundingClientRect();
+  const x = (e.clientX - r.left) / r.width - 0.5, y = (e.clientY - r.top) / r.height - 0.5;
+  let k = 0; const dz = 0.14;
+  if (x > dz) k |= 1 << 0; else if (x < -dz) k |= 1 << 1;
+  if (y > dz) k |= 1 << 2; else if (y < -dz) k |= 1 << 3;
+  // evita diagonal acidental perto dos eixos
+  if (Math.abs(x) > Math.abs(y) * 2.4) k &= ~((1 << 2) | (1 << 3));
+  if (Math.abs(y) > Math.abs(x) * 2.4) k &= ~((1 << 0) | (1 << 1));
+  if (k !== dpadKeys && navigator.vibrate) navigator.vibrate(6);
+  dpadKeys = k;
+  dpad.className = (k & 1 ? 'r ' : '') + (k & 2 ? 'l ' : '') + (k & 4 ? 'd ' : '') + (k & 8 ? 'u' : '');
+  updateKeys();
+}
+dpad.addEventListener('pointerdown', (e) => { dpad.setPointerCapture(e.pointerId); dpadPointer = e.pointerId; dpadAt(e); audio.resume(); e.preventDefault(); });
+dpad.addEventListener('pointermove', (e) => { if (e.pointerId === dpadPointer) dpadAt(e); });
+const dpadUp = (e) => { if (e.pointerId !== dpadPointer) return; dpadPointer = null; dpadKeys = 0; dpad.className = ''; updateKeys(); };
+dpad.addEventListener('pointerup', dpadUp);
+dpad.addEventListener('pointercancel', dpadUp);
+
+// tela de toque (tela de baixo)
+const bottom = $('bottom');
+let touchPointer = null;
+function touchAt(e) {
+  const r = bottom.getBoundingClientRect();
+  emu.tx = Math.max(0, Math.min(255, Math.floor((e.clientX - r.left) / r.width * 256)));
+  emu.ty = Math.max(0, Math.min(191, Math.floor((e.clientY - r.top) / r.height * 192)));
+}
+bottom.addEventListener('pointerdown', (e) => { bottom.setPointerCapture(e.pointerId); touchPointer = e.pointerId; touchAt(e); emu.touch = true; audio.resume(); e.preventDefault(); });
+bottom.addEventListener('pointermove', (e) => { if (e.pointerId === touchPointer) touchAt(e); });
+const touchUp = (e) => { if (e.pointerId !== touchPointer) return; touchPointer = null; emu.touch = false; };
+bottom.addEventListener('pointerup', touchUp);
+bottom.addEventListener('pointercancel', touchUp);
+
+// controle (Gamepad API, mapeamento padrão)
+const PADMAP = [[0, 6], [1, 7], [2, 8], [3, 9], [4, 10], [5, 11], [8, 4], [9, 5], [12, 3], [13, 2], [14, 1], [15, 0]];
+function pollGamepad() {
+  if (!navigator.getGamepads) return;
+  let k = 0;
+  for (const gp of navigator.getGamepads()) {
+    if (!gp) continue;
+    for (const [b, bit] of PADMAP) if (gp.buttons[b] && gp.buttons[b].pressed) k |= 1 << bit;
+    const ax = gp.axes[0] || 0, ay = gp.axes[1] || 0;
+    if (ax > 0.5) k |= 1; else if (ax < -0.5) k |= 2;
+    if (ay > 0.5) k |= 4; else if (ay < -0.5) k |= 8;
+    if (gp.buttons[7] && gp.buttons[7].value > 0.5) setTurbo(true, 'pad');
+    else if (turboBy === 'pad') setTurbo(false);
+  }
+  if (k !== padKeys) { padKeys = k; updateKeys(); }
+}
+
+// ---------- UI ----------
+let turboBy = null;
+function setTurbo(on, by = 'key') {
+  if (emu.turbo === on) return;
+  emu.turbo = on; turboBy = on ? by : null;
+  $('btnTurbo').classList.toggle('on', on);
+  if (!on) { audio.reset(); acc = 0; }
+}
+$('btnTurbo').onclick = () => setTurbo(!emu.turbo, 'btn');
+$('btnPause').onclick = () => {
+  if (!emu.loaded) return;
+  emu.paused = !emu.paused;
+  $('btnPause').classList.toggle('on', emu.paused);
+  if (emu.paused) flushSave(); else audio.reset();
+};
+$('btnMenu').onclick = () => $('menu').classList.add('open');
+$('menu').addEventListener('pointerdown', (e) => { if (e.target.id === 'menu') $('menu').classList.remove('open'); });
+
+for (let i = 1; i <= 3; i++) {
+  const s = document.createElement('button'); s.textContent = i;
+  s.onclick = () => { saveState(i); $('menu').classList.remove('open'); };
+  $('saveSlots').appendChild(s);
+  const l = document.createElement('button'); l.textContent = i;
+  l.onclick = () => { loadState(i); $('menu').classList.remove('open'); };
+  $('loadSlots').appendChild(l);
+}
+
+function bindPref(id, key, apply) {
+  const el = $(id);
+  el.value = String(prefs[key]);
+  el.onchange = () => { prefs[key] = +el.value; prefs.save(); if (apply) apply(prefs[key]); };
+}
+bindPref('optLatency', 'latency', (v) => audio.setTarget(v));
+bindPref('optInterp', 'interp', (v) => emu.M && emu.M._emuSetOpt(1, v));
+bindPref('optSkip', 'skip');
+bindPref('optLang', 'lang', () => toast('Vale a partir do próximo carregamento da ROM'));
+bindPref('optSmooth', 'smooth', (v) => document.body.classList.toggle('smooth', !!v));
+document.body.classList.toggle('smooth', !!prefs.smooth);
+
+$('btnReset').onclick = () => {
+  if (!emu.loaded) return;
+  emu.M._reset(); audio.reset(); $('menu').classList.remove('open'); toast('Reiniciado');
+};
+$('btnExportSav').onclick = async () => {
+  if (!emu.loaded) return;
+  await flushSave();
+  const size = emu.M._savGetSize();
+  if (size <= 0) { toast('Este jogo ainda não tem save'); return; }
+  const p = emu.M._savGetPointer(0);
+  download(emu.romName + '.sav', emu.M.HEAPU8.slice(p, p + size));
+};
+$('btnImportSav').onclick = () => { if (emu.loaded) $('savInput').click(); else toast('Abra a ROM primeiro'); };
+$('savInput').onchange = async (e) => {
+  const f = e.target.files[0]; e.target.value = '';
+  if (!f) return;
+  const data = new Uint8Array(await f.arrayBuffer());
+  await db.put('saves', emu.gameKey, data);
+  const lastRom = await db.get('roms', 'last');
+  toast('Save importado, recarregando o jogo…');
+  if (lastRom && readHeaderKey(lastRom.bytes) === emu.gameKey) startRom(lastRom.bytes, lastRom.name);
+  else toast('Save importado. Abra a ROM de novo para usar.', 4000);
+  $('menu').classList.remove('open');
+};
+
+$('romInput').onchange = async (e) => {
+  const f = e.target.files[0]; e.target.value = '';
+  if (!f) return;
+  await audio.init().catch((err) => toast('Áudio: ' + err.message));
+  audio.resume();
+  toast('Lendo ' + f.name + '…');
+  startRom(new Uint8Array(await f.arrayBuffer()), f.name);
+};
+
+addEventListener('dragover', (e) => { e.preventDefault(); $('drop').style.display = 'flex'; });
+addEventListener('dragleave', (e) => { if (e.target === $('drop')) $('drop').style.display = 'none'; });
+addEventListener('drop', async (e) => {
+  e.preventDefault(); $('drop').style.display = 'none';
+  const f = e.dataTransfer.files[0];
+  if (!f) return;
+  await audio.init().catch(() => {});
+  audio.resume();
+  startRom(new Uint8Array(await f.arrayBuffer()), f.name);
+});
+
+// segundo plano: pausa e salva; ao voltar, limpa o áudio acumulado
+let wasRunning = false;
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { wasRunning = emu.running; emu.running = false; flushSave(); }
+  else { emu.running = wasRunning && emu.loaded; audio.reset(); acc = 0; last = performance.now(); if (emu.running) wakeLock(); }
+});
+addEventListener('pagehide', () => flushSave());
+setInterval(flushSave, 2000);
+
+let lock = null;
+async function wakeLock() {
+  try { if ('wakeLock' in navigator && !lock) { lock = await navigator.wakeLock.request('screen'); lock.onrelease = () => { lock = null; }; } }
+  catch (e) { /* sem wake lock, tudo bem */ }
+}
+
+// ---------- Boot ----------
+(async () => {
+  try {
+    emu.M = await loadCore();
+    emu.fbPtr = emu.M._getSymbol(4);
+    emu.audioPtr = emu.M._getSymbol(6);
+    const intro = $('intro');
+    intro.textContent = 'Pronto. Abra uma ROM .nds (botão ROM).';
+    const lastRom = await db.get('roms', 'last').catch(() => null);
+    if (lastRom) {
+      const b = document.createElement('button');
+      b.className = 'b small';
+      b.style.margin = '12px auto 0';
+      b.textContent = 'Continuar: ' + lastRom.name;
+      b.onclick = async () => { await audio.init().catch(() => {}); audio.resume(); startRom(lastRom.bytes, lastRom.name); };
+      intro.appendChild(document.createElement('br'));
+      intro.appendChild(b);
+    }
+    requestAnimationFrame((t) => { last = t; statT0 = t; requestAnimationFrame(tick); });
+  } catch (e) {
+    $('intro').textContent = 'Erro ao iniciar: ' + e.message;
+  }
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,91 @@
+name: Core DS (DeSmuME-wasm melhorado)
+
+# Compila o nds.js/nds.wasm usados por ds/index.html a partir do
+# 44670/desmume-wasm + o nosso patch (ds/core/desmume.patch) e commita em ds/.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "ds/core/**"
+      - ".github/workflows/ds-core.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ds-core
+  cancel-in-progress: true
+
+env:
+  UPSTREAM: https://github.com/44670/desmume-wasm
+  UPSTREAM_REF: 1015846
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Baixar upstream e aplicar patch
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none "$UPSTREAM" up
+          git -C up checkout --quiet "$UPSTREAM_REF"
+          git -C up apply --verbose "$GITHUB_WORKSPACE/ds/core/desmume.patch"
+          cp ds/core/build.sh up/build.sh
+          cp -r ds/core/tools up/tools
+          chmod +x up/build.sh
+
+      - name: Teste nativo (áudio + save state com ROM de tom)
+        working-directory: up
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y zlib1g-dev >/dev/null
+          NATIVE_CHECK=1 ./build.sh
+          python3 tools/testrom/make_tone_rom.py tone.nds
+          timeout 120 .obj-native/nds-native tone.nds 600 | tee test.log
+          grep -q '^PASSOU$' test.log
+
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 3.1.74
+          actions-cache-folder: emsdk-cache
+
+      - name: Build sem SIMD (fallback)
+        working-directory: up
+        run: SIMD=0 OUT=dist ./build.sh
+
+      - name: Build com SIMD
+        id: simd
+        continue-on-error: true
+        working-directory: up
+        run: SIMD=1 OUT=dist ./build.sh
+
+      - name: Se o SIMD falhar, usa o fallback como principal
+        if: steps.simd.outcome != 'success'
+        working-directory: up
+        run: |
+          echo "::warning::Build SIMD falhou; publicando só a versão sem SIMD"
+          cp dist/nds-nosimd.js dist/nds.js
+          cp dist/nds-nosimd.wasm dist/nds.wasm
+
+      - name: Commitar o core em ds/
+        run: |
+          set -euo pipefail
+          for f in nds.js nds.wasm nds-nosimd.js nds-nosimd.wasm; do
+            test -s "up/dist/$f" || { echo "faltou $f"; exit 1; }
+            cp "up/dist/$f" "ds/$f"
+          done
+          ls -la ds
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add ds/nds.js ds/nds.wasm ds/nds-nosimd.js ds/nds-nosimd.wasm
+          if git diff --cached --quiet; then echo "core igual, nada a commitar"; exit 0; fi
+          git commit -m "ds: core compilado (${GITHUB_SHA::7}) [skip ci]"
+          for i in 1 2 3; do
+            git pull --rebase --quiet origin main && git push origin HEAD:main && exit 0
+            sleep 5
+          done
+          exit 1
