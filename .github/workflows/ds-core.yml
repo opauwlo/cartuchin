@@ -130,6 +130,24 @@ jobs:
           tail -1 ../logs/node-test-core.log | sed 's/^/::notice::nds-test: /'
           [ "$code" != 1 ]
 
+      # Core de teste + JIT de ARM para WebAssembly (ds/nds-jit). Só publica se, no Node,
+      # o JIT der exatamente as mesmas imagens que o interpretador.
+      - name: Core JIT
+        id: jitcore
+        if: steps.testcore.outcome == 'success'
+        continue-on-error: true
+        working-directory: uptest
+        run: |
+          set -euo pipefail
+          CCACHE=1 TEST=1 JIT=1 SIMD=1 OUT=dist ./build.sh > ../logs/build-jit.log 2>&1 || { tail -15 ../logs/build-jit.log | sed 's/^/::warning::JIT /'; exit 1; }
+          cp "$GITHUB_WORKSPACE/cputorture.nds" ct.nds
+          ok=1
+          for rom in tone.nds ct.nds; do
+            if timeout 600 node tools/node-jit.cjs dist nds-jit "$rom" 600 > "../logs/jit-$rom.log" 2>&1; then :; else ok=0; fi
+            grep -E "ms/quadro|ABORT|Error" "../logs/jit-$rom.log" | head -3 | sed 's/^/::notice::JIT /' || true
+          done
+          [ "$ok" = 1 ]
+
       - name: Build de diagnóstico
         if: inputs.diagnostico || failure()
         working-directory: up
@@ -153,6 +171,9 @@ jobs:
           for f in nds-mt.js nds-mt.wasm; do if [ -s "up/dist/$f" ]; then cp "up/dist/$f" "ds/$f"; fi; done
           if [ "${{ steps.testcore.outcome }}" = success ]; then
             for f in nds-test.js nds-test.wasm; do if [ -s "uptest/dist/$f" ]; then cp "uptest/dist/$f" "ds/$f"; git add "ds/$f"; fi; done
+          fi
+          if [ "${{ steps.jitcore.outcome }}" = success ]; then
+            for f in nds-jit.js nds-jit.wasm; do if [ -s "uptest/dist/$f" ]; then cp "uptest/dist/$f" "ds/$f"; git add "ds/$f"; fi; done
           fi
           git add ds/nds.js ds/nds.wasm ds/nds-nosimd.js ds/nds-nosimd.wasm
           git add ds/nds-mt.js ds/nds-mt.wasm 2>/dev/null || true

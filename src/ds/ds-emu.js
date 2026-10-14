@@ -40,6 +40,7 @@ const LAYOUT_LABEL = { auto: "Automático", both: "As duas", side: "Lado a lado"
 const LOCAL_LAYOUTS = ["auto", "both", "top", "bottom"];
 const CAST_LAYOUTS = ["top", "both", "side"];
 const MAX_SCALE = 6;
+const CORE_LABEL = { estavel: "Estável", teste: "Teste", jit: "Teste + JIT (mais rápido)" };
 const GPU_LABEL = { auto: "Automático", on: "GPU sempre", off: "Software" };
 let expOpen = false;   // seção "Experimental" do menu aberta
 const ds = {
@@ -48,7 +49,8 @@ const ds = {
   // imagem na TV: "x1" (original), "nitida" (4x, pixels exatos) ou "suave" (4x com filtro de pixel art)
   tvq: ls.get("cartucho.ds.tvq") || "suave",
   // canal do core: "estavel" (padrão) ou "teste" (ds/nds-test: resolução interna 2x-3x etc.)
-  core: ls.get("cartucho.ds.core") === "teste" ? "teste" : "estavel",
+  // "jit": core de teste + JIT de ARM para WebAssembly (ds/nds-jit)
+  core: ["teste", "jit"].includes(ls.get("cartucho.ds.core")) ? ls.get("cartucho.ds.core") : "estavel",
   scale: Math.min(MAX_SCALE, Math.max(1, Number(ls.get("cartucho.ds.scale")) || 1)),
   // 3D na GPU (WebGL2), só no core de teste: "auto" = GPU só em 2x ou mais (em 1x o software
   // é mais leve: sem leitura de volta da GPU), "on" = sempre GPU, "off" = sempre software
@@ -117,12 +119,12 @@ function loadCore() {
   if (corePromise) return corePromise;
   const simd = WebAssembly.validate(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 123, 3,
     2, 1, 0, 10, 10, 1, 8, 0, 65, 0, 253, 15, 253, 98, 11]));
-  const name = ds.core === "teste" && simd ? "nds-test" : simd ? "nds" : "nds-nosimd";
+  const name = ds.core === "teste" && simd ? "nds-test" : ds.core === "jit" && simd ? "nds-jit" : simd ? "nds" : "nds-nosimd";
   corePromise = new Promise((resolve, reject) => {
     /** @type {any} */ const w = window;
     w.wasmReady = () => resolve(w.Module);
     w.Module = {
-      locateFile: (p) => "ds/" + p.replace(/^nds(-nosimd|-test)?\.wasm$/, name + ".wasm"),
+      locateFile: (p) => "ds/" + p.replace(/^nds(-nosimd|-test|-jit)?\.wasm$/, name + ".wasm"),
       print: () => {}, printErr: (t) => console.warn("[ds]", t),
       onAbort: (r) => reject(new Error("core: " + r)),
     };
@@ -133,7 +135,7 @@ function loadCore() {
   corePromise.catch(() => {
     corePromise = null;
     // core de teste ausente ou quebrado: volta para o estável na próxima tentativa
-    if (ds.core === "teste") { ds.core = "estavel"; ls.set("cartucho.ds.core", "estavel"); toast("O core de teste não carregou; voltando ao estável.", 4000); }
+    if (ds.core !== "estavel") { ds.core = "estavel"; ls.set("cartucho.ds.core", "estavel"); toast("O core experimental não carregou; voltando ao estável.", 4000); }
   });
   return corePromise;
 }
@@ -434,6 +436,9 @@ async function createDsEmulator(romBytes, gameName, startSav) {
   };
   // escolhe o renderizador pela preferência e pela escala atual; false = queria GPU e não deu
   emu.setLag = (on) => { if (canScale) M._emuSetOpt(5, on ? 1 : 0); };
+  // core com JIT: liga/desliga na hora (o interpretador serve para comparar)
+  emu.jitOn = ds.core === "jit";
+  emu.setJit = (on) => { if (ds.core === "jit") M._emuSetOpt(6, on ? 1 : 0); };
   emu.applyRenderer = () => {
     if (!canScale) return true;
     const want = ds.gpu === "on" || (ds.gpu === "auto" && S > 1);
@@ -774,11 +779,11 @@ function dsMenuItems(emu, refresh) {
 function expItems(emu, refresh) {
   return [
     {
-      sub: true, icon: "sliders", label: "Core: " + (ds.core === "teste" ? "Teste" : "Estável"),
+      sub: true, icon: "sliders", label: "Core: " + CORE_LABEL[ds.core],
       fn: () => {
-        ds.core = ds.core === "teste" ? "estavel" : "teste";
+        ds.core = nextOf(["estavel", "teste", "jit"], ds.core);
         ls.set("cartucho.ds.core", ds.core);
-        toast(ds.core === "teste" ? "Core de teste: vale quando abrir o jogo de novo. Se algo der errado, volte para o estável aqui." : "Core estável: vale quando abrir o jogo de novo.", 5000);
+        toast(ds.core === "estavel" ? "Core estável: vale quando abrir o jogo de novo." : `Core ${CORE_LABEL[ds.core]}: vale quando abrir o jogo de novo. Se algo der errado, volte para o estável aqui.`, 5000);
         refresh();
       },
     },
@@ -798,7 +803,14 @@ function expItems(emu, refresh) {
         if (!emu.applyRenderer()) toast("3D na GPU indisponível neste aparelho.", 4000);
         refresh();
       },
-    }, {
+    }, ...(ds.core === "jit" ? [{
+      sub: true, icon: "sliders", label: "CPU: " + (emu.jitOn ? "JIT (rápido)" : "Interpretador"),
+      fn: () => {
+        emu.jitOn = !emu.jitOn;
+        emu.setJit(emu.jitOn);
+        refresh();
+      },
+    }] : []), {
       sub: true, icon: "sliders", label: "GPU sem espera: " + (ds.lag ? "Sim (3D 1 quadro atrás)" : "Não"),
       fn: () => {
         ds.lag = !ds.lag;

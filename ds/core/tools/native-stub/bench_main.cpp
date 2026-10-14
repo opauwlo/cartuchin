@@ -1,5 +1,5 @@
 // Benchmark nativo: roda N quadros desenhando todos, mede ms/quadro e salva o último
-// quadro (as duas telas) como PPM.  uso: nds-bench rom.nds [quadros] [saida.ppm] [escala] [1=soft|2=gpu]
+// quadro (as duas telas) como PPM.  uso: nds-bench rom.nds [quadros] [saida.ppm] [escala] [1=soft|2=gpu] [atraso 3D] [jit 0|1]
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -29,7 +29,8 @@ int main(int argc, char **argv) {
   // mesma ordem da página: renderizador primeiro, depois a escala
   int rend = argc > 5 ? atoi(argv[5]) : 1;   // 1 = software, 2 = GPU
   if (rend == 2 && emuSetOpt(4, 2) != 0) { puts("GPU indisponivel"); return 5; }
-  if (argc > 6) emuSetOpt(5, atoi(argv[6]));   // 3D da GPU com 1 quadro de atraso (1) ou não (0)
+  if (argc > 6) emuSetOpt(5, atoi(argv[6]));
+  if (argc > 7) emuSetOpt(6, atoi(argv[7]));   // build com JIT: 1 = JIT, 0 = interpretador   // 3D da GPU com 1 quadro de atraso (1) ou não (0)
   int scale = argc > 4 ? atoi(argv[4]) : 1;
   if (scale > 1 && emuSetOpt(3, scale) != 0) { puts("escala invalida"); return 4; }
   if (loadROM((int)n) != 0) { puts("loadROM falhou"); return 3; }

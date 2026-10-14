@@ -2750,6 +2750,7 @@ void main() {
   var LOCAL_LAYOUTS = ["auto", "both", "top", "bottom"];
   var CAST_LAYOUTS = ["top", "both", "side"];
   var MAX_SCALE = 6;
+  var CORE_LABEL = { estavel: "Estável", teste: "Teste", jit: "Teste + JIT (mais rápido)" };
   var GPU_LABEL = { auto: "Automático", on: "GPU sempre", off: "Software" };
   var expOpen = false;
   var ds = {
@@ -2758,7 +2759,8 @@ void main() {
     // imagem na TV: "x1" (original), "nitida" (4x, pixels exatos) ou "suave" (4x com filtro de pixel art)
     tvq: ls.get("cartucho.ds.tvq") || "suave",
     // canal do core: "estavel" (padrão) ou "teste" (ds/nds-test: resolução interna 2x-3x etc.)
-    core: ls.get("cartucho.ds.core") === "teste" ? "teste" : "estavel",
+    // "jit": core de teste + JIT de ARM para WebAssembly (ds/nds-jit)
+    core: ["teste", "jit"].includes(ls.get("cartucho.ds.core")) ? ls.get("cartucho.ds.core") : "estavel",
     scale: Math.min(MAX_SCALE, Math.max(1, Number(ls.get("cartucho.ds.scale")) || 1)),
     // 3D na GPU (WebGL2), só no core de teste: "auto" = GPU só em 2x ou mais (em 1x o software
     // é mais leve: sem leitura de volta da GPU), "on" = sempre GPU, "off" = sempre software
@@ -2855,12 +2857,12 @@ registerProcessor("ds-out", DSOut);
       98,
       11
     ]));
-    const name = ds.core === "teste" && simd ? "nds-test" : simd ? "nds" : "nds-nosimd";
+    const name = ds.core === "teste" && simd ? "nds-test" : ds.core === "jit" && simd ? "nds-jit" : simd ? "nds" : "nds-nosimd";
     corePromise = new Promise((resolve, reject) => {
       const w = window;
       w.wasmReady = () => resolve(w.Module);
       w.Module = {
-        locateFile: (p) => "ds/" + p.replace(/^nds(-nosimd|-test)?\.wasm$/, name + ".wasm"),
+        locateFile: (p) => "ds/" + p.replace(/^nds(-nosimd|-test|-jit)?\.wasm$/, name + ".wasm"),
         print: () => {
         },
         printErr: (t) => console.warn("[ds]", t),
@@ -2872,10 +2874,10 @@ registerProcessor("ds-out", DSOut);
     });
     corePromise.catch(() => {
       corePromise = null;
-      if (ds.core === "teste") {
+      if (ds.core !== "estavel") {
         ds.core = "estavel";
         ls.set("cartucho.ds.core", "estavel");
-        toast("O core de teste não carregou; voltando ao estável.", 4e3);
+        toast("O core experimental não carregou; voltando ao estável.", 4e3);
       }
     });
     return corePromise;
@@ -3232,6 +3234,10 @@ registerProcessor("ds-out", DSOut);
     };
     emu.setLag = (on) => {
       if (canScale) M._emuSetOpt(5, on ? 1 : 0);
+    };
+    emu.jitOn = ds.core === "jit";
+    emu.setJit = (on) => {
+      if (ds.core === "jit") M._emuSetOpt(6, on ? 1 : 0);
     };
     emu.applyRenderer = () => {
       if (!canScale) return true;
@@ -3635,11 +3641,11 @@ void main() {
       {
         sub: true,
         icon: "sliders",
-        label: "Core: " + (ds.core === "teste" ? "Teste" : "Estável"),
+        label: "Core: " + CORE_LABEL[ds.core],
         fn: () => {
-          ds.core = ds.core === "teste" ? "estavel" : "teste";
+          ds.core = nextOf(["estavel", "teste", "jit"], ds.core);
           ls.set("cartucho.ds.core", ds.core);
-          toast(ds.core === "teste" ? "Core de teste: vale quando abrir o jogo de novo. Se algo der errado, volte para o estável aqui." : "Core estável: vale quando abrir o jogo de novo.", 5e3);
+          toast(ds.core === "estavel" ? "Core estável: vale quando abrir o jogo de novo." : `Core ${CORE_LABEL[ds.core]}: vale quando abrir o jogo de novo. Se algo der errado, volte para o estável aqui.`, 5e3);
           refresh();
         }
       },
@@ -3663,7 +3669,16 @@ void main() {
           if (!emu.applyRenderer()) toast("3D na GPU indisponível neste aparelho.", 4e3);
           refresh();
         }
-      }, {
+      }, ...ds.core === "jit" ? [{
+        sub: true,
+        icon: "sliders",
+        label: "CPU: " + (emu.jitOn ? "JIT (rápido)" : "Interpretador"),
+        fn: () => {
+          emu.jitOn = !emu.jitOn;
+          emu.setJit(emu.jitOn);
+          refresh();
+        }
+      }] : [], {
         sub: true,
         icon: "sliders",
         label: "GPU sem espera: " + (ds.lag ? "Sim (3D 1 quadro atrás)" : "Não"),

@@ -62,6 +62,8 @@ SOURCES=(
 [[ "${MT:-0}" == "1" ]] && SOURCES+=(utils/task.cpp)   # threads: Task de verdade (patch de teste)
 # canal de teste: renderizador 3D em GPU (WebGL2 no navegador, GLES3/EGL no teste nativo)
 [[ "${TEST:-0}" == "1" ]] && SOURCES+=(GLES3Render.cpp)
+# JIT=1 (com TEST=1): JIT de ARM para WebAssembly (arm_jit_wasm.cpp); sai como nds-jit.*
+[[ "${JIT:-0}" == "1" ]] && SOURCES+=(arm_jit_wasm.cpp)
 
 COMMON_FLAGS=(-O3 -DNDEBUG -DHAVE_LIBZ -fno-strict-aliasing
   -I"$SRC" -I"$SRC/libretro-common/include" -w)
@@ -74,6 +76,8 @@ if [[ "$NATIVE_CHECK" == "1" ]]; then
   if [[ "${MT:-0}" == "1" ]]; then OBJ="$ROOT/.obj-native-mt"; COMMON_FLAGS+=(-pthread -DDESMUME_THREADS); fi
   # TEST=1 nativo: cabeçalhos GLES3/EGL (KHR_INC) e libs (GL_LIBS) para o renderizador em GPU
   if [[ "${TEST:-0}" == "1" ]]; then OBJ="$OBJ-test"; [[ -n "${KHR_INC:-}" ]] && COMMON_FLAGS+=(-I"$KHR_INC"); fi
+  # nativo: o bloco do JIT vira uma lista executada em C (mesma formação de blocos e ciclos)
+  if [[ "${JIT:-0}" == "1" ]]; then OBJ="$OBJ-jit"; COMMON_FLAGS+=(-DHAVE_JIT -DJIT_IR_NATIVE); fi
 else
   command -v emcc >/dev/null || { echo "emcc não encontrado"; exit 1; }
   WRAP=()   # no emcc o ccache entra pelo EM_COMPILER_WRAPPER
@@ -105,6 +109,7 @@ else
   fi
 fi
 
+if [[ "${JIT:-0}" == "1" && "$NATIVE_CHECK" != "1" ]]; then OBJ="$OBJ-jit"; COMMON_FLAGS+=(-DHAVE_JIT); fi
 mkdir -p "$OBJ" "$OUT"
 SOURCES+=("$PORT/main.cpp" "$PORT/stubs.cpp")
 
@@ -171,6 +176,8 @@ if [[ "${TEST:-0}" == "1" ]]; then
   NAME="nds-test"; [[ "${MT:-0}" == "1" ]] && NAME="nds-test-mt"
   EXTRA_EXPORTS=',"_outWidth","_outHeight","_screenWidth"'
   LINK_EXTRA+=(-sMAX_WEBGL_VERSION=2 -sMIN_WEBGL_VERSION=2)
+  # JIT: cada bloco compilado entra na tabela de funções (cresce em tempo de execução)
+  if [[ "${JIT:-0}" == "1" ]]; then NAME="nds-jit"; LINK_EXTRA+=(-sALLOW_TABLE_GROWTH=1); fi
 fi
 EXPORTS='["_main","_malloc","_free","_prepareRomBuffer","_loadROM","_reset","_runFrame","_getSymbol","_savGetSize","_savGetPointer","_savUpdateChangeFlag","_audioDrain","_audioSetup","_micWriteSamples","_emuSetOpt","_chtGetList","_chtAddItem","_utilStrLen","_zlibCompress","_zlibDecompress","_stateSave","_stateLoad","_stateGetPointer"'"$EXTRA_EXPORTS"']'
 
