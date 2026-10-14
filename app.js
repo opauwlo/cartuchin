@@ -2572,6 +2572,7 @@
   var FRAME_MS = 1e3 / FPS;
   var W = 256;
   var H = 192;
+  var CORE_RATE = 32768;
   var RETRO_TO_DS = { 0: 6, 1: 8, 2: 4, 3: 5, 4: 3, 5: 2, 6: 1, 7: 0, 8: 7, 9: 9, 10: 10, 11: 11 };
   var KEYMAP2 = {
     ArrowRight: 0,
@@ -2591,10 +2592,10 @@
   };
   var PADMAP = [[0, 6], [1, 7], [2, 8], [3, 9], [4, 10], [5, 11], [8, 4], [9, 5], [12, 3], [13, 2], [14, 1], [15, 0]];
   var LEVELS = [
-    { latency: 3200, interp: 1, video30: false, skip: 3, name: "qualidade" },
-    { latency: 4800, interp: 0, video30: false, skip: 3, name: "leve" },
-    { latency: 4800, interp: 0, video30: true, skip: 3, name: "vídeo a 30 fps" },
-    { latency: 6400, interp: 0, video30: true, skip: 5, name: "máximo desempenho" }
+    { latency: 70, interp: 1, video30: false, skip: 3, name: "qualidade" },
+    { latency: 100, interp: 0, video30: false, skip: 3, name: "leve" },
+    { latency: 100, interp: 0, video30: true, skip: 3, name: "vídeo a 30 fps" },
+    { latency: 135, interp: 0, video30: true, skip: 5, name: "máximo desempenho" }
   ];
   var PERF_MODES = ["auto", "60", "30"];
   var PERF_LABEL = { auto: "Automático", 60: "60 fps", 30: "Vídeo a 30 fps" };
@@ -2613,14 +2614,18 @@ class DSOut extends AudioWorkletProcessor {
     super();
     this.cap = 1 << 15; this.mask = this.cap - 1;
     this.L = new Float32Array(this.cap); this.R = new Float32Array(this.cap);
-    this.w = 0; this.rp = 0; this.target = 4800; this.playing = false;
+    this.w = 0; this.rp = 0; this.target = 3300; this.playing = false;
+    this.base = 1;                      // taxa do core / taxa da placa
     this.lastL = 0; this.lastR = 0; this.underruns = 0; this.reportIn = 0;
-    this.port.onmessage = (e) => {
+    const onMsg = (e) => {
       const m = e.data;
       if (m.t === "s") this.push(m.d);
       else if (m.t === "target") this.target = m.v;
+      else if (m.t === "rate") this.base = m.v / sampleRate;
       else if (m.t === "reset") { this.rp = this.w; this.playing = false; }
+      else if (m.t === "port") m.p.onmessage = onMsg;   // canal direto do worker do emulador
     };
+    this.port.onmessage = onMsg;
   }
   push(d) {
     const n = d.length >> 1;
@@ -2635,7 +2640,7 @@ class DSOut extends AudioWorkletProcessor {
     if (this.playing) {
       let dev = (fill - this.target) / this.target;
       if (dev > 1) dev = 1; else if (dev < -1) dev = -1;
-      const ratio = 1 + dev * 0.005;
+      const step = this.base * (1 + dev * 0.005);
       for (let i = 0; i < len; i++) {
         if (this.w - this.rp < 2) {
           this.lastL *= 0.995; this.lastR *= 0.995;
@@ -2647,7 +2652,7 @@ class DSOut extends AudioWorkletProcessor {
         const l = this.L[a] + (this.L[b] - this.L[a]) * f, r = this.R[a] + (this.R[b] - this.R[a]) * f;
         oL[i] = l; if (oR !== oL) oR[i] = r;
         this.lastL = l; this.lastR = r;
-        this.rp += ratio;
+        this.rp += step;
       }
     } else {
       for (let i = 0; i < len; i++) { this.lastL *= 0.995; this.lastR *= 0.995; oL[i] = this.lastL; if (oR !== oL) oR[i] = this.lastR; }
@@ -2658,9 +2663,199 @@ class DSOut extends AudioWorkletProcessor {
 }
 registerProcessor("ds-out", DSOut);
 `;
-  var corePromise = null;
-  function loadCore() {
-    if (corePromise) return corePromise;
+  var audio = {
+    ctx: null,
+    node: null,
+    gain: null,
+    ready: false,
+    fill: 0,
+    fillAt: 0,
+    pushed: 0,
+    underruns: 0,
+    target: 3300,
+    async init() {
+      if (this.ctx) return;
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      try {
+        this.ctx = new AC({ latencyHint: "interactive" });
+      } catch (e) {
+        return;
+      }
+      if (!this.ctx.audioWorklet) return;
+      const url = URL.createObjectURL(new Blob([WORKLET_SRC], { type: "application/javascript" }));
+      try {
+        await this.ctx.audioWorklet.addModule(url);
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+      this.node = new AudioWorkletNode(this.ctx, "ds-out", { outputChannelCount: [2] });
+      this.node.port.onmessage = (e) => {
+        this.fill = e.data.fill;
+        this.fillAt = performance.now();
+        this.pushed = 0;
+        this.underruns = e.data.underruns;
+      };
+      this.node.port.postMessage({ t: "rate", v: CORE_RATE });
+      this.gain = this.ctx.createGain();
+      this.node.connect(this.gain);
+      this.gain.connect(this.ctx.destination);
+      this.setLatency(100);
+      this.ready = true;
+    },
+    /** canal para o worker mandar amostras direto ao worklet */
+    port() {
+      if (!this.node) return null;
+      const ch = new MessageChannel();
+      this.node.port.postMessage({ t: "port", p: ch.port1 }, [ch.port1]);
+      return ch.port2;
+    },
+    setLatency(ms) {
+      this.target = Math.round(ms * CORE_RATE / 1e3);
+      if (this.node) this.node.port.postMessage({ t: "target", v: this.target });
+    },
+    reset() {
+      if (this.node) this.node.port.postMessage({ t: "reset" });
+      this.fill = 0;
+      this.pushed = 0;
+    },
+    /** amostras no buffer agora (estimado): último relatório + o que o worker mandou - o que já tocou */
+    level() {
+      if (!this.ready) return this.target;
+      return this.fill + this.pushed - (performance.now() - this.fillAt) * CORE_RATE / 1e3;
+    },
+    resume() {
+      if (this.ctx && this.ctx.state !== "running") this.ctx.resume().catch(() => {
+      });
+    }
+  };
+  for (const ev of ["pointerdown", "keydown", "touchend"]) window.addEventListener(ev, () => audio.resume(), true);
+  function workerMain() {
+    const g = self;
+    let M = null, fbPtr = 0, audioPtr = 0, audioPort = null, romLen = 0, interp = 0, rate = 32768;
+    const reply = (m, tr) => g.postMessage(m, tr || []);
+    function boot() {
+      M._emuSetOpt(0, 1);
+      M._emuSetOpt(1, interp);
+      const r = M._loadROM(romLen);
+      if (r !== 0) throw new Error(r === -1001 ? "rom-encrypted" : "rom " + r);
+      M._audioSetup(rate);
+      M._savUpdateChangeFlag();
+    }
+    function saveBytes() {
+      const size = M._savGetSize();
+      if (size <= 0) return new Uint8Array(0);
+      const p = M._savGetPointer(0);
+      return M.HEAPU8.slice(p, p + size);
+    }
+    let lastSavCheck = 0;
+    const calls = {
+      restart(sav) {
+        if (sav && sav.length) {
+          const p = M._savGetPointer(sav.length);
+          M.HEAPU8.set(sav, p);
+        }
+        boot();
+        return true;
+      },
+      getState() {
+        const size = M._stateSave();
+        if (size <= 0) throw new Error("state");
+        const p = M._stateGetPointer(0);
+        return M.HEAPU8.slice(p, p + size);
+      },
+      loadState(u8) {
+        const p = M._stateGetPointer(u8.length);
+        M.HEAPU8.set(u8, p);
+        if (M._stateLoad() !== 0) throw new Error("state");
+        return true;
+      },
+      setInterp(v) {
+        interp = v;
+        M._emuSetOpt(1, v);
+        return true;
+      },
+      getSave() {
+        return saveBytes();
+      }
+    };
+    g.onmessage = (e) => {
+      const m = e.data;
+      try {
+        if (m.t === "tick") {
+          if (!M || !romLen) return;
+          const t0 = performance.now();
+          let drew = false;
+          for (let i = 0; i < m.n; i++) {
+            const draw = m.draw && i === m.n - 1;
+            M._runFrame(draw ? 1 : 0, m.keys, m.touch ? 1 : 0, m.tx, m.ty);
+            const n = M._audioDrain(16384);
+            if (n > 0 && m.audio && audioPort) {
+              const src = new Int16Array(M.HEAPU8.buffer, audioPtr, n * 2);
+              const out = new Float32Array(n * 2);
+              for (let k = 0; k < out.length; k++) out[k] = src[k] * (1 / 32768);
+              audioPort.postMessage({ t: "s", d: out }, [out.buffer]);
+            }
+            if (draw) drew = true;
+          }
+          const fb = drew ? M.HEAPU8.slice(fbPtr, fbPtr + W2 * H2 * 4) : null;
+          const busy2 = performance.now() - t0;
+          reply({ t: "frame", n: m.n, fb, busy: busy2 }, fb ? [fb.buffer] : []);
+          if (t0 - lastSavCheck > 1e3) {
+            lastSavCheck = t0;
+            if (M._savUpdateChangeFlag()) {
+              const s = saveBytes();
+              reply({ t: "sav", sav: s }, [s.buffer]);
+            }
+          }
+        } else if (m.t === "call") {
+          const val = calls[m.fn](m.arg);
+          const tr = val && val.buffer instanceof ArrayBuffer ? [val.buffer] : [];
+          reply({ t: "ret", id: m.id, val }, tr);
+        } else if (m.t === "rom") {
+          const bytes = new Uint8Array(m.bytes);
+          romLen = bytes.length;
+          const p = M._prepareRomBuffer(romLen);
+          if (!p) throw new Error("mem");
+          M.HEAPU8.set(bytes, p);
+          M._savGetPointer(-1);
+          if (m.sav && m.sav.length) {
+            const sp = M._savGetPointer(m.sav.length);
+            M.HEAPU8.set(m.sav, sp);
+          }
+          interp = m.interp | 0;
+          rate = m.rate | 0;
+          boot();
+          reply({ t: "ret", id: m.id, val: true });
+        } else if (m.t === "init") {
+          audioPort = m.audioPort || null;
+          g.Module = {
+            locateFile: (p) => m.base + p.replace(/^nds(-nosimd)?\.wasm$/, m.name + ".wasm"),
+            print: () => {
+            },
+            printErr: (t) => console.warn("[ds]", t),
+            onAbort: (r) => reply({ t: "error", msg: "core: " + r })
+          };
+          g.wasmReady = () => {
+            M = g.Module;
+            fbPtr = M._getSymbol(4);
+            audioPtr = M._getSymbol(6);
+            reply({ t: "ready" });
+          };
+          g.importScripts(m.base + m.name + ".js");
+        }
+      } catch (err) {
+        reply({ t: m.t === "call" || m.t === "rom" ? "ret" : "error", id: m.id, err: String(err && err.message || err), msg: String(err && err.message || err) });
+      }
+    };
+  }
+  var workerUrl = null;
+  function startWorker() {
+    if (!workerUrl) {
+      const src = `const W2 = ${W}, H2 = ${H * 2};
+(${workerMain.toString()})();`;
+      workerUrl = URL.createObjectURL(new Blob([src], { type: "text/javascript" }));
+    }
     const simd = WebAssembly.validate(new Uint8Array([
       0,
       97,
@@ -2694,100 +2889,48 @@ registerProcessor("ds-out", DSOut);
       98,
       11
     ]));
-    const name = simd ? "nds" : "nds-nosimd";
-    corePromise = new Promise((resolve, reject) => {
-      const w = window;
-      w.wasmReady = () => resolve(w.Module);
-      w.Module = {
-        locateFile: (p) => "ds/" + p.replace(/^nds(-nosimd)?\.wasm$/, name + ".wasm"),
-        print: () => {
-        },
-        printErr: (t) => console.warn("[ds]", t),
-        onAbort: (r) => reject(new Error("core: " + r))
-      };
-      const s = el("script", { src: "ds/" + name + ".js" });
-      s.onerror = () => reject(new Error("ds/" + name + ".js"));
-      document.body.append(s);
-    });
-    corePromise.catch(() => {
-      corePromise = null;
-    });
-    return corePromise;
-  }
-  var audio = {
-    ctx: null,
-    node: null,
-    gain: null,
-    ready: false,
-    fill: 0,
-    fillAt: 0,
-    pushed: 0,
-    underruns: 0,
-    target: 4800,
-    async init() {
-      if (this.ctx) return;
-      const AC = window.AudioContext || window.webkitAudioContext;
-      if (!AC) return;
-      try {
-        this.ctx = new AC({ sampleRate: 48e3, latencyHint: "interactive" });
-      } catch (e) {
-        this.ctx = new AC({ latencyHint: "interactive" });
-      }
-      if (!this.ctx.audioWorklet) return;
-      const url = URL.createObjectURL(new Blob([WORKLET_SRC], { type: "application/javascript" }));
-      try {
-        await this.ctx.audioWorklet.addModule(url);
-      } finally {
-        URL.revokeObjectURL(url);
-      }
-      this.node = new AudioWorkletNode(this.ctx, "ds-out", { outputChannelCount: [2] });
-      this.node.port.onmessage = (e) => {
-        this.fill = e.data.fill;
-        this.fillAt = performance.now();
-        this.pushed = 0;
-        this.underruns = e.data.underruns;
-      };
-      this.gain = this.ctx.createGain();
-      this.node.connect(this.gain);
-      this.gain.connect(this.ctx.destination);
-      this.setTarget(this.target);
-      this.ready = true;
-    },
-    rate() {
-      return this.ctx ? Math.min(48e3, this.ctx.sampleRate) : 48e3;
-    },
-    setTarget(v) {
-      this.target = v;
-      if (this.node) this.node.port.postMessage({ t: "target", v });
-    },
-    reset() {
-      if (this.node) this.node.port.postMessage({ t: "reset" });
-      this.fill = 0;
-      this.pushed = 0;
-    },
-    level() {
-      if (!this.ready) return this.target;
-      return this.fill + this.pushed - (performance.now() - this.fillAt) * this.rate() / 1e3;
-    },
-    push(f32) {
-      if (!this.node) return;
-      this.pushed += f32.length >> 1;
-      this.node.port.postMessage({ t: "s", d: f32 }, [f32.buffer]);
-    },
-    resume() {
-      if (this.ctx && this.ctx.state !== "running") this.ctx.resume().catch(() => {
+    const worker = new Worker(workerUrl);
+    const base = new URL("ds/", location.href).href;
+    const ready = new Promise((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error("timeout")), 3e4);
+      worker.addEventListener("message", function on(e) {
+        if (e.data.t === "ready") {
+          clearTimeout(t);
+          worker.removeEventListener("message", on);
+          resolve();
+        } else if (e.data.t === "error") {
+          clearTimeout(t);
+          reject(new Error(e.data.msg));
+        }
       });
-    }
-  };
-  for (const ev of ["pointerdown", "keydown", "touchend"]) window.addEventListener(ev, () => audio.resume(), true);
-  async function createDsEmulator(romBytes, gameName) {
-    let M;
+      worker.addEventListener("error", (e) => {
+        clearTimeout(t);
+        reject(new Error(e.message || "worker"));
+      });
+    });
+    const audioPort = audio.port();
+    worker.postMessage({ t: "init", base, name: simd ? "nds" : "nds-nosimd", audioPort }, audioPort ? [audioPort] : []);
+    return { worker, ready };
+  }
+  async function createDsEmulator(romBytes, gameName, startSav) {
+    await audio.init().catch(() => {
+    });
+    const { worker, ready } = startWorker();
     try {
-      [M] = await Promise.all([loadCore(), audio.init().catch(() => {
-      })]);
+      await ready;
     } catch (e) {
-      console.warn(e);
+      console.warn("ds worker", e);
+      worker.terminate();
       return null;
+    }
+    let nextId = 1;
+    const waiting = /* @__PURE__ */ new Map();
+    function call(fn, arg, transfer) {
+      return new Promise((resolve, reject) => {
+        const id = nextId++;
+        waiting.set(id, { resolve, reject });
+        worker.postMessage(fn === "rom" ? { t: "rom", id, ...arg } : { t: "call", id, fn, arg }, transfer || []);
+      });
     }
     const box = $("#game");
     box.replaceChildren();
@@ -2802,9 +2945,7 @@ registerProcessor("ds-out", DSOut);
     fb.width = W;
     fb.height = H * 2;
     const fctx = fb.getContext("2d", { alpha: false });
-    const fbPtr = M._getSymbol(4), audioPtr = M._getSymbol(6);
-    let heapBuf = null, img = null;
-    const romLen = romBytes.length;
+    let savCopy = startSav && startSav.length ? new Uint8Array(startSav) : new Uint8Array(0);
     let pendingSav = null;
     const listeners = {};
     const emu = {
@@ -2816,7 +2957,7 @@ registerProcessor("ds-out", DSOut);
       canvas: castCanvas,
       streamW: W,
       streamH: H,
-      keys: 0,
+      aspect: 2 / 3,
       padKeys: 0,
       kbKeys: 0,
       gpKeys: 0,
@@ -2824,6 +2965,7 @@ registerProcessor("ds-out", DSOut);
       tx: 0,
       ty: 0,
       turbo: 1,
+      ffRatio: 2,
       frames: 0,
       on(ev, cb) {
         if (ev === "start" && emu.started) setTimeout(cb, 0);
@@ -2841,39 +2983,34 @@ registerProcessor("ds-out", DSOut);
         emu.volume = v;
         if (audio.gain) audio.gain.gain.value = v;
       },
+      audioStats: () => ({ ready: audio.ready, fill: Math.round(audio.fill), target: audio.target, underruns: audio.underruns, state: audio.ctx && audio.ctx.state }),
       destroy
     };
-    const gm = emu.gameManager = {
+    emu.gameManager = {
+      // o player pede o save de forma síncrona: devolve a cópia que o worker manda quando ele muda
       getSaveFile() {
-        const size = M._savGetSize();
-        if (size <= 0) return new Uint8Array(0);
-        const p2 = M._savGetPointer(0);
-        return M.HEAPU8.slice(p2, p2 + size);
+        return savCopy.slice();
       },
       writeSav(u8) {
         pendingSav = u8 && u8.length ? new Uint8Array(u8) : null;
       },
       loadSaveFiles() {
       },
-      restart() {
-        if (pendingSav) {
-          const p2 = M._savGetPointer(pendingSav.length);
-          M.HEAPU8.set(pendingSav, p2);
-          pendingSav = null;
-        }
-        bootRom();
+      async restart() {
+        const sav = pendingSav;
+        pendingSav = null;
+        if (sav) savCopy = sav.slice();
+        await call("restart", sav);
+        audio.reset();
+        acc = 0;
       },
       getState() {
-        const size = M._stateSave();
-        if (size <= 0) throw new Error("state");
-        const p2 = M._stateGetPointer(0);
-        return M.HEAPU8.slice(p2, p2 + size);
+        return call("getState");
       },
-      loadState(u8) {
-        const p2 = M._stateGetPointer(u8.length);
-        M.HEAPU8.set(u8, p2);
-        if (M._stateLoad() !== 0) throw new Error("state");
+      async loadState(u8) {
+        await call("loadState", u8);
         audio.reset();
+        acc = 0;
       },
       getFrameNum() {
         return emu.frames;
@@ -2885,10 +3022,10 @@ registerProcessor("ds-out", DSOut);
         else emu.padKeys &= ~(1 << bit);
       },
       setFastForwardRatio(r) {
-        emu.ffRatio = Math.max(1, Math.min(4, Number(r) || 1));
+        emu.ffRatio = Math.max(2, Math.min(4, Number(r) || 2));
       },
       toggleFastForward(on) {
-        emu.turbo = on ? emu.ffRatio || 2 : 1;
+        emu.turbo = on ? emu.ffRatio : 1;
         if (!on) {
           audio.reset();
           acc = 0;
@@ -2897,23 +3034,14 @@ registerProcessor("ds-out", DSOut);
       setVariable() {
       }
     };
-    function bootRom() {
-      M._emuSetOpt(0, 1);
-      M._emuSetOpt(1, cfg.interp);
-      const r = M._loadROM(romLen);
-      if (r !== 0) throw new Error(r === -1001 ? "rom-encrypted" : "rom " + r);
-      M._audioSetup(audio.rate());
-      M._savUpdateChangeFlag();
-      audio.reset();
-      acc = 0;
-    }
-    const cfg = { latency: 4800, interp: 0, video30: false, skip: 3 };
+    const cfg = { latency: 100, interp: 0, video30: false, skip: 3 };
     const tune = { calm: 0, bad: 0, lastUnder: 0 };
     function applyCfg() {
       if (ds.perf === "auto") Object.assign(cfg, LEVELS[ds.level]);
-      else Object.assign(cfg, LEVELS[ds.perf === "30" ? 2 : 0], ds.perf === "30" ? {} : { latency: 3200 });
-      audio.setTarget(cfg.latency);
-      M._emuSetOpt(1, cfg.interp);
+      else Object.assign(cfg, LEVELS[ds.perf === "30" ? 2 : 0]);
+      audio.setLatency(cfg.latency);
+      if (emu.started) call("setInterp", cfg.interp).catch(() => {
+      });
     }
     emu.applyCfg = applyCfg;
     function autoTune(fps, load) {
@@ -2936,14 +3064,6 @@ registerProcessor("ds-out", DSOut);
         ls.set("cartucho.ds.level", String(ds.level));
         applyCfg();
       }
-    }
-    function frameImage() {
-      const buf = M.HEAPU8.buffer;
-      if (buf !== heapBuf) {
-        heapBuf = buf;
-        img = new ImageData(new Uint8ClampedArray(buf, fbPtr, W * H * 2 * 4), W, H * 2);
-      }
-      return img;
     }
     const casting = () => !!window.__castCap;
     function localLayout() {
@@ -2975,7 +3095,7 @@ registerProcessor("ds-out", DSOut);
       }
       if (casting()) {
         const [w, h] = sizeFor(ds.cast);
-        if (ds.cast !== shownCast || castCanvas.width !== w) {
+        if (ds.cast !== shownCast || castCanvas.width !== w || castCanvas.height !== h) {
           shownCast = ds.cast;
           castCanvas.width = w;
           castCanvas.height = h;
@@ -2984,18 +3104,16 @@ registerProcessor("ds-out", DSOut);
         }
       }
     }
-    emu.localLayout = localLayout;
-    emu.relayout = () => {
-      shownLocal = "";
-      shownCast = "";
-      syncSizes();
-      draw();
-    };
     function draw() {
-      fctx.putImageData(frameImage(), 0, 0);
+      syncSizes();
       blit(vctx, shownLocal);
       if (casting()) blit(cctx, ds.cast);
     }
+    emu.relayout = () => {
+      shownLocal = "";
+      shownCast = "";
+      draw();
+    };
     let touchId = null;
     function touchAt(e) {
       const b = view.getBoundingClientRect();
@@ -3040,7 +3158,7 @@ registerProcessor("ds-out", DSOut);
     view.addEventListener("pointercancel", touchUp);
     view.addEventListener("contextmenu", (e) => e.preventDefault());
     const onKey = (down) => (e) => {
-      if (!(e.code in KEYMAP2) || e.target.closest && e.target.closest("input, textarea")) return;
+      if (!(e.code in KEYMAP2) || e.target && e.target.closest && e.target.closest("input, textarea")) return;
       const bit = 1 << KEYMAP2[e.code];
       if (down) emu.kbKeys |= bit;
       else emu.kbKeys &= ~bit;
@@ -3063,16 +3181,33 @@ registerProcessor("ds-out", DSOut);
       }
       emu.gpKeys = k;
     }
-    let acc = 0, last = performance.now(), raf = 0, alive = true, toggle30 = 0;
+    let inFlight = false, inFlightN = 0;
     let stF = 0, stBusy = 0, stT0 = performance.now();
-    function drainAudio(push) {
-      const n = M._audioDrain(16384);
-      if (n <= 0 || !push) return;
-      const src = new Int16Array(M.HEAPU8.buffer, audioPtr, n * 2);
-      const out = new Float32Array(n * 2);
-      for (let i = 0; i < out.length; i++) out[i] = src[i] * (1 / 32768);
-      audio.push(out);
-    }
+    worker.onmessage = (e) => {
+      const m = e.data;
+      if (m.t === "frame") {
+        inFlight = false;
+        emu.frames += m.n;
+        stF += m.n;
+        stBusy += m.busy;
+        audio.pushed += m.n * CORE_RATE / FPS * (emu.turbo === 1 && !emu.muted ? 1 : 0);
+        if (m.fb) {
+          fctx.putImageData(new ImageData(new Uint8ClampedArray(m.fb.buffer), W, H * 2), 0, 0);
+          draw();
+        }
+      } else if (m.t === "sav") {
+        savCopy = m.sav;
+      } else if (m.t === "ret") {
+        const w = waiting.get(m.id);
+        if (!w) return;
+        waiting.delete(m.id);
+        if (m.err) w.reject(new Error(m.err));
+        else w.resolve(m.val);
+      } else if (m.t === "error") {
+        console.warn("[ds]", m.msg);
+      }
+    };
+    let acc = 0, last = performance.now(), raf = 0, alive = true, toggle30 = 0;
     function tick(now) {
       if (!alive) return;
       raf = requestAnimationFrame(tick);
@@ -3084,38 +3219,42 @@ registerProcessor("ds-out", DSOut);
       let dt = now - last;
       last = now;
       if (dt > 200) dt = 200;
-      const t0 = performance.now();
+      acc += dt;
+      if (inFlight) return;
       let n;
-      if (emu.turbo > 1) n = emu.turbo;
-      else {
-        acc += dt;
+      if (emu.turbo > 1) {
+        n = emu.turbo;
+        acc = 0;
+      } else {
         n = Math.floor(acc / FRAME_MS);
         acc -= n * FRAME_MS;
         if (audio.ready) {
           const lvl = audio.level();
-          if (lvl < cfg.latency * 0.5) n += 1;
-          else if (lvl > cfg.latency * 2 && n > 0) n -= 1;
+          if (lvl < audio.target * 0.5) n += 1;
+          else if (lvl > audio.target * 2 && n > 0) n -= 1;
         }
-        n = Math.min(n, cfg.skip);
+        if (n > cfg.skip) {
+          n = cfg.skip;
+          acc = Math.min(acc, FRAME_MS);
+        }
       }
-      const keys = emu.padKeys | emu.kbKeys | emu.gpKeys;
-      let drew = false;
-      for (let i = 0; i < n; i++) {
-        const want = i === n - 1 && (!cfg.video30 || (++toggle30 & 1) === 0);
-        M._runFrame(want ? 1 : 0, keys, emu.touch ? 1 : 0, emu.tx, emu.ty);
-        drainAudio(emu.turbo === 1 && !emu.muted);
-        emu.frames++;
-        stF++;
-        if (want) drew = true;
+      if (n > 0) {
+        const draw2 = !cfg.video30 || (++toggle30 & 1) === 0;
+        inFlight = true;
+        inFlightN = n;
+        worker.postMessage({
+          t: "tick",
+          n,
+          draw: draw2,
+          keys: emu.padKeys | emu.kbKeys | emu.gpKeys,
+          touch: emu.touch,
+          tx: emu.tx,
+          ty: emu.ty,
+          audio: emu.turbo === 1 && !emu.muted
+        });
       }
-      if (drew) {
-        syncSizes();
-        draw();
-      }
-      stBusy += performance.now() - t0;
       if (now - stT0 >= 1e3) {
-        const secs = (now - stT0) / 1e3;
-        autoTune(stF / secs, stBusy / (now - stT0) * 100);
+        autoTune(stF / ((now - stT0) / 1e3), stBusy / (now - stT0) * 100);
         stF = 0;
         stBusy = 0;
         stT0 = now;
@@ -3127,14 +3266,12 @@ registerProcessor("ds-out", DSOut);
       window.removeEventListener("keydown", kd);
       window.removeEventListener("keyup", ku);
       castCanvas.remove();
+      worker.terminate();
     }
-    const p = M._prepareRomBuffer(romLen);
-    if (!p) return null;
-    M.HEAPU8.set(romBytes, p);
-    M._savGetPointer(-1);
     applyCfg();
     try {
-      bootRom();
+      const buf = romBytes.buffer.byteLength === romBytes.length ? romBytes.buffer : romBytes.slice().buffer;
+      await call("rom", { bytes: buf, sav: savCopy.length ? savCopy.slice() : null, interp: cfg.interp, rate: CORE_RATE }, [buf]);
     } catch (e) {
       toast(String(e.message) === "rom-encrypted" ? 'Essa ROM de DS está criptografada. Use uma versão "decrypted".' : "Não deu para abrir essa ROM de DS.", 5e3);
       destroy();
@@ -3142,6 +3279,7 @@ registerProcessor("ds-out", DSOut);
     }
     syncSizes();
     emu.started = true;
+    audio.reset();
     raf = requestAnimationFrame(tick);
     setTimeout(() => {
       for (const cb of listeners.start || []) cb();
@@ -3185,7 +3323,7 @@ registerProcessor("ds-out", DSOut);
       }
     ];
   }
-  var dsStatesOk = false;
+  var dsStatesOk = true;
 
   // src/player/player.js
   var player = window.__cartucho = {
@@ -3322,7 +3460,7 @@ registerProcessor("ds-out", DSOut);
     if (!opts.force && player.stateFrames && frames - player.stateFrames < 600) return false;
     let st;
     try {
-      st = gm.getState();
+      st = await gm.getState();
     } catch (e) {
       return false;
     }
@@ -3576,7 +3714,7 @@ registerProcessor("ds-out", DSOut);
     }
     let emu;
     if (isDs) {
-      emu = await createDsEmulator(new Uint8Array(await rom.blob.arrayBuffer()), key);
+      emu = await createDsEmulator(new Uint8Array(await rom.blob.arrayBuffer()), key, start.sav);
     } else {
       const romBytes = fixSaveChip(new Uint8Array(await rom.blob.arrayBuffer()));
       const file = new File([romBytes], rom.code ? rom.code + "." + rom.ext : "jogo." + rom.ext);
@@ -3593,7 +3731,7 @@ registerProcessor("ds-out", DSOut);
     player.emu = emu;
     emu.on("start", async () => {
       const gm = emu.gameManager;
-      if (start.sav) {
+      if (start.sav && !isDs) {
         try {
           writeSav(gm, start.sav);
           gm.loadSaveFiles();
@@ -3605,7 +3743,7 @@ registerProcessor("ds-out", DSOut);
       if (resume) {
         await sleep(300);
         try {
-          gm.loadState(await unpack(resume));
+          await gm.loadState(await unpack(resume));
           player.stateFrames = Number(gm.getFrameNum());
           const msg = `Continuando de onde parou (${resume.device || "outro aparelho"}, ${ago(resume.at)})`;
           if (!$("#pad").hidden) padMsg(msg);

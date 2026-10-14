@@ -135,7 +135,7 @@ async function uploadState(opts = {}) {
   const frames = Number(gm.getFrameNum());
   if (!opts.force && player.stateFrames && frames - player.stateFrames < 600) return false;   // under ~10 s of play since the last one
   let st;
-  try { st = gm.getState(); } catch (e) { return false; }
+  try { st = await gm.getState(); } catch (e) { return false; }   // o DS responde de forma assíncrona (worker)
   player.stateBusy = true;
   try {
     let sav = null;
@@ -353,7 +353,7 @@ async function play(key) {
 
   let emu;
   if (isDs) {
-    emu = await createDsEmulator(new Uint8Array(await rom.blob.arrayBuffer()), key);
+    emu = await createDsEmulator(new Uint8Array(await rom.blob.arrayBuffer()), key, start.sav);
   } else {
     const romBytes = fixSaveChip(new Uint8Array(await rom.blob.arrayBuffer()));
     const file = new File([romBytes], rom.code ? rom.code + "." + rom.ext : "jogo." + rom.ext);
@@ -370,7 +370,7 @@ async function play(key) {
   player.emu = emu;
   emu.on("start", async () => {
     const gm = emu.gameManager;
-    if (start.sav) {
+    if (start.sav && !isDs) {   // o DS já começa com o save
       try {
         writeSav(gm, start.sav);
         gm.loadSaveFiles();
@@ -380,7 +380,7 @@ async function play(key) {
     if (resume) {
       await sleep(300);
       try {
-        gm.loadState(await unpack(resume));
+        await gm.loadState(await unpack(resume));
         player.stateFrames = Number(gm.getFrameNum());
         const msg = `Continuando de onde parou (${resume.device || "outro aparelho"}, ${ago(resume.at)})`;
         if (!$("#pad").hidden) padMsg(msg);
