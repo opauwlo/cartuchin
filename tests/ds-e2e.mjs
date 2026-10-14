@@ -115,6 +115,29 @@ if (!ONLY || ONLY === "state") {
   ok(r.moved > 30, `jogo anda depois de salvar (${r.moved} quadros)`);
   ok(Math.abs(r.size - r.size2) < r.size * 0.01, `carregar estado funciona (tamanhos ${r.size}/${r.size2})`);
   ok(r.running, "jogo segue rodando após carregar");
+  // galeria: salvar pelo menu, ver o card com miniatura, carregar, renomear e apagar
+  await phone.click("#menuBtn");
+  await phone.click("#gmActions .gs-action:has-text('Salvar estado')");
+  await phone.waitForFunction(async () => (await window.__states.list(window.__cartucho.key)).length >= 1, null, { timeout: 15000, polling: 300 });
+  const autoOk = await phone.evaluate(async () => { await new Promise((r) => setTimeout(r, 300)); return window.__states.saveState({ auto: true }); });
+  ok(autoOk, "salvamento automático grava");
+  await phone.click("#gmActions .gs-action:has-text('Estados salvos')");
+  await phone.waitForSelector("#statesSheet:not([hidden]) .st-card", { timeout: 10000 });
+  const g = await phone.evaluate(() => ({ cards: document.querySelectorAll("#statesSheet .st-card").length, imgs: [...document.querySelectorAll("#statesSheet .st-card img")].filter((i) => i.complete && i.naturalWidth > 0).length, auto: document.querySelectorAll("#statesSheet .st-card.auto").length }));
+  ok(g.cards === 2 && g.auto === 1, `galeria mostra os estados (${g.cards} cards, ${g.auto} automático)`);
+  ok(g.imgs >= 1, `cards com miniatura (${g.imgs})`);
+  if (process.env.SHOT) await phone.screenshot({ path: process.env.SHOT });
+  const f0 = await phone.evaluate(() => window.__cartucho.emu.frames);
+  await phone.click("#statesSheet .st-card:not(.auto) .st-acts .primary");
+  const loaded = await phone.waitForFunction((f) => window.__cartucho.emu.frames > f + 30 && document.querySelector("#statesSheet").hidden, f0, { timeout: 15000 }).then(() => true, () => false);
+  ok(loaded, "carregar pela galeria fecha a folha e o jogo segue");
+  const left = await phone.evaluate(async () => {
+    const k = window.__cartucho.key, items = await window.__states.list(k);
+    await window.__states.renameState(k, items[0].id, "Antes do chefe");
+    for (const it of items) await window.__states.removeState(k, it.id);
+    return (await window.__states.list(k)).length;
+  });
+  ok(left === 0, "apagar estados limpa a galeria");
 }
 
 if (!ONLY || ONLY === "cast") {

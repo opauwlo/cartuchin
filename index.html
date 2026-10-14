@@ -402,6 +402,22 @@ button { cursor: pointer; }
 .gs-action.sub { padding-left: 28px; font-size: 14px; }
 .gs-action:hover, .gs-action:focus-visible { background: var(--bg); }
 .gs-action svg { width: 20px; height: 20px; stroke: currentColor; fill: none; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; flex: none; color: var(--muted); }
+/* galeria de estados */
+.st-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.st-head h3 { margin: 0; }
+.st-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
+.st-card { display: grid; gap: 6px; background: var(--bg); border: 1px solid var(--line); border-radius: 12px; padding: 8px; animation: st-in .22s ease both; }
+.st-pic { position: relative; display: block; width: 100%; aspect-ratio: 4 / 3; padding: 0; border: 0; border-radius: 8px; overflow: hidden; background: #000; cursor: pointer; }
+.st-pic img { width: 100%; height: 100%; object-fit: cover; image-rendering: pixelated; display: block; transition: transform .18s ease; }
+.st-pic:active img { transform: scale(.97); }
+.st-noimg { display: grid; place-items: center; height: 100%; color: #8a90a6; font-size: 12px; }
+.st-tag { position: absolute; top: 6px; left: 6px; background: rgba(0,0,0,.65); color: #fff; font-size: 11px; padding: 2px 6px; border-radius: 6px; }
+.st-meta { display: grid; gap: 1px; font-size: 13px; } .st-meta span { color: var(--muted); font-size: 12px; }
+.st-meta b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.st-acts { display: flex; gap: 6px; } .st-acts .primary { flex: 1; }
+.st-acts .danger { color: var(--bad); }
+@keyframes st-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .st-card { animation: none; } }
 .gs-action.danger { color: var(--bad); } .gs-action.danger svg { color: var(--bad); }
 .gs-play { display: grid; grid-template-columns: 1fr; gap: 8px; }
 .gs-play .btn { min-height: 48px; font-size: 1rem; }
@@ -649,9 +665,9 @@ body { margin: 0; }
 
 <div id="dialogRoot"></div>
 
-<script src="config.js?v=20261014204558"></script>
+<script src="config.js?v=20261014204952"></script>
 <script src="vendor/lang-pt-BR.js?v=20261013202456"></script>
 <script src="vendor/qrcode.js"></script>
-<script src="app.js?v=20261014204558"></script>
+<script src="app.js?v=20261014204952"></script>
 </body>
 </html>

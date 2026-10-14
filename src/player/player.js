@@ -380,6 +380,7 @@ async function play(key) {
     return;
   }
   player.emu = emu;
+  window.dispatchEvent(new Event("cartucho-game-start"));
   emu.on("start", async () => {
     const gm = emu.gameManager;
     if (start.sav && !isDs) {   // o DS já começa com o save

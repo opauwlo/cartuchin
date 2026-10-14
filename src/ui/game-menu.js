@@ -1,8 +1,9 @@
 import { player } from "../player/player.js";
 import { dsMenuItems } from "../ds/ds-emu.js";
 import { dialog } from "./dialogs.js";
+import { lastState, openGallery, saveState } from "./states.js";
 import { closeSheets, openSheet, sheetAction } from "./sheets.js";
-import { $, $$, ls, toast } from "../util.js";
+import { $, $$, ago, ls, toast } from "../util.js";
 
 /* ---------------- game menu (speed, pause, sound, emulator options) ----------------
    The emulator's own menu bar is hidden while our controller is on screen, so the
@@ -35,8 +36,16 @@ $("#ffModes").addEventListener("click", (e) => {
     fillGameMenu();
   }
 });
+const lastInfo = { key: "", at: 0 };
 function fillGameMenu() {
   const emu = player.emu, acts = $("#gmActions");
+  lastState(player.key).then((it) => {
+    const at = it ? it.at : 0;
+    if (lastInfo.key !== player.key || lastInfo.at !== at) {
+      Object.assign(lastInfo, { key: player.key, at });
+      if (!$("#gameMenu").hidden) fillGameMenu();
+    }
+  }, () => {});
   acts.replaceChildren(...[
     sheetAction(emu && emu.paused ? "play" : "pause", emu && emu.paused ? "Continuar o jogo" : "Pausar", () => {
       try { emu.paused ? emu.play() : emu.pause(); } catch (e) {}
@@ -54,6 +63,11 @@ function fillGameMenu() {
       closeSheets();
       $("#pullBtn").click();
     }),
+    sheetAction("save", "Salvar estado", async () => {
+      await saveState();
+      fillGameMenu();
+    }),
+    sheetAction("image", "Estados salvos" + (lastInfo.at ? ` (último ${ago(lastInfo.at)})` : ""), () => openGallery()),
     ...(player.isDs ? dsMenuItems(emu, fillGameMenu).map((it) => { const b = sheetAction(it.icon, it.label, it.fn); if (it.sub) b.classList.add("sub"); return b; }) : []),
     player.isDs ? null : sheetAction("sliders", $("#player").classList.contains("show-ejs") ? "Esconder opções do emulador" : "Opções avançadas do emulador", () => {
       const on = !$("#player").classList.contains("show-ejs");
