@@ -1,5 +1,5 @@
 import { sha, unpack } from "../bytes.js";
-import { writeCloud } from "../cloud.js";
+import { cloud, cloudName, deleteCloudGame, writeCloud } from "../cloud.js";
 import { idb } from "../idb.js";
 import { loadRoms } from "../library.js";
 import { render } from "./screens.js";
@@ -46,6 +46,33 @@ async function confirmRemoveRom(key, title) {
   render();
 }
 
+/* Apagar o save e o progresso (e, se pedido, a ROM): aqui e na nuvem. */
+async function confirmDeleteGame(key, title, withRom) {
+  const where = cloud.db ? ` deste aparelho e do ${cloudName()}` : " deste aparelho";
+  const ok = await dialog(withRom ? `Apagar ${title}?` : `Apagar o save de ${title}?`,
+    (withRom ? "A ROM, o save e o progresso saem" : "O save e o progresso (\"continuar de onde parou\") saem") + where + ". Não dá para desfazer.",
+    [{ label: withRom ? "Apagar jogo" : "Apagar save", value: true, cls: "primary" }, { label: "Cancelar", value: false }]);
+  if (!ok) return false;
+  for (const k of [key, "state:" + key]) await idb.del("pend", k);
+  await idb.del("sync", key);
+  if (withRom) {
+    await idb.del("roms", key);
+    await idb.del("covers", key);
+  }
+  try {
+    await deleteCloudGame(key, title, withRom);
+  } catch (e) {
+    toast(`Apagado neste aparelho, mas não deu para apagar no ${cloudName()} agora.`, 4000);
+    await loadRoms();
+    render();
+    return true;
+  }
+  await loadRoms();
+  render();
+  toast(withRom ? `${title} apagado` : `Save de ${title} apagado`);
+  return true;
+}
+
 async function downloadSave(save) {
   try {
     const sav = await unpack(save);
@@ -61,4 +88,4 @@ async function downloadSave(save) {
   }
 }
 
-export { dialog, confirmRestore, confirmRemoveRom, downloadSave };
+export { dialog, confirmRestore, confirmRemoveRom, confirmDeleteGame, downloadSave };

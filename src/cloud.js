@@ -484,6 +484,35 @@ async function writeCloud(key, meta, sav, savSha, opts = {}) {
   throw new Error("save-conflict");
 }
 
+/* ---------------- apagar ---------------- */
+async function deleteFile(path, message) {
+  try {
+    if (isGoogle()) {
+      const id = await drive.idFor(path);
+      if (!id) return;
+      await drive.api(`${DRIVE}/files/${id}`, { method: "DELETE" });
+      drive.files.delete(path);
+      return;
+    }
+    const ex = await gh(contents(path));
+    if (ex && ex.sha) await gh(contents(path), { method: "DELETE", body: JSON.stringify({ message, sha: ex.sha }) });
+  } catch (e) { if (e.status !== 404) throw e; }
+}
+/* Apaga da nuvem o save, o progresso (snapshot) e, se pedido, a ROM e o jogo da biblioteca. */
+async function deleteCloudGame(key, title, withRom) {
+  if (!cloud.db) return;
+  await deleteFile("saves/" + key + ".json", `Apagar save: ${title}`);
+  await deleteFile("states/" + key + ".json", `Apagar progresso: ${title}`);
+  cloud.docs.delete(key);
+  cloud.saveShas.delete(key);
+  if (withRom) {
+    await deleteFile("roms/" + key + ".gz", `Apagar ROM: ${title}`);
+    await deleteFile("covers/" + key + ".jpg", `Apagar capa: ${title}`);
+    cloud.roms.delete(key);
+    await updateIndex((d) => { delete d.games[key]; }, `Biblioteca: tirar ${title}`);
+  }
+}
+
 /* ---------------- ROM in the cloud ---------------- */
 function setBusy(key, msg) {
   if (msg) busy.set(key, msg);
@@ -556,4 +585,4 @@ async function fetchRom(key) {
   }
 }
 
-export { cloud, busy, isGoogle, cloudName, saveAuth, clearAuth, gh, utf8, readJson, putFile, putBinary, getBinary, gauth, googleAvailable, tokenFresh, loadGis, gisClient, askGoogleToken, updateIndex, refreshLibrary, connect, googleNeedsTap, getSaveDoc, writeCloud, uploadRom, fetchRom };
+export { deleteCloudGame, cloud, busy, isGoogle, cloudName, saveAuth, clearAuth, gh, utf8, readJson, putFile, putBinary, getBinary, gauth, googleAvailable, tokenFresh, loadGis, gisClient, askGoogleToken, updateIndex, refreshLibrary, connect, googleNeedsTap, getSaveDoc, writeCloud, uploadRom, fetchRom };

@@ -1,7 +1,7 @@
 import { busy, cloud, cloudName, uploadRom } from "../cloud.js";
 import { coverEl, gameInfo } from "../library.js";
 import { play } from "../player/player.js";
-import { confirmRemoveRom, confirmRestore, downloadSave } from "./dialogs.js";
+import { confirmDeleteGame, confirmRemoveRom, confirmRestore, downloadSave } from "./dialogs.js";
 import { pickRom, pickSav } from "./pickers.js";
 import { pickCover, renameGame } from "./rename-cover.js";
 import { $, $$, ago, el } from "../util.js";
@@ -78,6 +78,8 @@ function fillGameSheet(key) {
   if (g.save) acts.append(sheetAction("download", "Baixar o save", () => downloadSave(g.save)));
   if (g.save && g.save.prev) acts.append(sheetAction("back", "Voltar à versão anterior do save", () => confirmRestore(key, g.save)));
   if (g.rom && !g.crom) acts.append(sheetAction("trash", "Tirar a ROM deste aparelho", () => confirmRemoveRom(key, g.title), true));
+  acts.append(sheetAction("trash", "Apagar save e progresso", async () => { if (await confirmDeleteGame(key, g.title, false)) fillGameSheet(key); }, true));
+  acts.append(sheetAction("trash", "Apagar jogo (ROM, save e progresso)", async () => { if (await confirmDeleteGame(key, g.title, true)) closeSheets(); }, true));
   sh.replaceChildren(el("div", { class: "sheet-grip", "aria-hidden": "true" }),
     el("div", { class: "sheet-body" },
       el("div", { class: "gs-head" }, coverEl(g), el("div", {}, el("h2", { class: "gs-title", id: "gsTitle" }, g.title), el("p", { class: "gs-sub" }, [g.sys, g.code].filter(Boolean).join(" · ")))),

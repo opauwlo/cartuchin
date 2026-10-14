@@ -336,8 +336,9 @@ async function createEmulator(file, gameName, options) {
 /* jogo de DS: abre em ?ds=<jogo>, que o service worker serve com isolamento
    cross-origin (o core usa threads). O login do Google fica na biblioteca. */
 const dsPage = new URLSearchParams(location.search).get("ds");
+const DS_ISOLATED_PAGE = false;   // desligado: voltou ao modo que rodava o jogo (ver src/ds/ds-emu-worker.js)
 async function play(key) {
-  if (!dsPage) {
+  if (!dsPage && DS_ISOLATED_PAGE) {
     const r = roms.get(key) || cloud.roms.get(key) || cloud.docs.get(key);
     if (r && r.system === "nds") {
       location.href = location.pathname + "?ds=" + encodeURIComponent(key) + (cast.pending ? "#tela-" + cast.pending : "");
