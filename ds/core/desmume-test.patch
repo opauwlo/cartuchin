@@ -1,9 +1,9 @@
 diff --git a/desmume/src/GLES3Render.cpp b/desmume/src/GLES3Render.cpp
 new file mode 100644
-index 0000000..4d08acc
+index 0000000..2a31eea
 --- /dev/null
 +++ b/desmume/src/GLES3Render.cpp
-@@ -0,0 +1,1132 @@
+@@ -0,0 +1,1200 @@
 +/*
 +	Renderizador 3D em GPU (OpenGL ES 3.0 / WebGL2). Ver GLES3Render.h.
 +
@@ -46,6 +46,9 @@ index 0000000..4d08acc
 +
 +// 1 = aceita WebGL por software (só para testes: emuSetOpt(4, 3))
 +int gles3AllowSlowGL = 0;
++// 1 = o 3D lido em RenderFinish é o do quadro anterior: a GPU trabalha enquanto o core
++// emula o quadro seguinte, sem travar esperando (emuSetOpt(5, 1)). 0 = mesmo quadro.
++int gles3FrameLag = 1;
 +
 +#ifdef __EMSCRIPTEN__
 +static EMSCRIPTEN_WEBGL_CONTEXT_HANDLE s_ctx = 0;
@@ -116,6 +119,9 @@ index 0000000..4d08acc
 +	return eglMakeCurrent(s_dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, s_ctx) == EGL_TRUE;
 +}
 +#endif
++
++static void DropFence(GLsync &f);
++static void ReadPBO(GLuint pbo, void *dst, size_t bytes);
 +
 +// ---------------------------------------------------------------- shaders
 +
@@ -337,6 +343,13 @@ index 0000000..4d08acc
 +	GLuint texClrColor, texClrDepth, texFog, texDummy;
 +	size_t w, h;
 +
++	// leitura assíncrona: dois PBOs alternados, cada um com sua cerca
++	GLuint pbo[2];
++	GLsync fence[2];
++	bool pending[2];
++	int cur;          // próximo PBO a receber um quadro
++	size_t pboBytes;
++
 +	std::vector<float> verts;
 +	std::vector<GLuint> idx;
 +
@@ -428,8 +441,10 @@ index 0000000..4d08acc
 +		glDeleteProgram(g.progGeom);
 +		glDeleteProgram(g.progClear);
 +		glDeleteProgram(g.progResolve);
-+		GLuint bufs[] = { g.vbo, g.ibo };
-+		glDeleteBuffers(2, bufs);
++		DropFence(g.fence[0]);
++		DropFence(g.fence[1]);
++		GLuint bufs[] = { g.vbo, g.ibo, g.pbo[0], g.pbo[1] };
++		glDeleteBuffers(4, bufs);
 +		GLuint vaos[] = { g.vao, g.emptyVao };
 +		glDeleteVertexArrays(2, vaos);
 +		GLuint fbos[] = { g.fbo, g.fboOut };
@@ -556,6 +571,19 @@ index 0000000..4d08acc
 +	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g.texOut, 0);
 +	const bool okOut = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
 +	glBindFramebuffer(GL_FRAMEBUFFER, 0);
++
++	// PBOs do tamanho do quadro; quadros pendentes de outro tamanho são descartados
++	if (!g.pbo[0]) glGenBuffers(2, g.pbo);
++	g.pboBytes = w * h * 4;
++	for (int i = 0; i < 2; i++)
++	{
++		DropFence(g.fence[i]);
++		g.pending[i] = false;
++		glBindBuffer(GL_PIXEL_PACK_BUFFER, g.pbo[i]);
++		glBufferData(GL_PIXEL_PACK_BUFFER, (GLsizeiptr)g.pboBytes, NULL, GL_STREAM_READ);
++	}
++	glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
++	g.cur = 0;
 +
 +	g.w = w;
 +	g.h = h;
@@ -1018,6 +1046,24 @@ index 0000000..4d08acc
 +	return RENDER3DERROR_NOERR;
 +}
 +
++// copia o PBO para dst (bloqueia só se a GPU ainda não terminou aquele quadro)
++static void ReadPBO(GLuint pbo, void *dst, size_t bytes)
++{
++	glBindBuffer(GL_PIXEL_PACK_BUFFER, pbo);
++#ifdef __EMSCRIPTEN__
++	EM_ASM({ GLctx.getBufferSubData(0x88EB /* PIXEL_PACK_BUFFER */, 0, HEAPU8, $0, $1); }, dst, bytes);
++#else
++	void *p = glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, (GLsizeiptr)bytes, GL_MAP_READ_BIT);
++	if (p) { memcpy(dst, p, bytes); glUnmapBuffer(GL_PIXEL_PACK_BUFFER); }
++#endif
++	glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
++}
++
++static void DropFence(GLsync &f)
++{
++	if (f) { glDeleteSync(f); f = 0; }
++}
++
 +Render3DError GLES3Renderer::EndRender()
 +{
 +	if (!_ready) return RENDER3DERROR_NOERR;
@@ -1071,6 +1117,19 @@ index 0000000..4d08acc
 +	glBindVertexArray(0);
 +	glActiveTexture(GL_TEXTURE0);
 +
++	// cópia para o PBO sem esperar a GPU; a leitura de verdade fica para o RenderFinish
++	const int i = g.cur;
++	DropFence(g.fence[i]);
++	glBindBuffer(GL_PIXEL_PACK_BUFFER, g.pbo[i]);
++	glPixelStorei(GL_PACK_ALIGNMENT, 4);
++	glReadPixels(0, 0, (GLsizei)this->_framebufferWidth, (GLsizei)this->_framebufferHeight, GL_RGBA, GL_UNSIGNED_BYTE, 0);
++	glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
++	g.fence[i] = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
++	g.pending[i] = true;
++	g.cur = i ^ 1;
++	glBindFramebuffer(GL_FRAMEBUFFER, 0);
++	glFlush();   // começa a trabalhar já
++
 +	return RENDER3DERROR_NOERR;
 +}
 +
@@ -1083,11 +1142,20 @@ index 0000000..4d08acc
 +
 +	GLES3_MakeContext();
 +	GLState &g = *_gl;
-+	// o passe final já escreveu os bytes 6665: leitura direta no buffer 3D do motor principal
-+	glBindFramebuffer(GL_FRAMEBUFFER, g.fboOut);
-+	glPixelStorei(GL_PACK_ALIGNMENT, 4);
-+	glReadPixels(0, 0, (GLsizei)this->_framebufferWidth, (GLsizei)this->_framebufferHeight, GL_RGBA, GL_UNSIGNED_BYTE, this->_framebufferColor);
-+	glBindFramebuffer(GL_FRAMEBUFFER, 0);
++	// o passe final já escreveu os bytes 6665; o EndRender mandou copiar para um PBO
++	const int latest = g.cur ^ 1, older = g.cur;
++	int pick = -1;
++	if (gles3FrameLag && g.pending[older]) pick = older;   // quadro anterior: já pronto, sem espera
++	else if (g.pending[latest]) pick = latest;
++	if (pick >= 0 && g.pboBytes == this->_framebufferColorSizeBytes)
++	{
++		ReadPBO(g.pbo[pick], this->_framebufferColor, g.pboBytes);
++		DropFence(g.fence[pick]);
++		// com atraso, o primeiro quadro lido é o mais novo mas continua "pendente": no próximo
++		// RenderFinish ele é o anterior, e daí em diante sempre há um quadro pronto esperando
++		if (!(gles3FrameLag && pick == latest)) g.pending[pick] = false;
++		if (!gles3FrameLag && g.pending[older]) { g.pending[older] = false; DropFence(g.fence[older]); }
++	}
 +
 +	this->_renderNeedsFlushMain = true;
 +	this->_renderNeedsFlush16 = true;
@@ -1138,10 +1206,10 @@ index 0000000..4d08acc
 +};
 diff --git a/desmume/src/GLES3Render.h b/desmume/src/GLES3Render.h
 new file mode 100644
-index 0000000..1707fc5
+index 0000000..a0578e6
 --- /dev/null
 +++ b/desmume/src/GLES3Render.h
-@@ -0,0 +1,64 @@
+@@ -0,0 +1,65 @@
 +/*
 +	Renderizador 3D em GPU (OpenGL ES 3.0 / WebGL2) para o DeSmuME-wasm do Cartuchin.
 +
@@ -1161,6 +1229,7 @@ index 0000000..1707fc5
 +
 +extern GPU3DInterface gpu3DGLES3;
 +extern int gles3AllowSlowGL;
++extern int gles3FrameLag;
 +
 +class GLES3Texture : public Render3DTexture
 +{
@@ -1504,7 +1573,7 @@ index 1f8f3b5..423a904 100644
  
  #endif
 diff --git a/desmume/wasm-port/main.cpp b/desmume/wasm-port/main.cpp
-index 44f22c8..9eebdde 100644
+index 44f22c8..239d00c 100644
 --- a/desmume/wasm-port/main.cpp
 +++ b/desmume/wasm-port/main.cpp
 @@ -14,22 +14,19 @@
@@ -1676,7 +1745,7 @@ index 44f22c8..9eebdde 100644
    }
  
    return ret;
-@@ -345,10 +404,88 @@ int micWriteSamples(uint8_t *buffer, int len) {
+@@ -345,10 +404,92 @@ int micWriteSamples(uint8_t *buffer, int len) {
    return len;
  }
  
@@ -1692,6 +1761,10 @@ index 44f22c8..9eebdde 100644
 +      renderScale = v;
 +      GPU->SetCustomFramebufferSize(256 * v, 192 * v);
 +      GPU->SetWillAutoResolveToCustomBuffer(false);
++      return 0;
++    }
++    if (k == 5) {  // 3D da GPU com 1 quadro de atraso (sem esperar a GPU): 1 = sim
++      gles3FrameLag = v ? 1 : 0;
 +      return 0;
 +    }
 +    if (k == 4) {  // renderizador 3D: 1 = software, 2 = GPU (WebGL2); volta ao software se falhar
