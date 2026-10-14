@@ -177,7 +177,8 @@ if [[ "${TEST:-0}" == "1" ]]; then
   EXTRA_EXPORTS=',"_outWidth","_outHeight","_screenWidth"'
   LINK_EXTRA+=(-sMAX_WEBGL_VERSION=2 -sMIN_WEBGL_VERSION=2)
   # JIT: cada bloco compilado entra na tabela de funções (cresce em tempo de execução)
-  if [[ "${JIT:-0}" == "1" ]]; then NAME="nds-jit"; LINK_EXTRA+=(-sALLOW_TABLE_GROWTH=1); fi
+  # o mapa de blocos do JIT ocupa ~35 MB de memória estática: começa com 192 MB
+  if [[ "${JIT:-0}" == "1" ]]; then NAME="nds-jit"; LINK_EXTRA+=(-sALLOW_TABLE_GROWTH=1); MEM=(-sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=201326592); fi
 fi
 EXPORTS='["_main","_malloc","_free","_prepareRomBuffer","_loadROM","_reset","_runFrame","_getSymbol","_savGetSize","_savGetPointer","_savUpdateChangeFlag","_audioDrain","_audioSetup","_micWriteSamples","_emuSetOpt","_chtGetList","_chtAddItem","_utilStrLen","_zlibCompress","_zlibDecompress","_stateSave","_stateLoad","_stateGetPointer"'"$EXTRA_EXPORTS"']'
 
