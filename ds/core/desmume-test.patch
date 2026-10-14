@@ -1,0 +1,550 @@
+diff --git a/desmume/src/NDSSystem.h b/desmume/src/NDSSystem.h
+index 073ed64..c6e6acf 100644
+--- a/desmume/src/NDSSystem.h
++++ b/desmume/src/NDSSystem.h
+@@ -600,7 +600,7 @@ extern struct TCommonSettings
+ 	
+ 	bool cheatsDisable;
+ 
+-	const int num_cores = 1;
++	int num_cores = 1;   // wasm: no build com threads o main.cpp ajusta pelo aparelho
+ 	bool single_core() { return num_cores==1; }
+ 	bool rigorous_timing;
+ 
+diff --git a/desmume/src/emufile.h b/desmume/src/emufile.h
+index c2f781f..7addf7f 100644
+--- a/desmume/src/emufile.h
++++ b/desmume/src/emufile.h
+@@ -269,6 +269,7 @@ public:
+ 			default:
+ 				assert(false);
+ 		}
++		if (pos < 0) pos = 0;   // posiÁ„o negativa n„o existe; evita reserve((u32)-1)
+ 		reserve(pos);
+ 		return 0;
+ 	}
+diff --git a/desmume/src/libretro-common/rthreads/rthreads.c b/desmume/src/libretro-common/rthreads/rthreads.c
+index 45d84f5..6365ebb 100644
+--- a/desmume/src/libretro-common/rthreads/rthreads.c
++++ b/desmume/src/libretro-common/rthreads/rthreads.c
+@@ -315,7 +315,7 @@ void sthread_setname(sthread_t *thread, const char *name)
+    if (!thread)
+       return;
+    // TODO: implement that for Windows (and Mac?) too.
+-#if !defined(USE_WIN32_THREADS) && !defined(__APPLE__)
++#if !defined(USE_WIN32_THREADS) && !defined(__APPLE__) && !defined(__EMSCRIPTEN__)
+    pthread_setname_np(thread->id, name);
+ #endif
+ }
+diff --git a/desmume/src/mc.cpp b/desmume/src/mc.cpp
+index 2cd4273..f5dc36e 100644
+--- a/desmume/src/mc.cpp
++++ b/desmume/src/mc.cpp
+@@ -410,9 +410,12 @@ BackupDevice::BackupDevice()
+ 	reset();
+ }
+ 
++// wasm: fpMC aponta para o savFile global (dono √© o main.cpp). Apag√°-lo aqui
++// deixava um ponteiro solto e derrubava o emulador no reset/troca de ROM/load state.
++extern EMUFILE_MEMORY* savFile;
+ BackupDevice::~BackupDevice()
+ {
+-	delete fpMC;
++	if (fpMC != savFile) delete fpMC;
+ 	fpMC = NULL;
+ }
+ 
+@@ -634,7 +637,7 @@ void BackupDevice::reset()
+ void BackupDevice::close_rom()
+ {
+ 	fpMC->fflush();
+-	delete fpMC;
++	if (fpMC != savFile) delete fpMC;
+ 	fpMC = NULL;
+ }
+ 
+@@ -982,7 +985,9 @@ void BackupDevice::ensure(u32 addr, u8 val, EMUFILE *fpOut)
+ 	//IDEALLY, no assumptions about the file pointer can be made.
+ 	//but someone (actually, not really) so very carefully profiled the save IO code and discovered that not fseeking for every byte read/write was a great optimization.
+ 	//so, now all this code is depending/assuming on the FP being kept in a precise position, and I dont think its smart to change the main user of this assumption to paper over this bug by making it fseek before read/write, while leaving other unknown assuming clients intact
+-	fpMC->fseek(addr-1, SEEK_SET);
++	// wasm: com addr 0 (jogo ainda sem save) isto virava fseek(-1) e o EMUFILE_MEMORY
++	// tentava crescer para 4 GB (std::length_error no wasm32, travando o load state)
++	fpMC->fseek(addr > 0 ? addr-1 : 0, SEEK_SET);
+ #endif
+ }
+ 
+diff --git a/desmume/src/rasterize.cpp b/desmume/src/rasterize.cpp
+index 6bf210f..b287cf5 100644
+--- a/desmume/src/rasterize.cpp
++++ b/desmume/src/rasterize.cpp
+@@ -1740,16 +1740,16 @@ SoftRasterizerRenderer::SoftRasterizerRenderer()
+ 	_HACK_viewer_rasterizerUnit.SetSLI(0, _framebufferHeight, false);
+ 	
+ 	const size_t coreCount = CommonSettings.num_cores;
+-	//_threadCount = coreCount;
++	_threadCount = coreCount;
+ 	
+ 	if (_threadCount > SOFTRASTERIZER_MAX_THREADS)
+ 	{
+-		//	_threadCount = SOFTRASTERIZER_MAX_THREADS;
++		_threadCount = SOFTRASTERIZER_MAX_THREADS;
+ 	}
+ 	
+-	if (true) //(_threadCount < 2)
++	if (_threadCount < 2)
+ 	{
+-		//_threadCount = 0;
++		_threadCount = 0;
+ 		
+ 		_nativeLinesPerThread = GPU_FRAMEBUFFER_NATIVE_HEIGHT;
+ 		_nativePixelsPerThread = GPU_FRAMEBUFFER_NATIVE_WIDTH * GPU_FRAMEBUFFER_NATIVE_HEIGHT;
+@@ -1803,8 +1803,8 @@ SoftRasterizerRenderer::SoftRasterizerRenderer()
+ 			//_task[i].start(false, 43);
+ #else
+ 			char name[16];
+-			snprintf(name, 16, "rasterizer %d", i);
+-			//_task[i].start(false, 0, name);
++			snprintf(name, 16, "rasterizer %d", (int)i);
++			_task[i].start(false, 0, name);
+ #endif
+ 		}
+ 	}
+diff --git a/desmume/src/rasterize.h b/desmume/src/rasterize.h
+index 929cdc2..5d5ee5f 100644
+--- a/desmume/src/rasterize.h
++++ b/desmume/src/rasterize.h
+@@ -25,7 +25,11 @@
+ #include <emmintrin.h>
+ #endif
+ 
++#ifdef DESMUME_THREADS
++#define SOFTRASTERIZER_MAX_THREADS 8
++#else
+ #define SOFTRASTERIZER_MAX_THREADS 1
++#endif
+ 
+ extern GPU3DInterface gpu3DRasterize;
+ 
+@@ -148,14 +152,14 @@ private:
+ 	void __InitTables();
+ 	
+ protected:
+-	Task *_task;
++	Task *_task = nullptr;
+ 	SoftRasterizerClearParam _threadClearParam[SOFTRASTERIZER_MAX_THREADS];
+ 	SoftRasterizerPostProcessParams _threadPostprocessParam[SOFTRASTERIZER_MAX_THREADS];
+ 	
+ 	RasterizerUnit<true> _rasterizerUnit[SOFTRASTERIZER_MAX_THREADS];
+ 	RasterizerUnit<false> _HACK_viewer_rasterizerUnit;
+ 	
+-	const size_t _threadCount = 0;
++	size_t _threadCount = 0;
+ 	size_t _nativeLinesPerThread;
+ 	size_t _nativePixelsPerThread;
+ 	size_t _customLinesPerThread;
+diff --git a/desmume/src/slot1.cpp b/desmume/src/slot1.cpp
+index 50e8bd1..2fb6b76 100644
+--- a/desmume/src/slot1.cpp
++++ b/desmume/src/slot1.cpp
+@@ -176,7 +176,8 @@ bool slot1_getTypeByID(u8 ID, NDS_SLOT1_TYPE &type)
+ {
+ 	for (u8 i = 0; i < NDS_SLOT1_COUNT; i++)
+ 	{
+-		if (slot1_List[i]->info()->id() == ID)
++		// wasm: R4 e DEBUG foram desativados no port (entradas NULL)
++		if (slot1_List[i] && slot1_List[i]->info()->id() == ID)
+ 		{
+ 			type = (NDS_SLOT1_TYPE)i;
+ 			return true;
+diff --git a/desmume/src/slot2.cpp b/desmume/src/slot2.cpp
+index 9118aaf..7874d29 100644
+--- a/desmume/src/slot2.cpp
++++ b/desmume/src/slot2.cpp
+@@ -179,7 +179,8 @@ bool slot2_getTypeByID(u8 ID, NDS_SLOT2_TYPE &type)
+ {
+ 	for (u8 i = 0; i < NDS_SLOT2_COUNT; i++)
+ 	{
+-		if (slot2_List[i]->info()->id() == ID)
++		// wasm: s√≥ o slot2 "None" √© constru√≠do no port (demais NULL)
++		if (slot2_List[i] && slot2_List[i]->info()->id() == ID)
+ 		{
+ 			type = (NDS_SLOT2_TYPE)i;
+ 			return true;
+diff --git a/desmume/src/utils/task.cpp b/desmume/src/utils/task.cpp
+index 0e59186..9ca06c3 100644
+--- a/desmume/src/utils/task.cpp
++++ b/desmume/src/utils/task.cpp
+@@ -15,6 +15,8 @@
+ 	along with the this software.  If not, see <http://www.gnu.org/licenses/>.
+ */
+ 
++// wasm: sÛ existe no build com threads (DESMUME_THREADS); no resto o task.h È um stub
++#ifdef DESMUME_THREADS
+ #include <stdio.h>
+ 
+ #include "types.h"
+@@ -85,27 +87,27 @@ Task::Impl::~Impl()
+ 	shutdown();
+ 	slock_free(mutex);
+ 	scond_free(condWork);
+-}
+-
+-void Task::Impl::start(bool spinlock, int threadPriority, const char *name)
+-{
+-	slock_lock(this->mutex);
+-	
+-	if (this->_isThreadRunning) {
+-		slock_unlock(this->mutex);
+-		return;
+-	}
+-	
+-	this->workFunc = NULL;
+-	this->workFuncParam = NULL;
+-	this->ret = NULL;
+-	this->exitThread = false;
+-	this->_thread = sthread_create_with_priority(&taskProc, this, threadPriority);
+-	this->_isThreadRunning = true;
+-	if (name)
+-		sthread_setname(this->_thread, name);
+-	
+-	slock_unlock(this->mutex);
++}
++
++void Task::Impl::start(bool spinlock, int threadPriority, const char *name)
++{
++	slock_lock(this->mutex);
++	
++	if (this->_isThreadRunning) {
++		slock_unlock(this->mutex);
++		return;
++	}
++	
++	this->workFunc = NULL;
++	this->workFuncParam = NULL;
++	this->ret = NULL;
++	this->exitThread = false;
++	this->_thread = sthread_create_with_priority(&taskProc, this, threadPriority);
++	this->_isThreadRunning = true;
++	if (name)
++		sthread_setname(this->_thread, name);
++	
++	slock_unlock(this->mutex);
+ }
+ 
+ void Task::Impl::execute(const TWork &work, void *param)
+@@ -170,12 +172,13 @@ void Task::Impl::shutdown()
+ 	slock_unlock(this->mutex);
+ }
+ 
+-void Task::start(bool spinlock) { impl->start(spinlock, 0, nullptr); }
++void Task::start(bool spinlock) { impl->start(spinlock, 0, nullptr); }
+ void Task::start(bool spinlock, int threadPriority, const char *name) { impl->start(spinlock, threadPriority, name); }
+ void Task::shutdown() { impl->shutdown(); }
+ Task::Task() : impl(new Task::Impl()) {}
+ Task::~Task() { delete impl; }
+ void Task::execute(const TWork &work, void* param) { impl->execute(work,param); }
+ void* Task::finish() { return impl->finish(); }
++#endif
+ 
+ 
+diff --git a/desmume/src/utils/task.h b/desmume/src/utils/task.h
+index 1f8f3b5..423a904 100644
+--- a/desmume/src/utils/task.h
++++ b/desmume/src/utils/task.h
+@@ -18,6 +18,23 @@
+ #ifndef _TASK_H_
+ #define _TASK_H_
+ 
++#ifdef DESMUME_THREADS
++// wasm com threads: a classe de verdade (utils/task.cpp, sobre rthreads/pthreads)
++class Task
++{
++public:
++	Task();
++	~Task();
++	typedef void * (*TWork)(void *);
++	void start(bool spinlock);
++	void start(bool spinlock, int threadPriority, const char *name = nullptr);
++	void execute(const TWork &work, void* param);
++	void* finish();
++	void shutdown();
++	class Impl;
++	Impl *impl;
++};
++#else
+ //Sort of like a single-thread thread pool.
+ //You hand it a worker function and then call finish() to synch with its completion
+ class Task
+@@ -60,5 +77,6 @@ public:
+ 	//Impl *impl;
+ 
+ };
++#endif
+ 
+ #endif
+diff --git a/desmume/wasm-port/main.cpp b/desmume/wasm-port/main.cpp
+index 44f22c8..1d18d5f 100644
+--- a/desmume/wasm-port/main.cpp
++++ b/desmume/wasm-port/main.cpp
+@@ -14,22 +14,18 @@
+ #include "SPU.h"
+ #include "mc.h"
+ #include "rasterize.h"
++#include "saves.h"
+ 
+ CHEATSEXPORT *cheatsExport = NULL;
+ 
+ int emuLastError = 0;
+ 
+-EM_JS(int, aa, (const char* str), {
+-  return eval(UTF8ToString(str));
+-});
+ 
+ 
+ 
+ 
+-extern "C" 
+-int bb(int a0, int a1, int a2, int a3) {
+-  return 0;
+-}
++
++
+ 
+ 
+ int DESMUME_SAMPLE_RATE = 48000;
+@@ -58,12 +54,26 @@ void SNDWasmMuteAudio() {}
+ void SNDWasmUnMuteAudio() {}
+ void SNDWasmSetVolume(int volume) {}
+ void SNDWasmClearBuffer() {}
++// ---- Ring buffer de √°udio (vers√£o melhorada) ----
++// O core gera ~sampleRate/59.83 amostras por frame. Em vez de passar pelo
++// sincronizador "N" (que estica/corta amostras e causa estalos quando o
++// frame atrasa), guardamos as amostras cruas aqui. O JS drena ap√≥s cada
++// frame e o AudioWorklet faz o ajuste fino de taxa (dynamic rate control).
++#define AUDIO_RING_FRAMES 32768  // pot√™ncia de 2
++static s16 audioRing[AUDIO_RING_FRAMES * 2];
++static u32 audioRingW = 0, audioRingR = 0;
+ void SNDWasmFetchSamples(s16 *sampleBuffer, size_t sampleCount,
+                          ESynchMode synchMode,
+                          ISynchronizingAudioBuffer *theSynchronizer) {
+-  if (synchMode == ESynchMode_Synchronous) {
+-    theSynchronizer->enqueue_samples(sampleBuffer, sampleCount);
++  for (size_t i = 0; i < sampleCount; i++) {
++    u32 w = audioRingW & (AUDIO_RING_FRAMES - 1);
++    audioRing[w * 2] = sampleBuffer[i * 2];
++    audioRing[w * 2 + 1] = sampleBuffer[i * 2 + 1];
++    audioRingW++;
+   }
++  // se o JS parar de drenar, descarta o mais antigo
++  if (audioRingW - audioRingR > AUDIO_RING_FRAMES)
++    audioRingR = audioRingW - AUDIO_RING_FRAMES;
+ }
+ 
+ // The NDS reads audio samples in the following format:
+@@ -106,7 +116,7 @@ SoundInterface_struct SndWasm = {1,
+                                  SNDWasmUnMuteAudio,
+                                  SNDWasmSetVolume,
+                                  SNDWasmClearBuffer,
+-                                 NULL,
++                                 SNDWasmFetchSamples,
+                                  NULL};
+ 
+ SoundInterface_struct *SNDCoreList[] = {&SNDDummy, &SndWasm, NULL};
+@@ -116,6 +126,24 @@ extern "C" {
+ 
+ u32 dstFrameBuffer[2][256 * 192];
+ 
++// ---- resoluÁ„o interna (1x a 4x) ----
++// Em 1x a saÌda È dstFrameBuffer (256x384, as duas telas). Acima disso o GPU renderiza
++// tudo no buffer "custom" (3D em resoluÁ„o alta; 2D ampliado) e a saÌda vai para
++// customOut (256*s x 384*s), que o JS pega em getSymbol(8).
++static int renderScale = 1;
++static u32 *customOut = NULL;
++static size_t customOutCap = 0;
++static void gpu_custom_to_rgb() {
++  const NDSDisplayInfo &di = GPU->GetDisplayInfo();
++  const size_t px = di.customWidth * di.customHeight * 2;
++  if (customOutCap < px) {
++    customOut = (u32 *)realloc(customOut, px * sizeof(u32));
++    customOutCap = px;
++  }
++  ColorspaceConvertBuffer555To8888Opaque<false, false>(
++      (const uint16_t *)di.masterCustomBuffer, customOut, px);
++}
++
+ static void gpu_screen_to_rgb(u32 *dst) {
+   ColorspaceConvertBuffer555To8888Opaque<false, false>(
+       (const uint16_t *)GPU->GetDisplayInfo().masterNativeBuffer, dst,
+@@ -132,6 +160,15 @@ void setSampleRate(int r) {
+ int main() {
+   srand(time(NULL));
+ 
++#ifdef DESMUME_THREADS
++  // threads extras para o rasterizador 3D (e as limpezas assÌncronas da GPU):
++  // metade dos n˙cleos, no m·ximo 4. O pool de workers (PTHREAD_POOL_SIZE) cobre isso.
++  {
++    int hc = EM_ASM_INT({ return (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) || 4; });
++    CommonSettings.num_cores = hc >= 8 ? 4 : hc >= 4 ? 2 : 1;
++    printf("threads 3D: %d (nucleos: %d)\n", CommonSettings.num_cores, hc);
++  }
++#endif
+   NDS_Init();
+   SPU_ChangeSoundCore(1, 16384);
+ 
+@@ -139,6 +176,7 @@ int main() {
+   cheatsExport = new CHEATSEXPORT();
+   printf("wasm ready.\n");
+   EM_ASM(wasmReady(););
++  return 0;
+ }
+ 
+ void *prepareRomBuffer(int rl) {
+@@ -163,6 +201,9 @@ void *getSymbol(int id) {
+   if (id == 3) {
+     // return NDSCart::CartROM;
+   }
++  if (id == 8) {
++    return customOut;
++  }
+   if (id == 4) {
+     return dstFrameBuffer;
+   }
+@@ -184,7 +225,9 @@ int loadROM(int romLen) {
+   if (!NDS_LoadROM("rom.nds")) {
+     return emuLastError;
+   }
+-  SPU_SetSynchMode(ESynchMode_Synchronous, ESynchMethod_N);
++  // Synchronous mant√©m a mixagem no core; as amostras v√£o p/ o ring buffer.
++  SPU_SetSynchMode(ESynchMode_Synchronous, ESynchMethod_Z);
++  audioRingR = audioRingW = 0;
+   SPU_SetVolume(100);
+   cheatsExport->load("usrcheat.dat");
+   return 0;
+@@ -207,6 +250,13 @@ static inline void convertFB(u8 *dst, u8 *src) {
+ int savGetSize() { return savFile->size(); }
+ 
+ void *savGetPointer(int desiredSize) {
++  // -1 = jogo novo sem save: zera o save do jogo anterior
++  if (desiredSize < 0) {
++    savFile->truncate(0);
++    savFile->fseek(0, SEEK_SET);
++    savFile->changed = 0;
++    return savFile->buf();
++  }
+   if (desiredSize > 0) {
+     savFile->truncate(desiredSize);
+     savFile->fseek(0, SEEK_SET);
+@@ -241,7 +291,8 @@ int runFrame(int shouldDraw, u32 keys, int touched, u32 touchX, u32 touchY) {
+   NDS_exec<false>();
+ 
+   if (shouldDraw) {
+-    gpu_screen_to_rgb((u32 *)dstFrameBuffer);
++    if (renderScale > 1) gpu_custom_to_rgb();
++    else gpu_screen_to_rgb((u32 *)dstFrameBuffer);
+   }
+ 
+   return ret;
+@@ -345,10 +396,75 @@ int micWriteSamples(uint8_t *buffer, int len) {
+   return len;
+ }
+ 
++// largura/altura da saÌda atual (as duas telas empilhadas)
++int outWidth() { return 256 * renderScale; }
++int outHeight() { return 384 * renderScale; }
++
+ int emuSetOpt(int k, int v) {
++    if (k == 3) {  // resoluÁ„o interna: 1 a 4
++      if (v < 1 || v > 4) return -1;
++      renderScale = v;
++      GPU->SetCustomFramebufferSize(256 * v, 192 * v);
++      GPU->SetWillAutoResolveToCustomBuffer(v > 1);
++      return 0;
++    }
+     if (k == 0) {
+       CommonSettings.fwConfig.language = v;
+     }
++    if (k == 1) {  // 0=nenhuma 1=linear 2=cosseno
++      if (v >= 0 && v <= 2) CommonSettings.spuInterpolationMode = v;
++    }
++    if (k == 2) {  // 1 = mixagem avan√ßada (mais precisa, mais lenta)
++      CommonSettings.spu_advanced = v ? true : false;
++    }
+     return 0;
+ }
++
++// Define a taxa de sa√≠da do √°udio (a do AudioContext do navegador).
++void audioSetup(int sampleRate) {
++  // SPU_core aloca o buffer por hline com base em 48 kHz no NDS_Init;
++  // taxas maiores estourariam esse buffer, ent√£o limitamos.
++  if (sampleRate < 8000 || sampleRate > 48000) return;
++  setSampleRate(sampleRate);
++  audioRingR = audioRingW = 0;
++}
++
++// Copia at√© maxFrames amostras est√©reo do ring para audioBuffer (getSymbol 6).
++// Retorna quantas foram copiadas.
++int audioDrain(int maxFrames) {
++  u32 avail = audioRingW - audioRingR;
++  if (maxFrames > 16384) maxFrames = 16384;
++  if (avail > (u32)maxFrames) avail = maxFrames;
++  for (u32 i = 0; i < avail; i++) {
++    u32 r = (audioRingR + i) & (AUDIO_RING_FRAMES - 1);
++    audioBuffer[i * 2] = audioRing[r * 2];
++    audioBuffer[i * 2 + 1] = audioRing[r * 2 + 1];
++  }
++  audioRingR += avail;
++  return (int)avail;
++}
++
++// ---- Save state em mem√≥ria ----
++static EMUFILE_MEMORY *stateFile = NULL;
++int stateSave() {
++  if (stateFile) delete stateFile;
++  stateFile = new EMUFILE_MEMORY();
++  if (!savestate_save(*stateFile, 0)) return -1;
++  return stateFile->size();
++}
++void *stateGetPointer(int desiredSize) {
++  if (desiredSize > 0) {
++    if (stateFile) delete stateFile;
++    stateFile = new EMUFILE_MEMORY();
++    stateFile->truncate(desiredSize);
++  }
++  return stateFile ? stateFile->buf() : NULL;
++}
++int stateLoad() {
++  if (!stateFile) return -1;
++  stateFile->fseek(0, SEEK_SET);
++  bool ok = savestate_load(*stateFile);
++  audioRingR = audioRingW = 0;
++  return ok ? 0 : -1;
++}
+ }
+diff --git a/desmume/wasm-port/stubs.cpp b/desmume/wasm-port/stubs.cpp
+new file mode 100644
+index 0000000..be6ff52
+--- /dev/null
++++ b/desmume/wasm-port/stubs.cpp
+@@ -0,0 +1,21 @@
++// Fun√ß√µes que o port removeu dos fontes originais e que o core ainda chama.
++// O microfone real fica em main.cpp (Mic_ReadSample com FIFO vindo do JS).
++#include "types.h"
++#include "emufile.h"
++#include "utils/decrypt/header.h"
++
++BOOL Mic_Init(void) { return TRUE; }
++void Mic_DeInit(void) {}
++void Mic_Reset(void) {}
++void mic_savestate(EMUFILE &os) { os.write_32LE(-1); }
++bool mic_loadstate(EMUFILE &is, int size) { is.fseek(size, SEEK_CUR); return true; }
++
++// Secure area: ROMs j√° decriptadas (o caso comum) passam direto.
++// Decriptar exigiria as chaves da BIOS, que n√£o v√£o no reposit√≥rio.
++extern int emuLastError;
++bool DecryptSecureArea(u8 *romheader, u8 *secure) {
++  int romType = DetectRomType(*(Header *)romheader, (char *)secure);
++  if (romType == ROMTYPE_INVALID) return false;
++  if (romType == ROMTYPE_ENCRSECURE) { emuLastError = -1001; return false; }
++  return true;
++}

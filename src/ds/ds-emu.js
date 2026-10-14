@@ -44,6 +44,9 @@ const ds = {
   cast: ls.get("cartucho.ds.cast") || "top",
   // imagem na TV: "x1" (original), "nitida" (4x, pixels exatos) ou "suave" (4x com filtro de pixel art)
   tvq: ls.get("cartucho.ds.tvq") || "suave",
+  // canal do core: "estavel" (padrão) ou "teste" (ds/nds-test: resolução interna 2x-3x etc.)
+  core: ls.get("cartucho.ds.core") === "teste" ? "teste" : "estavel",
+  scale: Math.min(3, Math.max(1, Number(ls.get("cartucho.ds.scale")) || 1)),
   perf: ls.get("cartucho.ds.perf") || "auto",
   level: Math.min(LEVELS.length - 1, Number(ls.get("cartucho.ds.level") || 1)),
 };
@@ -106,12 +109,12 @@ function loadCore() {
   if (corePromise) return corePromise;
   const simd = WebAssembly.validate(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 123, 3,
     2, 1, 0, 10, 10, 1, 8, 0, 65, 0, 253, 15, 253, 98, 11]));
-  const name = simd ? "nds" : "nds-nosimd";
+  const name = ds.core === "teste" && simd ? "nds-test" : simd ? "nds" : "nds-nosimd";
   corePromise = new Promise((resolve, reject) => {
     /** @type {any} */ const w = window;
     w.wasmReady = () => resolve(w.Module);
     w.Module = {
-      locateFile: (p) => "ds/" + p.replace(/^nds(-nosimd)?\.wasm$/, name + ".wasm"),
+      locateFile: (p) => "ds/" + p.replace(/^nds(-nosimd|-test)?\.wasm$/, name + ".wasm"),
       print: () => {}, printErr: (t) => console.warn("[ds]", t),
       onAbort: (r) => reject(new Error("core: " + r)),
     };
@@ -119,7 +122,11 @@ function loadCore() {
     s.onerror = () => reject(new Error("ds/" + name + ".js"));
     document.body.append(s);
   });
-  corePromise.catch(() => { corePromise = null; });
+  corePromise.catch(() => {
+    corePromise = null;
+    // core de teste ausente ou quebrado: volta para o estável na próxima tentativa
+    if (ds.core === "teste") { ds.core = "estavel"; ls.set("cartucho.ds.core", "estavel"); toast("O core de teste não carregou; voltando ao estável.", 4000); }
+  });
   return corePromise;
 }
 
@@ -213,6 +220,9 @@ async function createDsEmulator(romBytes, gameName, startSav) {
   const cctx = castGl ? null : castCanvas.getContext("2d", { alpha: false });
   // as duas telas cruas, 256x384
   const fb = document.createElement("canvas");
+  // escala da resolução interna: só o core de teste suporta (emuSetOpt 3 + outWidth)
+  const canScale = typeof M._outWidth === "function";
+  let S = 1;
   fb.width = W;
   fb.height = H * 2;
   const fctx = fb.getContext("2d", { alpha: false });
@@ -326,7 +336,13 @@ async function createDsEmulator(romBytes, gameName, startSav) {
     const buf = M.HEAPU8.buffer;
     if (buf !== heapBuf) {
       heapBuf = buf;
-      img = new ImageData(new Uint8ClampedArray(buf, fbPtr, W * H * 2 * 4), W, H * 2);
+      img = null;
+    }
+    const ptr = S > 1 ? M._getSymbol(8) : fbPtr;
+    if (!img || img.width !== W * S || img.__ptr !== ptr) {
+      if (!ptr) return null;
+      img = new ImageData(new Uint8ClampedArray(buf, ptr, W * S * H * 2 * S * 4), W * S, H * 2 * S);
+      img.__ptr = ptr;
     }
     return img;
   }
@@ -338,16 +354,17 @@ async function createDsEmulator(romBytes, gameName, startSav) {
     return innerWidth > innerHeight * 1.15 ? "side" : "both";
   }
   function sizeFor(layout) {
-    return layout === "both" ? [W, H * 2] : layout === "side" ? [W * 2, H] : [W, H];
+    return layout === "both" ? [W * S, H * 2 * S] : layout === "side" ? [W * 2 * S, H * S] : [W * S, H * S];
   }
   function castScale(layout) {
-    if (!castGl || ds.tvq === "x1") return 1;
+    if (!castGl || ds.tvq === "x1" || S > 1) return 1;
     return layout === "top" || layout === "bottom" ? 4 : 3;   // 1024x768; as duas telas: 768x1152 / 1536x576
   }
   function blit(ctx, layout) {
+    const w = W * S, h = H * S;
     if (layout === "both") ctx.drawImage(fb, 0, 0);
-    else if (layout === "side") { ctx.drawImage(fb, 0, 0, W, H, 0, 0, W, H); ctx.drawImage(fb, 0, H, W, H, W, 0, W, H); }
-    else ctx.drawImage(fb, 0, layout === "top" ? 0 : H, W, H, 0, 0, W, H);
+    else if (layout === "side") { ctx.drawImage(fb, 0, 0, w, h, 0, 0, w, h); ctx.drawImage(fb, 0, h, w, h, w, 0, w, h); }
+    else ctx.drawImage(fb, 0, layout === "top" ? 0 : h, w, h, 0, 0, w, h);
   }
   let shownLocal = "", shownCast = "";
   function syncSizes() {
@@ -374,12 +391,26 @@ async function createDsEmulator(romBytes, gameName, startSav) {
     }
   }
   emu.localLayout = localLayout;
+  emu.canScale = canScale;
+  emu.setScale = (v) => {
+    if (!canScale) return false;
+    v = Math.min(3, Math.max(1, v | 0));
+    if (M._emuSetOpt(3, v) !== 0) return false;
+    S = v;
+    fb.width = W * S;
+    fb.height = H * 2 * S;
+    img = null;
+    emu.relayout();
+    return true;
+  };
   emu.relayout = () => { shownLocal = ""; shownCast = ""; syncSizes(); draw(); };
   function draw() {
-    fctx.putImageData(frameImage(), 0, 0);
+    const im = frameImage();
+    if (!im) return;
+    fctx.putImageData(im, 0, 0);
     blit(vctx, shownLocal);
     if (casting()) {
-      if (castGl) castGl.draw(fb, ds.cast, ds.tvq === "suave");
+      if (castGl) castGl.draw(fb, ds.cast, ds.tvq === "suave" && S === 1, S);
       else blit(cctx, ds.cast);
     }
   }
@@ -529,6 +560,7 @@ async function createDsEmulator(romBytes, gameName, startSav) {
     destroy();
     return null;
   }
+  if (canScale && ds.scale > 1) emu.setScale(ds.scale);
   syncSizes();
   emu.started = true;
   stage("Iniciando…");
@@ -554,15 +586,17 @@ varying vec2 uv;
 uniform sampler2D t;
 uniform int layout;
 uniform bool epx;
-const vec2 FB = vec2(256.0, 384.0);
+uniform float sc;                            // escala da resolução interna (1 a 3)
+vec2 FB = vec2(256.0, 384.0) * sc;
 vec3 px(vec2 c) { return texture2D(t, (clamp(c, vec2(0.0), FB - 1.0) + 0.5) / FB).rgb; }
 bool eq(vec3 a, vec3 b) { return all(lessThan(abs(a - b), vec3(0.01))); }
 void main() {
   vec2 s;                                     // posição na tela do DS, em pixels (pode ter fração)
-  if (layout == 0) s = vec2(uv.x * 256.0, uv.y * 192.0);
-  else if (layout == 1) s = vec2(uv.x * 256.0, 192.0 + uv.y * 192.0);
-  else if (layout == 2) s = vec2(uv.x * 256.0, uv.y * 384.0);
-  else s = uv.x < 0.5 ? vec2(uv.x * 512.0, uv.y * 192.0) : vec2((uv.x - 0.5) * 512.0, 192.0 + uv.y * 192.0);
+  float w = 256.0 * sc, h = 192.0 * sc;
+  if (layout == 0) s = vec2(uv.x * w, uv.y * h);
+  else if (layout == 1) s = vec2(uv.x * w, h + uv.y * h);
+  else if (layout == 2) s = vec2(uv.x * w, uv.y * 2.0 * h);
+  else s = uv.x < 0.5 ? vec2(uv.x * 2.0 * w, uv.y * h) : vec2((uv.x - 0.5) * 2.0 * w, h + uv.y * h);
   vec2 c = floor(s);
   vec3 E = px(c);
   if (!epx) { gl_FragColor = vec4(E, 1.0); return; }
@@ -597,13 +631,14 @@ void main() {
   const tex = gl.createTexture();
   gl.bindTexture(gl.TEXTURE_2D, tex);
   for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.NEAREST], [gl.TEXTURE_MAG_FILTER, gl.NEAREST], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, k, v);
-  const uLayout = gl.getUniformLocation(prog, "layout"), uEpx = gl.getUniformLocation(prog, "epx");
+  const uLayout = gl.getUniformLocation(prog, "layout"), uEpx = gl.getUniformLocation(prog, "epx"), uSc = gl.getUniformLocation(prog, "sc");
   return {
-    draw(src, layout, epx) {
+    draw(src, layout, epx, sc = 1) {
       gl.viewport(0, 0, canvas.width, canvas.height);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, src);
       gl.uniform1i(uLayout, LAYOUT_ID[layout] || 0);
       gl.uniform1i(uEpx, epx ? 1 : 0);
+      gl.uniform1f(uSc, sc);
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     },
   };
@@ -660,6 +695,24 @@ function dsMenuItems(emu, refresh) {
       icon: "sliders", label: "Na 2ª tela: " + LAYOUT_LABEL[ds.cast],
       fn: () => { ds.cast = nextOf(CAST_LAYOUTS, ds.cast); ls.set("cartucho.ds.cast", ds.cast); emu.relayout(); refresh(); },
     },
+    {
+      icon: "sliders", label: "Core: " + (ds.core === "teste" ? "Teste (experimental)" : "Estável"),
+      fn: () => {
+        ds.core = ds.core === "teste" ? "estavel" : "teste";
+        ls.set("cartucho.ds.core", ds.core);
+        toast(ds.core === "teste" ? "Core de teste: vale quando abrir o jogo de novo. Se algo der errado, volte para o estável aqui." : "Core estável: vale quando abrir o jogo de novo.", 5000);
+        refresh();
+      },
+    },
+    ...(emu.canScale ? [{
+      icon: "sliders", label: `Resolução: ${ds.scale}x` + (ds.scale > 1 ? " (pesado)" : ""),
+      fn: () => {
+        ds.scale = ds.scale >= 3 ? 1 : ds.scale + 1;
+        ls.set("cartucho.ds.scale", String(ds.scale));
+        if (!emu.setScale(ds.scale)) toast("Não deu para mudar a resolução.");
+        refresh();
+      },
+    }] : []),
     {
       icon: "sliders", label: "Imagem na 2ª tela: " + TVQ_LABEL[ds.tvq],
       fn: () => { ds.tvq = nextOf(TVQ_MODES, ds.tvq); ls.set("cartucho.ds.tvq", ds.tvq); emu.relayout(); sendTvView(); refresh(); },

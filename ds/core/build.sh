@@ -59,13 +59,15 @@ SOURCES=(
   driver.cpp filter/deposterize.cpp filter/xbrz.cpp
 )
 
+[[ "${MT:-0}" == "1" ]] && SOURCES+=(utils/task.cpp)   # threads: Task de verdade (patch de teste)
+
 COMMON_FLAGS=(-O3 -DNDEBUG -DHAVE_LIBZ -fno-strict-aliasing
   -I"$SRC" -I"$SRC/libretro-common/include" -w)
 
 if [[ "$NATIVE_CHECK" == "1" ]]; then
   CC=gcc; CXX=g++
-  OBJ="$ROOT/.obj-native"
-  COMMON_FLAGS=(-O0 -DHAVE_LIBZ -fno-strict-aliasing -msse2
+  OBJ="$ROOT/.obj-native${NATIVE_OPT:+-O$NATIVE_OPT}"
+  COMMON_FLAGS=(-O${NATIVE_OPT:-0} -DHAVE_LIBZ -fno-strict-aliasing -msse2
     -I"$ROOT/tools/native-stub" -I"$SRC" -I"$SRC/libretro-common/include" -w)
   if [[ "${MT:-0}" == "1" ]]; then OBJ="$ROOT/.obj-native-mt"; COMMON_FLAGS+=(-pthread -DDESMUME_THREADS); fi
 else
@@ -154,7 +156,13 @@ if [[ "${DEBUG:-0}" == "1" ]]; then
   LINK_EXTRA=(-O1 -g2 -fexceptions -sEXCEPTION_STACK_TRACES=1 -sASSERTIONS=2)
 fi
 
-EXPORTS='["_main","_malloc","_free","_prepareRomBuffer","_loadROM","_reset","_runFrame","_getSymbol","_savGetSize","_savGetPointer","_savUpdateChangeFlag","_audioDrain","_audioSetup","_micWriteSamples","_emuSetOpt","_chtGetList","_chtAddItem","_utilStrLen","_zlibCompress","_zlibDecompress","_stateSave","_stateLoad","_stateGetPointer"]'
+EXTRA_EXPORTS=""
+# TEST=1: core do canal de teste (resolução interna 2x-4x etc.); sai como nds-test.*
+if [[ "${TEST:-0}" == "1" ]]; then
+  NAME="nds-test"; [[ "${MT:-0}" == "1" ]] && NAME="nds-test-mt"
+  EXTRA_EXPORTS=',"_outWidth","_outHeight"'
+fi
+EXPORTS='["_main","_malloc","_free","_prepareRomBuffer","_loadROM","_reset","_runFrame","_getSymbol","_savGetSize","_savGetPointer","_savUpdateChangeFlag","_audioDrain","_audioSetup","_micWriteSamples","_emuSetOpt","_chtGetList","_chtAddItem","_utilStrLen","_zlibCompress","_zlibDecompress","_stateSave","_stateLoad","_stateGetPointer"'"$EXTRA_EXPORTS"']'
 
 em++ "${OBJS[@]}" "${LINK_EXTRA[@]}" -sUSE_ZLIB=1 \
   $([[ "$SIMD" == "1" ]] && echo "-msimd128") $([[ "${FAST:-0}" == "1" ]] && echo "-mbulk-memory -mnontrapping-fptoint --profiling-funcs") \

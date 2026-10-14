@@ -109,6 +109,27 @@ jobs:
           [ "$worst" = 2 ] && echo "::warning::Save state ainda falha no wasm"
           [ "$worst" != 1 ]
 
+      # Canal de teste: core com o patch ds/core/desmume-test.patch (resolução interna 2x+, etc.).
+      # Não bloqueia o estável; o app só usa quando a pessoa escolhe "Core: teste".
+      - name: Core de teste
+        id: testcore
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          [ -s ds/core/desmume-test.patch ] || { echo "sem patch de teste"; exit 0; }
+          git clone --quiet --filter=blob:none "$UPSTREAM" uptest
+          git -C uptest checkout --quiet "$UPSTREAM_REF"
+          git -C uptest apply "$GITHUB_WORKSPACE/ds/core/desmume-test.patch"
+          cp ds/core/build.sh uptest/build.sh && cp -r ds/core/tools uptest/tools && chmod +x uptest/build.sh
+          cd uptest
+          CCACHE=1 TEST=1 SIMD=1 OUT=dist ./build.sh > ../logs/build-test.log 2>&1 || { tail -15 ../logs/build-test.log | sed 's/^/::warning::TESTE /'; exit 1; }
+          python3 tools/testrom/make_tone_rom.py tone.nds > /dev/null
+          set +e
+          node tools/node-test.cjs dist nds-test tone.nds > ../logs/node-test-core.log 2>&1; code=$?
+          set -e
+          tail -1 ../logs/node-test-core.log | sed 's/^/::notice::nds-test: /'
+          [ "$code" != 1 ]
+
       - name: Build de diagnóstico
         if: inputs.diagnostico || failure()
         working-directory: up
@@ -130,6 +151,9 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           for f in nds-mt.js nds-mt.wasm; do if [ -s "up/dist/$f" ]; then cp "up/dist/$f" "ds/$f"; fi; done
+          if [ "${{ steps.testcore.outcome }}" = success ]; then
+            for f in nds-test.js nds-test.wasm; do if [ -s "uptest/dist/$f" ]; then cp "uptest/dist/$f" "ds/$f"; git add "ds/$f"; fi; done
+          fi
           git add ds/nds.js ds/nds.wasm ds/nds-nosimd.js ds/nds-nosimd.wasm
           git add ds/nds-mt.js ds/nds-mt.wasm 2>/dev/null || true
           if git diff --cached --quiet; then echo "core igual, nada a commitar"; exit 0; fi
