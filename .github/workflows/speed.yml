@@ -1,18 +1,19 @@
 name: Teste de velocidade
 
+# Desligado por enquanto (deixava o push mais lento): roda só pelo botão "Run workflow".
+# Para voltar a rodar em todo push, descomente o bloco abaixo.
 on:
-  push:
-    branches: [main]
-    # o core do DS e os docs não mudam a velocidade do app de GBA
-    paths-ignore:
-      - "ds/**"
-      - ".github/workflows/ds-core.yml"
-      - "**.md"
-  pull_request:
-    paths-ignore:
-      - "ds/**"
-      - "**.md"
   workflow_dispatch:
+#  push:
+#    branches: [main]
+#    paths-ignore:
+#      - "ds/**"
+#      - ".github/workflows/ds-core.yml"
+#      - "**.md"
+#  pull_request:
+#    paths-ignore:
+#      - "ds/**"
+#      - "**.md"
 
 concurrency:
   group: speed-${{ github.ref }}
