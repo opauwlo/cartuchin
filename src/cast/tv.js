@@ -90,11 +90,7 @@ async function startScreen() {
       tvScreen.dc = e.channel;
       tvScreen.phoneStats = null;
       // first thing: tell the phone what this TV can decode, so it can pick the format
-      const hello = async () => {
-        let h264 = false;
-        try { h264 = !!(window.VideoDecoder && (await window.VideoDecoder.isConfigSupported({ codec: H264, optimizeForLatency: true })).supported); } catch (x) {}
-        try { e.channel.send(JSON.stringify({ hello: { vp8: !!window.VideoDecoder, h264 } })); } catch (x) {}
-      };
+      const hello = () => { try { e.channel.send(JSON.stringify({ hello: { vp8: !!window.VideoDecoder } })); } catch (x) {} };
       if (e.channel.readyState === "open") hello(); else e.channel.onopen = hello;
       // the phone reports what it is sending, so the TV can show both ends in one place
       e.channel.onmessage = (m) => { try {
@@ -176,56 +172,6 @@ function brightness(src) {
    through createImageBitmap. Decoding is async, so while one frame decodes the newest
    arrival waits and older ones are dropped. After an error or a dropped delta frame,
    the TV asks the phone for a key frame and skips everything until it comes. */
-const H264 = "avc1.42E028";
-/* Modo tempo real (cabeçalho v2): decodifica TODO quadro na hora (pular um quadro
-   intermediário quebraria a imagem até a próxima chave) e mostra só o mais novo, no próximo
-   desenho da tela. Buraco na numeração = pede chave e espera por ela. */
-function realtimeReceiver(canvas, g, askKeyFrame) {
-  /** @type {any} */ let decoder = null, decCodec = "";
-  let lastSeq = -1, waitingKey = true, latest = null, raf = 0, shownN = 0;
-  const draw = () => {
-    raf = 0;
-    const f = latest; latest = null;
-    if (!f) return;
-    const view = tvScreen.view, glr = view && view.grid ? tvUpscaler() : null;
-    if (glr && glr.draw(f, view)) { glr.canvas.hidden = false; canvas.hidden = true; }
-    else {
-      if (glr) glr.canvas.hidden = true;
-      canvas.hidden = false;
-      if (canvas.width !== f.displayWidth || canvas.height !== f.displayHeight) { canvas.width = f.displayWidth; canvas.height = f.displayHeight; }
-      g.drawImage(f, 0, 0);
-    }
-    tvScreen.drawn++;
-    // a cada 6 quadros, devolve ao celular o instante do quadro: ele mede quadro pronto → TV
-    if (++shownN % 6 === 0 && tvScreen.dc && tvScreen.dc.readyState === "open") { try { tvScreen.dc.send(JSON.stringify({ shown: f.timestamp })); } catch (e) {} }
-    f.close();
-  };
-  const make = (codec) => {
-    try { decoder && decoder.close(); } catch (e) {}
-    decCodec = codec;
-    decoder = new window.VideoDecoder({
-      output: (f) => { if (latest) latest.close(); latest = f; if (!raf) raf = requestAnimationFrame(draw); },
-      error: () => { decoder = null; waitingKey = true; askKeyFrame(); },
-    });
-    decoder.configure({ codec, optimizeForLatency: true });
-  };
-  return (buf) => {
-    const head = new Uint8Array(buf, 0, 1)[0], dv = new DataView(buf);
-    const key = (head & 1) === 1, codec = head & 2 ? H264 : "vp8";
-    const seq = dv.getUint32(1, true), ts = dv.getFloat64(5, true);
-    const gap = lastSeq >= 0 && seq !== ((lastSeq + 1) >>> 0);
-    lastSeq = seq;
-    if (gap && !key) { waitingKey = true; askKeyFrame(); }
-    if (waitingKey && !key) return;
-    if (!decoder || decCodec !== codec || decoder.state === "closed") make(codec);
-    // decodificador atrás: joga fora até a próxima chave em vez de acumular atraso
-    if (decoder.decodeQueueSize > 3 && !key) { waitingKey = true; askKeyFrame(); return; }
-    waitingKey = false;
-    try { decoder.decode(new window.EncodedVideoChunk({ type: key ? "key" : "delta", timestamp: ts, data: new Uint8Array(buf, 13) })); }
-    catch (e) { waitingKey = true; askKeyFrame(); }
-  };
-}
-window.__castRxTest = realtimeReceiver;   // teste automático
 function receiveFrames(channel) {
   const canvas = $("#scrCanvas"), g = canvas.getContext("2d", { alpha: false });
   tvScreen.framesMode = true; tvScreen.sharp = false;
@@ -280,15 +226,7 @@ function receiveFrames(channel) {
     decoding = false;
     drawNext();
   }
-  let realtime = null;
-  channel.onmessage = (m) => {
-    if (window.VideoDecoder && (new Uint8Array(m.data, 0, 1)[0] & 0x80)) {
-      if (!realtime) realtime = realtimeReceiver(canvas, g, askKeyFrame);
-      realtime(m.data);
-      return;
-    }
-    pending = m.data; drawNext();
-  };
+  channel.onmessage = (m) => { pending = m.data; drawNext(); };
   channel.onclose = () => { try { decoder && decoder.close(); } catch (e) {} };
 }
 /* The stream is the GBA's own 240x160. Drawn into a canvas of that size and enlarged by
@@ -352,7 +290,7 @@ void main() {
     tvScreen.gl = {
       canvas,
       draw(video, view) {
-        const vw = video.videoWidth || video.displayWidth, vh = video.videoHeight || video.displayHeight, grid = Math.max(1, view.grid | 0);
+        const vw = video.videoWidth, vh = video.videoHeight, grid = Math.max(1, view.grid | 0);
         // 4 pixels de saída por pixel do jogo (o resto da ampliação até a TV é do CSS)
         const ow = Math.round(vw / grid) * 4, oh = Math.round(vh / grid) * 4;
         if (canvas.width !== ow || canvas.height !== oh) { canvas.width = ow; canvas.height = oh; }
@@ -498,7 +436,7 @@ function watchScreen(pc) {
     const parts = [lat.touch, gameFrame, lat.enc, lat.send, oneWay, tvMs];
     const known = parts.filter((x) => x != null);
     const total = known.length ? known.reduce((a, b) => a + b, 0) : null;   // of the parts measured so far
-    const latencyLine = (lat.glass != null ? `Imagem: quadro pronto no celular → na TV ≈ ${lat.glass} ms · ` : "") + `Atraso: controle TV→celular ${ms(oneWay)} · toque→jogo ${ms(lat.touch)} · 1 quadro do jogo ${ms(gameFrame)}${lat.speed ? ` (${lat.speed}%)` : ""} · codificar ${ms(lat.enc)} · enviar ${ms(lat.send)} · rede ${ms(oneWay)} · buffer+decodificar na TV ${ms(tvMs)} · total ≈ ${ms(total)} + 1 quadro da TV`;
+    const latencyLine = `Atraso: controle TV→celular ${ms(oneWay)} · toque→jogo ${ms(lat.touch)} · 1 quadro do jogo ${ms(gameFrame)}${lat.speed ? ` (${lat.speed}%)` : ""} · codificar ${ms(lat.enc)} · enviar ${ms(lat.send)} · rede ${ms(oneWay)} · buffer+decodificar na TV ${ms(tvMs)} · total ≈ ${ms(total)} + 1 quadro da TV`;
     const lines = [
       problem || (warnNet ? `Wi-Fi instável: ${net.warnPct}% dos pacotes se perdem. Dica: ligue o roteador do celular e conecte esta tela nele.` : "Conectado. Se a imagem não aparecer, mande uma foto desta tela."),
       `Rede: ${path}${rtt != null ? ` · ida e volta ${rtt} ms` : ""} · perda ${lossPct}%${rx && rx.jitter ? ` · variação ${Math.round(rx.jitter * 1000)} ms` : ""}`,
