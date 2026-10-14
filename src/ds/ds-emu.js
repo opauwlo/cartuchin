@@ -265,7 +265,8 @@ function coreNames() {
   const simd = WebAssembly.validate(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 123, 3,
     2, 1, 0, 10, 10, 1, 8, 0, 65, 0, 253, 15, 253, 98, 11]));
   if (!simd) return ["nds-nosimd"];
-  return window.crossOriginIsolated && typeof SharedArrayBuffer === "function" ? ["nds-mt", "nds"] : ["nds"];
+  const mt = window.crossOriginIsolated && typeof SharedArrayBuffer === "function" && ls.get("cartucho.ds.nomt") !== "1";
+  return mt ? ["nds-mt", "nds"] : ["nds"];
 }
 function startWorker(name) {
   if (!workerUrl) {
@@ -323,6 +324,13 @@ async function createDsEmulator(romBytes, gameName, startSav) {
   box.append(view);
   const vctx = view.getContext("2d", { alpha: false });
   // a tela que vai para a TV: fica no documento (canvas escondido pode parar de gerar quadros)
+  // tela preta: amostra alguns pixels a cada ~0,5 s (para descartar um snapshot ruim)
+  let blankChecks = 0, frameN = 0;
+  function checkBlank() {
+    const d = fctx.getImageData(0, 0, W, H * 2).data;
+    for (let i = 0; i < d.length; i += 4 * 997) if (d[i] > 8 || d[i + 1] > 8 || d[i + 2] > 8) { blankChecks = 0; return; }
+    blankChecks++;
+  }
   const castCanvas = el("canvas", { class: "ds-cast", width: String(W), height: String(H), "aria-hidden": "true" });
   document.body.append(castCanvas);
   const cctx = castCanvas.getContext("2d", { alpha: false });
@@ -348,6 +356,7 @@ async function createDsEmulator(romBytes, gameName, startSav) {
     pause() { emu.paused = true; },
     setVolume(v) { emu.volume = v; if (audio.gain) audio.gain.gain.value = v; },
     core: coreName,
+    isBlank: () => blankChecks >= 5,
     audioStats: () => ({ ready: audio.ready, fill: Math.round(audio.fill), target: audio.target, underruns: audio.underruns, state: audio.ctx && audio.ctx.state }),
     destroy,
   };
@@ -526,6 +535,7 @@ async function createDsEmulator(romBytes, gameName, startSav) {
       if (m.fb) {
         fctx.putImageData(new ImageData(new Uint8ClampedArray(m.fb.buffer), W, H * 2), 0, 0);
         draw();
+        if (++frameN % 30 === 0) checkBlank();
       }
     } else if (m.t === "sav") {
       savCopy = m.sav;
@@ -540,7 +550,7 @@ async function createDsEmulator(romBytes, gameName, startSav) {
   };
 
   // ---- loop: o relógio da página decide quantos quadros; o worker emula ----
-  let acc = 0, last = performance.now(), raf = 0, alive = true, toggle30 = 0;
+  let acc = 0, last = performance.now(), raf = 0, alive = true, toggle30 = 0, sentAt = 0, stuck = false;
   function tick(now) {
     if (!alive) return;
     raf = requestAnimationFrame(tick);
@@ -550,7 +560,18 @@ async function createDsEmulator(romBytes, gameName, startSav) {
     last = now;
     if (dt > 200) dt = 200;
     acc += dt;
-    if (inFlight) return;                       // worker ainda emulando: o tempo acumula e vira frameskip
+    if (inFlight) {                             // worker ainda emulando: o tempo acumula e vira frameskip
+      if (now - sentAt > 6000 && !stuck) {
+        stuck = true;
+        if (coreName === "nds-mt") {
+          // o core com threads travou neste aparelho: não usa mais e recarrega
+          ls.set("cartucho.ds.nomt", "1");
+          toast("O modo com threads travou neste aparelho. Voltando ao modo normal…", 3000);
+          setTimeout(() => location.reload(), 1500);
+        } else toast("O emulador parou de responder. Volte à biblioteca e abra o jogo de novo.", 6000);
+      }
+      return;
+    }
     let n;
     if (emu.turbo > 1) { n = emu.turbo; acc = 0; }
     else {
@@ -567,6 +588,7 @@ async function createDsEmulator(romBytes, gameName, startSav) {
       const draw = !cfg.video30 || (++toggle30 & 1) === 0;
       inFlight = true;
       inFlightN = n;
+      sentAt = now;
       worker.postMessage({ t: "tick", n, draw, keys: emu.padKeys | emu.kbKeys | emu.gpKeys, touch: emu.touch, tx: emu.tx, ty: emu.ty,
         audio: emu.turbo === 1 && !emu.muted });
     }

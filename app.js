@@ -2887,7 +2887,8 @@ registerProcessor("ds-out", DSOut);
       11
     ]));
     if (!simd) return ["nds-nosimd"];
-    return window.crossOriginIsolated && typeof SharedArrayBuffer === "function" ? ["nds-mt", "nds"] : ["nds"];
+    const mt = window.crossOriginIsolated && typeof SharedArrayBuffer === "function" && ls.get("cartucho.ds.nomt") !== "1";
+    return mt ? ["nds-mt", "nds"] : ["nds"];
   }
   function startWorker(name) {
     if (!workerUrl) {
@@ -2950,6 +2951,15 @@ registerProcessor("ds-out", DSOut);
     const view = el("canvas", { class: "ds-view", width: String(W), height: String(H * 2), "aria-label": "Telas do DS" });
     box.append(view);
     const vctx = view.getContext("2d", { alpha: false });
+    let blankChecks = 0, frameN = 0;
+    function checkBlank() {
+      const d = fctx.getImageData(0, 0, W, H * 2).data;
+      for (let i = 0; i < d.length; i += 4 * 997) if (d[i] > 8 || d[i + 1] > 8 || d[i + 2] > 8) {
+        blankChecks = 0;
+        return;
+      }
+      blankChecks++;
+    }
     const castCanvas = el("canvas", { class: "ds-cast", width: String(W), height: String(H), "aria-hidden": "true" });
     document.body.append(castCanvas);
     const cctx = castCanvas.getContext("2d", { alpha: false });
@@ -2996,6 +3006,7 @@ registerProcessor("ds-out", DSOut);
         if (audio.gain) audio.gain.gain.value = v;
       },
       core: coreName,
+      isBlank: () => blankChecks >= 5,
       audioStats: () => ({ ready: audio.ready, fill: Math.round(audio.fill), target: audio.target, underruns: audio.underruns, state: audio.ctx && audio.ctx.state }),
       destroy
     };
@@ -3207,6 +3218,7 @@ registerProcessor("ds-out", DSOut);
         if (m.fb) {
           fctx.putImageData(new ImageData(new Uint8ClampedArray(m.fb.buffer), W, H * 2), 0, 0);
           draw();
+          if (++frameN % 30 === 0) checkBlank();
         }
       } else if (m.t === "sav") {
         savCopy = m.sav;
@@ -3220,7 +3232,7 @@ registerProcessor("ds-out", DSOut);
         console.warn("[ds]", m.msg);
       }
     };
-    let acc = 0, last = performance.now(), raf = 0, alive = true, toggle30 = 0;
+    let acc = 0, last = performance.now(), raf = 0, alive = true, toggle30 = 0, sentAt = 0, stuck = false;
     function tick(now) {
       if (!alive) return;
       raf = requestAnimationFrame(tick);
@@ -3233,7 +3245,17 @@ registerProcessor("ds-out", DSOut);
       last = now;
       if (dt > 200) dt = 200;
       acc += dt;
-      if (inFlight) return;
+      if (inFlight) {
+        if (now - sentAt > 6e3 && !stuck) {
+          stuck = true;
+          if (coreName === "nds-mt") {
+            ls.set("cartucho.ds.nomt", "1");
+            toast("O modo com threads travou neste aparelho. Voltando ao modo normal…", 3e3);
+            setTimeout(() => location.reload(), 1500);
+          } else toast("O emulador parou de responder. Volte à biblioteca e abra o jogo de novo.", 6e3);
+        }
+        return;
+      }
       let n;
       if (emu.turbo > 1) {
         n = emu.turbo;
@@ -3255,6 +3277,7 @@ registerProcessor("ds-out", DSOut);
         const draw2 = !cfg.video30 || (++toggle30 & 1) === 0;
         inFlight = true;
         inFlightN = n;
+        sentAt = now;
         worker.postMessage({
           t: "tick",
           n,
@@ -3451,6 +3474,7 @@ registerProcessor("ds-out", DSOut);
   }
   var stateShas = /* @__PURE__ */ new Map();
   var isBlankSave = (u8) => {
+    if (!u8 || !u8.length) return true;
     const f = u8[0];
     if (f !== 255 && f !== 0) return false;
     for (let i = 0; i < u8.length; i++) if (u8[i] !== f) return false;
@@ -3774,8 +3798,19 @@ registerProcessor("ds-out", DSOut);
             } catch (e) {
             }
           });
+          if (isDs && emu.isBlank) {
+            await sleep(4e3);
+            if (emu.isBlank()) throw new Error("tela preta depois do snapshot");
+          }
         } catch (e) {
           console.warn("state load", e);
+          if (isDs) {
+            try {
+              await gm.restart();
+            } catch (x) {
+            }
+            toast("Não deu para continuar de onde parou: o jogo abriu pelo save.", 4e3);
+          }
         }
       }
       await sleep(1500);

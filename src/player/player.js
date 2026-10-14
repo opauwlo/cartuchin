@@ -114,6 +114,7 @@ async function flush(opts = {}) {
    save that is being loaded (otherwise the two would disagree). */
 const stateShas = new Map();
 const isBlankSave = (u8) => {
+  if (!u8 || !u8.length) return true;   // sem save nenhum (DS antes do primeiro save)
   const f = u8[0];
   if (f !== 0xff && f !== 0) return false;
   for (let i = 0; i < u8.length; i++) if (u8[i] !== f) return false;
@@ -395,7 +396,18 @@ async function play(key) {
         const msg = `Continuando de onde parou (${resume.device || "outro aparelho"}, ${ago(resume.at)})`;
         if (!$("#pad").hidden) padMsg(msg);
         else actionToast(msg, "Ir para a tela de título", () => { try { gm.restart(); } catch (e) {} });
-      } catch (e) { console.warn("state load", e); }
+        // DS: se o snapshot carregou mas a tela ficou preta, ele não serve; começa do save
+        if (isDs && emu.isBlank) {
+          await sleep(4000);
+          if (emu.isBlank()) throw new Error("tela preta depois do snapshot");
+        }
+      } catch (e) {
+        console.warn("state load", e);
+        if (isDs) {
+          try { await gm.restart(); } catch (x) {}
+          toast("Não deu para continuar de onde parou: o jogo abriu pelo save.", 4000);
+        }
+      }
     }
 
     await sleep(1500);
