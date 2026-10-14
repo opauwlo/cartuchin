@@ -1304,10 +1304,10 @@ index 60f07ad..a357c50 100644
  //* x86 windows seems faster with NON-DEFINED
 diff --git a/desmume/src/arm_jit_wasm.cpp b/desmume/src/arm_jit_wasm.cpp
 new file mode 100644
-index 0000000..0854893
+index 0000000..63a63eb
 --- /dev/null
 +++ b/desmume/src/arm_jit_wasm.cpp
-@@ -0,0 +1,432 @@
+@@ -0,0 +1,437 @@
 +/*
 +	JIT de ARM para WebAssembly (Cartuchin), no lugar do arm_jit.cpp (x86/AsmJit).
 +
@@ -1547,10 +1547,12 @@ index 0000000..0854893
 +
 +EM_JS(int, jit_wasm_instantiate, (const u8 *p, int n), {
 +	try {
++		var mem = typeof wasmMemory != "undefined" ? wasmMemory : wasmExports["memory"];
++		var tab = typeof wasmTable != "undefined" ? wasmTable : wasmExports["__indirect_function_table"];
 +		var mod = new WebAssembly.Module(HEAPU8.subarray(p, p + n));
-+		var inst = new WebAssembly.Instance(mod, { e: { m: wasmMemory, t: wasmTable } });
-+		var idx = wasmTable.grow(1);
-+		wasmTable.set(idx, inst.exports.f);
++		var inst = new WebAssembly.Instance(mod, { e: { m: mem, t: tab } });
++		var idx = tab.grow(1);
++		tab.set(idx, inst.exports.f);
 +		return idx;
 +	} catch (e) {
 +		if (!Module.jitErrors) { Module.jitErrors = 0; console.warn("[jit] bloco não compilou", e); }
@@ -1687,8 +1689,11 @@ index 0000000..0854893
 +		if (!end && c->instruct_adr != adr + size) end = 1;
 +	}
 +
-+	const uintptr_t f = finish_block(start_adr);
-+	if (f) JIT_COMPILED_FUNC(start_adr, P) = f;
++	uintptr_t f = finish_block(start_adr);
++	// não compilou (módulo grande demais, erro): esse endereço fica com o interpretador,
++	// em vez de tentar compilar de novo toda vez que passar por ali
++	if (!f) f = (uintptr_t)op_decode[P][bb_thumb];
++	JIT_COMPILED_FUNC(start_adr, P) = f;
 +	return interpreted_cycles;
 +}
 +
