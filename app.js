@@ -2919,11 +2919,14 @@ registerProcessor("ds-out", DSOut);
     worker.postMessage({ t: "init", base, name, audioPort }, audioPort ? [audioPort] : []);
     return { worker, ready, name };
   }
-  async function createDsEmulator(romBytes, gameName, startSav) {
+  var lastError = "";
+  var dsLastError = () => lastError;
+  async function createDsEmulator(romBytes, gameName, startSav, skip = []) {
     await audio.init().catch(() => {
     });
     let worker = null, coreName = "";
-    for (const name of coreNames()) {
+    const names = coreNames().filter((n) => !skip.includes(n));
+    for (const name of names) {
       const w = startWorker(name);
       try {
         await w.ready;
@@ -2932,10 +2935,12 @@ registerProcessor("ds-out", DSOut);
         break;
       } catch (e) {
         console.warn("ds worker", name, e);
+        lastError = name + ": " + String(e && e.message || e).slice(0, 160);
         w.worker.terminate();
       }
     }
     if (!worker) return null;
+    const lastTry = coreName === names[names.length - 1];
     let nextId = 1;
     const waiting = /* @__PURE__ */ new Map();
     function call(fn, arg, transfer) {
@@ -3306,11 +3311,17 @@ registerProcessor("ds-out", DSOut);
     }
     applyCfg();
     try {
-      const buf = romBytes.buffer.byteLength === romBytes.length ? romBytes.buffer : romBytes.slice().buffer;
+      const buf = lastTry ? romBytes.buffer.byteLength === romBytes.length ? romBytes.buffer : romBytes.slice().buffer : romBytes.slice().buffer;
       await call("rom", { bytes: buf, sav: savCopy.length ? savCopy.slice() : null, interp: cfg.interp, rate: CORE_RATE }, [buf]);
     } catch (e) {
-      toast(String(e.message) === "rom-encrypted" ? 'Essa ROM de DS está criptografada. Use uma versão "decrypted".' : "Não deu para abrir essa ROM de DS.", 5e3);
+      const msg = String(e && e.message || e);
+      lastError = coreName + " (ROM): " + msg.slice(0, 160);
       destroy();
+      if (msg !== "rom-encrypted" && !lastTry) {
+        console.warn("ds rom", coreName, msg, "tentando o próximo core");
+        return createDsEmulator(romBytes, gameName, startSav, [...skip, coreName]);
+      }
+      if (msg === "rom-encrypted") lastError = 'a ROM está criptografada, use uma versão "decrypted"';
       return null;
     }
     syncSizes();
@@ -3768,7 +3779,7 @@ registerProcessor("ds-out", DSOut);
     player.isDs = isDs;
     $("#player").classList.toggle("ds", isDs);
     if (!emu) {
-      toast("Não deu para carregar o emulador. Confira a internet.");
+      toast(isDs && dsLastError() ? "Não deu para carregar o emulador de DS: " + dsLastError() : "Não deu para carregar o emulador. Confira a internet.", isDs ? 1e4 : 2600);
       $("#player").hidden = true;
       $("#library").hidden = false;
       return;

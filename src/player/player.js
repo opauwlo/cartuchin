@@ -8,7 +8,7 @@ import { idb } from "../idb.js";
 import { roms } from "../library.js";
 import { PROFILES, coreOptions, perfProfile, startSpeedMeter } from "./perf.js";
 import { fixSaveChip } from "../rom.js";
-import { createDsEmulator, dsStatesOk } from "../ds/ds-emu.js";
+import { createDsEmulator, dsLastError, dsStatesOk } from "../ds/ds-emu.js";
 import { dialog } from "../ui/dialogs.js";
 import { render } from "../ui/screens.js";
 import { $, actionToast, ago, el, sleep, toast } from "../util.js";
@@ -373,7 +373,7 @@ async function play(key) {
   player.isDs = isDs;
   $("#player").classList.toggle("ds", isDs);
   if (!emu) {
-    toast("Não deu para carregar o emulador. Confira a internet.");
+    toast(isDs && dsLastError() ? "Não deu para carregar o emulador de DS: " + dsLastError() : "Não deu para carregar o emulador. Confira a internet.", isDs ? 10000 : 2600);
     $("#player").hidden = true;
     $("#library").hidden = false;
     return;

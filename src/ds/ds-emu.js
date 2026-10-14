@@ -289,10 +289,14 @@ function startWorker(name) {
 }
 
 /* ---------- o emulador com cara de EmulatorJS ---------- */
-async function createDsEmulator(romBytes, gameName, startSav) {
+/* o motivo da última falha, para a mensagem na tela (ajuda a diagnosticar no celular) */
+let lastError = "";
+const dsLastError = () => lastError;
+async function createDsEmulator(romBytes, gameName, startSav, skip = []) {
   await audio.init().catch(() => {});
   let worker = null, coreName = "";
-  for (const name of coreNames()) {
+  const names = coreNames().filter((n) => !skip.includes(n));
+  for (const name of names) {
     const w = startWorker(name);
     try {
       await w.ready;
@@ -301,10 +305,12 @@ async function createDsEmulator(romBytes, gameName, startSav) {
       break;
     } catch (e) {
       console.warn("ds worker", name, e);
+      lastError = name + ": " + String(e && e.message || e).slice(0, 160);
       w.worker.terminate();
     }
   }
   if (!worker) return null;
+  const lastTry = coreName === names[names.length - 1];
 
   // chamadas ao worker que devolvem resultado
   let nextId = 1;
@@ -612,12 +618,20 @@ async function createDsEmulator(romBytes, gameName, startSav) {
   // ---- liga ----
   applyCfg();
   try {
-    const buf = romBytes.buffer.byteLength === romBytes.length ? romBytes.buffer : romBytes.slice().buffer;
+    // na última tentativa a ROM é transferida (sem cópia); antes disso vai uma cópia,
+    // para dar para tentar o próximo core se este falhar
+    const buf = lastTry ? (romBytes.buffer.byteLength === romBytes.length ? romBytes.buffer : romBytes.slice().buffer) : romBytes.slice().buffer;
     await call("rom", { bytes: buf, sav: savCopy.length ? savCopy.slice() : null, interp: cfg.interp, rate: CORE_RATE }, [buf]);
   } catch (e) {
-    toast(String(e.message) === "rom-encrypted" ? "Essa ROM de DS está criptografada. Use uma versão \"decrypted\"." : "Não deu para abrir essa ROM de DS.", 5000);
+    const msg = String(e && e.message || e);
+    lastError = coreName + " (ROM): " + msg.slice(0, 160);
     destroy();
-    return null;
+    if (msg !== "rom-encrypted" && !lastTry) {
+      console.warn("ds rom", coreName, msg, "tentando o próximo core");
+      return createDsEmulator(romBytes, gameName, startSav, [...skip, coreName]);
+    }
+    if (msg === "rom-encrypted") lastError = "a ROM está criptografada, use uma versão \"decrypted\"";
+    return null;   // o player mostra a mensagem com o motivo
   }
   syncSizes();
   emu.started = true;
@@ -649,4 +663,4 @@ function dsMenuItems(emu, refresh) {
 /* load state corrigido no core (fseek(-1) com save vazio tentava alocar 4 GB) */
 const dsStatesOk = true;
 
-export { createDsEmulator, dsMenuItems, ds, dsStatesOk };
+export { createDsEmulator, dsMenuItems, ds, dsStatesOk, dsLastError };
