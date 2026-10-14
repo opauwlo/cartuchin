@@ -1,5 +1,5 @@
 // Benchmark nativo: roda N quadros desenhando todos, mede ms/quadro e salva o último
-// quadro (as duas telas) como PPM.  uso: nds-bench rom.nds [quadros] [saida.ppm]
+// quadro (as duas telas) como PPM.  uso: nds-bench rom.nds [quadros] [saida.ppm] [escala] [1=soft|2=gpu]
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -25,6 +25,9 @@ int main(int argc, char **argv) {
   if (fread(buf, 1, n, f) != (size_t)n) return 2;
   fclose(f);
   audioSetup(48000);
+  // mesma ordem da página: renderizador primeiro, depois a escala
+  int rend = argc > 5 ? atoi(argv[5]) : 1;   // 1 = software, 2 = GPU
+  if (rend == 2 && emuSetOpt(4, 2) != 0) { puts("GPU indisponivel"); return 5; }
   int scale = argc > 4 ? atoi(argv[4]) : 1;
   if (scale > 1 && emuSetOpt(3, scale) != 0) { puts("escala invalida"); return 4; }
   if (loadROM((int)n) != 0) { puts("loadROM falhou"); return 3; }
@@ -33,7 +36,7 @@ int main(int argc, char **argv) {
   auto t0 = std::chrono::steady_clock::now();
   for (int i = 0; i < frames; i++) { runFrame(1, 0, 0, 0, 0); audioDrain(16384); }
   double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-  printf("escala=%dx quadros=%d ms/quadro=%.3f (%.0f fps de emulação)\n", scale, frames, ms / frames, 1000.0 * frames / ms);
+  printf("render=%s escala=%dx quadros=%d ms/quadro=%.3f (%.0f fps de emulação)\n", rend == 2 ? "gpu" : "soft", scale, frames, ms / frames, 1000.0 * frames / ms);
   if (argc > 3) {
     const int w = outWidth(), h = outHeight();
     const uint8_t *fb = (const uint8_t *)getSymbol(scale > 1 ? 8 : 4);

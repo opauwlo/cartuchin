@@ -47,6 +47,8 @@ const ds = {
   // canal do core: "estavel" (padrão) ou "teste" (ds/nds-test: resolução interna 2x-3x etc.)
   core: ls.get("cartucho.ds.core") === "teste" ? "teste" : "estavel",
   scale: Math.min(3, Math.max(1, Number(ls.get("cartucho.ds.scale")) || 1)),
+  // 3D na GPU (WebGL2): só no core de teste; "off" volta para o rasterizador por software
+  gpu: ls.get("cartucho.ds.gpu") !== "off",
   perf: ls.get("cartucho.ds.perf") || "auto",
   level: Math.min(LEVELS.length - 1, Number(ls.get("cartucho.ds.level") || 1)),
 };
@@ -404,6 +406,17 @@ async function createDsEmulator(romBytes, gameName, startSav) {
     return true;
   };
   emu.relayout = () => { shownLocal = ""; shownCast = ""; syncSizes(); draw(); };
+  // renderizador 3D: 2 = GPU (WebGL2), 1 = software. O core volta sozinho para o software se a GPU falhar.
+  emu.gpu3d = false;
+  emu.setGpu3d = (on) => {
+    if (!canScale) return false;
+    let r = -1;
+    // "cartucho.ds.gpuforce" = 1: aceita WebGL por software (só para testes automatizados)
+    const mode = on ? (ls.get("cartucho.ds.gpuforce") === "1" ? 3 : 2) : 1;
+    try { r = M._emuSetOpt(4, mode); } catch (e) { r = -1; }
+    emu.gpu3d = !!on && r === 0;
+    return on ? emu.gpu3d : r === 0;
+  };
   function draw() {
     const im = frameImage();
     if (!im) return;
@@ -560,6 +573,7 @@ async function createDsEmulator(romBytes, gameName, startSav) {
     destroy();
     return null;
   }
+  if (canScale && ds.gpu && !emu.setGpu3d(true)) toast("3D na GPU indisponível neste aparelho; usando o modo software.", 4000);
   if (canScale && ds.scale > 1) emu.setScale(ds.scale);
   syncSizes();
   emu.started = true;
@@ -710,6 +724,15 @@ function dsMenuItems(emu, refresh) {
         ds.scale = ds.scale >= 3 ? 1 : ds.scale + 1;
         ls.set("cartucho.ds.scale", String(ds.scale));
         if (!emu.setScale(ds.scale)) toast("Não deu para mudar a resolução.");
+        refresh();
+      },
+    }] : []),
+    ...(emu.canScale ? [{
+      icon: "sliders", label: "3D: " + (emu.gpu3d ? "GPU (rápido)" : "Software"),
+      fn: () => {
+        ds.gpu = !emu.gpu3d;
+        ls.set("cartucho.ds.gpu", ds.gpu ? "on" : "off");
+        if (!emu.setGpu3d(ds.gpu) && ds.gpu) toast("3D na GPU indisponível neste aparelho.", 4000);
         refresh();
       },
     }] : []),

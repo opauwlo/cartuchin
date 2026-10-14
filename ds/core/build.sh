@@ -60,6 +60,8 @@ SOURCES=(
 )
 
 [[ "${MT:-0}" == "1" ]] && SOURCES+=(utils/task.cpp)   # threads: Task de verdade (patch de teste)
+# canal de teste: renderizador 3D em GPU (WebGL2 no navegador, GLES3/EGL no teste nativo)
+[[ "${TEST:-0}" == "1" ]] && SOURCES+=(GLES3Render.cpp)
 
 COMMON_FLAGS=(-O3 -DNDEBUG -DHAVE_LIBZ -fno-strict-aliasing
   -I"$SRC" -I"$SRC/libretro-common/include" -w)
@@ -70,6 +72,8 @@ if [[ "$NATIVE_CHECK" == "1" ]]; then
   COMMON_FLAGS=(-O${NATIVE_OPT:-0} -DHAVE_LIBZ -fno-strict-aliasing -msse2
     -I"$ROOT/tools/native-stub" -I"$SRC" -I"$SRC/libretro-common/include" -w)
   if [[ "${MT:-0}" == "1" ]]; then OBJ="$ROOT/.obj-native-mt"; COMMON_FLAGS+=(-pthread -DDESMUME_THREADS); fi
+  # TEST=1 nativo: cabeçalhos GLES3/EGL (KHR_INC) e libs (GL_LIBS) para o renderizador em GPU
+  if [[ "${TEST:-0}" == "1" ]]; then OBJ="$OBJ-test"; [[ -n "${KHR_INC:-}" ]] && COMMON_FLAGS+=(-I"$KHR_INC"); fi
 else
   command -v emcc >/dev/null || { echo "emcc não encontrado"; exit 1; }
   WRAP=()   # no emcc o ccache entra pelo EM_COMPILER_WRAPPER
@@ -135,8 +139,13 @@ echo "Objetos: ${#OBJS[@]} (fontes: ${#SOURCES[@]})"
 [[ ${#OBJS[@]} -eq ${#SOURCES[@]} ]] || { echo "ERRO: faltam objetos"; exit 1; }
 
 if [[ "$NATIVE_CHECK" == "1" ]]; then
+  GLL=(); [[ "${TEST:-0}" == "1" ]] && read -r -a GLL <<< "${GL_LIBS:--lEGL -lGLESv2}"
   g++ "${OBJS[@]}" "$ROOT/tools/native-stub/stub_main.cpp" \
-      -I"$SRC" -o "$OBJ/nds-native" -lz -lpthread
+      -I"$SRC" -o "$OBJ/nds-native" -lz -lpthread "${GLL[@]}"
+  if [[ "${TEST:-0}" == "1" ]]; then
+    g++ "${OBJS[@]}" "$ROOT/tools/native-stub/bench_main.cpp" \
+        -I"$SRC" -o "$OBJ/nds-bench" -lz -lpthread "${GLL[@]}"
+  fi
   echo "OK: link nativo -> $OBJ/nds-native"
   exit 0
 fi
@@ -161,6 +170,7 @@ EXTRA_EXPORTS=""
 if [[ "${TEST:-0}" == "1" ]]; then
   NAME="nds-test"; [[ "${MT:-0}" == "1" ]] && NAME="nds-test-mt"
   EXTRA_EXPORTS=',"_outWidth","_outHeight"'
+  LINK_EXTRA+=(-sMAX_WEBGL_VERSION=2 -sMIN_WEBGL_VERSION=2)
 fi
 EXPORTS='["_main","_malloc","_free","_prepareRomBuffer","_loadROM","_reset","_runFrame","_getSymbol","_savGetSize","_savGetPointer","_savUpdateChangeFlag","_audioDrain","_audioSetup","_micWriteSamples","_emuSetOpt","_chtGetList","_chtAddItem","_utilStrLen","_zlibCompress","_zlibDecompress","_stateSave","_stateLoad","_stateGetPointer"'"$EXTRA_EXPORTS"']'
 

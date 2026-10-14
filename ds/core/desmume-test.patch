@@ -1,3 +1,1208 @@
+diff --git a/desmume/src/GLES3Render.cpp b/desmume/src/GLES3Render.cpp
+new file mode 100644
+index 0000000..6f72d11
+--- /dev/null
++++ b/desmume/src/GLES3Render.cpp
+@@ -0,0 +1,1129 @@
++/*
++	Renderizador 3D em GPU (OpenGL ES 3.0 / WebGL2). Ver GLES3Render.h.
++
++	Cores no framebuffer: RGBA8 com cor PRÉ-MULTIPLICADA pelo alfa. Assim a regra do DS
++	"se o destino tem alfa 0, o translúcido substitui" sai de graça da mistura
++	(ONE, ONE_MINUS_SRC_ALPHA) e o alfa usa MAX, como no hardware.
++	Atributos: cor 1 R = ID do polígono opaco, B = polígono translúcido; cor 2 = profundidade
++	de 24 bits do DS (RGB); cor 3 = névoa. Alfa guardado como peso do DS ((a+1)/32).
++	Stencil: bits 0-5 = ID do último translúcido, bit 6 = ID válido, bit 7 = sombra.
++	Profundidade: gl_FragDepth = profundidade de 24 bits do DS (z ou w), exata.
++*/
++
++#include "GLES3Render.h"
++
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <cmath>
++#include <vector>
++#include <algorithm>
++
++using std::min;
++using std::max;
++
++#include "GPU.h"
++#include "NDSSystem.h"
++#include "utils/colorspacehandler/colorspacehandler.h"
++
++#ifdef __EMSCRIPTEN__
++	#include <emscripten.h>
++	#include <emscripten/html5.h>
++	#include <GLES3/gl3.h>
++#else
++	#include <EGL/egl.h>
++	#include <EGL/eglext.h>
++	#include <GLES3/gl3.h>
++#endif
++
++// ---------------------------------------------------------------- contexto
++
++// 1 = aceita WebGL por software (só para testes: emuSetOpt(4, 3))
++int gles3AllowSlowGL = 0;
++
++#ifdef __EMSCRIPTEN__
++static EMSCRIPTEN_WEBGL_CONTEXT_HANDLE s_ctx = 0;
++
++static bool GLES3_MakeContext()
++{
++	if (s_ctx > 0)
++	{
++		return emscripten_webgl_make_context_current(s_ctx) == EMSCRIPTEN_RESULT_SUCCESS;
++	}
++
++	const int hasDoc = EM_ASM_INT({
++		if (typeof document === 'undefined' || !document.body) return 0;
++		var c = document.getElementById('ds-gl3d');
++		if (!c) {
++			c = document.createElement('canvas');
++			c.id = 'ds-gl3d'; c.width = 1; c.height = 1;
++			c.style.cssText = 'position:fixed;width:1px;height:1px;left:-10px;top:-10px;pointer-events:none;opacity:0';
++			document.body.appendChild(c);
++		}
++		return 1;
++	});
++	if (!hasDoc) return false;
++
++	EmscriptenWebGLContextAttributes a;
++	emscripten_webgl_init_context_attributes(&a);
++	a.majorVersion = 2;
++	a.minorVersion = 0;
++	a.alpha = 0;
++	a.depth = 0;
++	a.stencil = 0;
++	a.antialias = 0;
++	a.premultipliedAlpha = 0;
++	a.preserveDrawingBuffer = 0;
++	a.powerPreference = EM_WEBGL_POWER_PREFERENCE_HIGH_PERFORMANCE;
++	a.failIfMajorPerformanceCaveat = gles3AllowSlowGL ? 0 : 1;   // WebGL por software seria mais lento que o nosso rasterizador
++
++	s_ctx = emscripten_webgl_create_context("#ds-gl3d", &a);
++	if (s_ctx <= 0)
++	{
++		s_ctx = 0;
++		return false;
++	}
++	return emscripten_webgl_make_context_current(s_ctx) == EMSCRIPTEN_RESULT_SUCCESS;
++}
++#else
++static EGLDisplay s_dpy = EGL_NO_DISPLAY;
++static EGLContext s_ctx = EGL_NO_CONTEXT;
++
++static bool GLES3_MakeContext()
++{
++	if (s_ctx != EGL_NO_CONTEXT)
++	{
++		return eglMakeCurrent(s_dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, s_ctx) == EGL_TRUE;
++	}
++
++	s_dpy = eglGetDisplay(EGL_DEFAULT_DISPLAY);
++	if (s_dpy == EGL_NO_DISPLAY || !eglInitialize(s_dpy, NULL, NULL)) return false;
++	eglBindAPI(EGL_OPENGL_ES_API);
++
++	EGLConfig cfg = (EGLConfig)0;
++	EGLint n = 0;
++	const EGLint cfgAttr[] = { EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT, EGL_NONE };
++	eglChooseConfig(s_dpy, cfgAttr, &cfg, 1, &n);
++	const EGLint ctxAttr[] = { EGL_CONTEXT_MAJOR_VERSION, 3, EGL_CONTEXT_MINOR_VERSION, 0, EGL_NONE };
++	s_ctx = eglCreateContext(s_dpy, (n > 0) ? cfg : (EGLConfig)0, EGL_NO_CONTEXT, ctxAttr);
++	if (s_ctx == EGL_NO_CONTEXT) return false;
++	return eglMakeCurrent(s_dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, s_ctx) == EGL_TRUE;
++}
++#endif
++
++// ---------------------------------------------------------------- shaders
++
++static const char *kGeomVS =
++"#version 300 es\n"
++"precision highp float;\n"
++"layout(location=0) in vec4 aPos;\n"   // x,y em pixels do framebuffer (linha 0 = topo do DS), z 0..1, w
++"layout(location=1) in vec2 aTex;\n"   // texels
++"layout(location=2) in vec3 aCol;\n"   // 0..63
++"uniform vec2 uFbSize;\n"
++"out vec2 vTex;\n"
++"out vec3 vCol;\n"
++"void main() {\n"
++"  vec2 ndc = aPos.xy / uFbSize * 2.0 - 1.0;\n"
++"  gl_Position = vec4(ndc * aPos.w, (aPos.z * 2.0 - 1.0) * aPos.w, aPos.w);\n"
++"  vTex = aTex;\n"
++"  vCol = aCol;\n"
++"}\n";
++
++static const char *kGeomFS =
++"#version 300 es\n"
++"precision highp float;\n"
++"precision highp int;\n"
++"precision highp usampler2D;\n"
++"in vec2 vTex;\n"
++"in vec3 vCol;\n"
++"uniform usampler2D uTex;\n"
++"uniform int uTexOn, uWrap, uMode, uAlpha, uHighlight, uAlphaTest, uAlphaRef, uWBuf, uOpaqueSel, uDepthEq, uPolyID, uFog, uIsTrans;\n"
++"uniform ivec2 uTexSize;\n"
++"uniform ivec4 uToon[32];\n"
++"layout(location=0) out vec4 oColor;\n"
++"layout(location=1) out vec4 oAttr;\n"
++"layout(location=2) out vec4 oDepth;\n"
++"layout(location=3) out vec4 oFog;\n"
++"int to6(int x) { return x == 0 ? 0 : x * 2 + 1; }\n"
++"int wrapc(int v, int size, bool rep, bool flip) {\n"
++"  if (!rep) return clamp(v, 0, size - 1);\n"
++"  if (flip) { v &= (size * 2 - 1); if (v >= size) v = size * 2 - v - 1; return v; }\n"
++"  return v & (size - 1);\n"
++"}\n"
++"ivec3 mod3(ivec3 a, ivec3 b) { return ((a + 1) * (b + 1) - 1) >> 6; }\n"
++"void main() {\n"
++"  ivec3 src = clamp(ivec3(floor(vCol + 0.5)), 0, 63);\n"
++"  int sa = uAlpha;\n"
++"  ivec4 t = ivec4(63, 63, 63, 31);\n"
++"  if (uTexOn != 0) {\n"
++"    ivec2 tc = ivec2(floor(vTex));\n"
++"    tc.x = wrapc(tc.x, uTexSize.x, (uWrap & 1) != 0, (uWrap & 4) != 0);\n"
++"    tc.y = wrapc(tc.y, uTexSize.y, (uWrap & 2) != 0, (uWrap & 8) != 0);\n"
++"    t = ivec4(texelFetch(uTex, tc, 0));\n"
++"  }\n"
++"  int ma = (((to6(t.a) + 1) * (to6(sa) + 1) - 1) >> 6) >> 1;\n"
++"  ivec4 d;\n"
++"  if (uMode == 0) d = ivec4(mod3(t.rgb, src), ma);\n"
++"  else if (uMode == 1) d = (uTexOn != 0) ? ivec4((t.rgb * t.a + src * (31 - t.a)) >> 5, sa) : ivec4(src, sa);\n"
++"  else if (uMode == 2) {\n"
++"    ivec3 toon = uToon[src.r >> 1].rgb;\n"
++"    if (uHighlight != 0) d = ivec4(min(mod3(t.rgb, src.rrr) + toon, ivec3(63)), ma);\n"
++"    else d = ivec4(mod3(t.rgb, toon), ma);\n"
++"  }\n"
++"  else d = ivec4(src, sa);\n"
++"  if (d.a == 0 || (uAlphaTest != 0 && d.a < uAlphaRef)) discard;\n"
++"  if (uOpaqueSel == 1 && d.a == 31) discard;\n"
++"  if (uOpaqueSel == 2 && d.a != 31) discard;\n"
++"  int depth = (uWBuf != 0) ? int(min(floor(4096.0 / gl_FragCoord.w), 16777215.0)) : int(floor(gl_FragCoord.z * 4194303.0)) * 4;\n"
++"  if (uDepthEq != 0) depth = max(depth - 255, 0);\n"
++"  depth = clamp(depth, 0, 16777215);\n"
++"  gl_FragDepth = float(depth) / 16777215.0;\n"
++"  oDepth = vec4(float(depth >> 16), float((depth >> 8) & 255), float(depth & 255), 255.0) / 255.0;\n"
++"  float af = (d.a >= 31) ? 1.0 : float(d.a + 1) / 32.0;\n"   // peso do DS: (a+1)/32
++
++"  oColor = vec4(vec3(d.rgb) / 63.0 * af, af);\n"
++"  oAttr = vec4(float(uPolyID) / 63.0, 0.0, float(uIsTrans), 1.0);\n"
++"  oFog = vec4(float(uFog), 0.0, 0.0, 1.0);\n"
++"}\n";
++
++static const char *kFullVS =
++"#version 300 es\n"
++"void main() {\n"
++"  vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));\n"
++"  gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);\n"
++"}\n";
++
++// imagem de fundo (CLRIMAGE): cor pré-multiplicada + profundidade|névoa<<24
++static const char *kClearFS =
++"#version 300 es\n"
++"precision highp float;\n"
++"precision highp int;\n"
++"precision highp usampler2D;\n"
++"uniform sampler2D uCC;\n"
++"uniform usampler2D uCD;\n"
++"uniform vec2 uScale;\n"
++"uniform float uClearID;\n"
++"layout(location=0) out vec4 oColor;\n"
++"layout(location=1) out vec4 oAttr;\n"
++"layout(location=2) out vec4 oDepth;\n"
++"layout(location=3) out vec4 oFog;\n"
++"void main() {\n"
++"  ivec2 p = min(ivec2(gl_FragCoord.xy * uScale), ivec2(255, 191));\n"
++"  oColor = texelFetch(uCC, p, 0);\n"
++"  uint d = texelFetch(uCD, p, 0).r;\n"
++"  gl_FragDepth = float(d & 0xFFFFFFu) / 16777215.0;\n"
++"  oDepth = vec4(float((d >> 16) & 255u), float((d >> 8) & 255u), float(d & 255u), 255.0) / 255.0;\n"
++"  oAttr = vec4(uClearID, 0.0, 0.0, 1.0);\n"
++"  oFog = vec4(float(d >> 24), 0.0, 0.0, 1.0);\n"
++"}\n";
++
++// passe final: despré-multiplica, marca bordas, névoa; escreve bytes 6665 exatos
++static const char *kResolveFS =
++"#version 300 es\n"
++"precision highp float;\n"
++"precision highp int;\n"
++"precision highp usampler2D;\n"
++"uniform sampler2D uColor;\n"
++"uniform sampler2D uAttr;\n"
++"uniform sampler2D uDepth;\n"
++"uniform sampler2D uFogF;\n"
++"uniform usampler2D uFogT;\n"
++"uniform int uEdgeOn, uFogOn, uFogAlphaOnly, uClearID, uClearDepth;\n"
++"uniform ivec4 uFogColor;\n"
++"uniform ivec4 uEdge[8];\n"
++"out vec4 o;\n"
++"int depthAt(ivec2 p) { ivec3 b = ivec3(floor(texelFetch(uDepth, p, 0).rgb * 255.0 + 0.5)); return (b.r << 16) | (b.g << 8) | b.b; }\n"
++"int idAt(ivec2 p) { return int(floor(texelFetch(uAttr, p, 0).r * 63.0 + 0.5)); }\n"
++"void main() {\n"
++"  ivec2 p = ivec2(gl_FragCoord.xy);\n"
++"  ivec2 sz = textureSize(uColor, 0);\n"
++"  vec4 P = texelFetch(uColor, p, 0);\n"
++"  ivec4 dst = ivec4(0, 0, 0, (P.a <= 0.0) ? 0 : clamp(int(floor(P.a * 32.0 + 0.5)) - 1, 0, 31));\n"
++"  if (P.a > 0.0) dst.rgb = clamp(ivec3(floor(P.rgb / P.a * 63.0 + 0.5)), 0, 63);\n"
++"  if (uEdgeOn != 0 || uFogOn != 0) {\n"
++"    vec4 at = texelFetch(uAttr, p, 0);\n"
++"    int depth = depthAt(p);\n"
++"    if (uEdgeOn != 0 && at.b < 0.5) {\n"
++"      int id = int(floor(at.r * 63.0 + 0.5));\n"
++"      bool clr = (id != uClearID) && (depth < uClearDepth);\n"
++"      ivec2 pr = p + ivec2(1, 0), pd = p + ivec2(0, 1), pl = p - ivec2(1, 0), pu = p - ivec2(0, 1);\n"
++"      bool right = (p.x >= sz.x - 1) ? clr : (idAt(pr) != id && depth >= depthAt(pr));\n"
++"      bool down  = (p.y >= sz.y - 1) ? clr : (idAt(pd) != id && depth >= depthAt(pd));\n"
++"      bool left  = (p.x < 1) ? clr : (idAt(pl) != id && depth >= depthAt(pl));\n"
++"      bool up    = (p.y < 1) ? clr : (idAt(pu) != id && depth >= depthAt(pu));\n"
++"      ivec4 e = uEdge[id >> 3];\n"
++"      if (right) { if (p.x < sz.x - 1) e = uEdge[idAt(pr) >> 3]; }\n"
++"      else if (down) { if (p.y < sz.y - 1) e = uEdge[idAt(pd) >> 3]; }\n"
++"      else if (left) { if (p.x > 0) e = uEdge[idAt(pl) >> 3]; }\n"
++"      else if (up) { if (p.y > 0) e = uEdge[idAt(pu) >> 3]; }\n"
++"      if (right || down || left || up) {\n"
++"        if (e.a == 31 || dst.a == 0) dst = e;\n"
++"        else { int al = e.a + 1, inv = 32 - al; dst.rgb = (al * e.rgb + inv * dst.rgb) >> 5; dst.a = max(e.a, dst.a); }\n"
++"      }\n"
++"    }\n"
++"    if (uFogOn != 0 && texelFetch(uFogF, p, 0).r > 0.5) {\n"
++"      int fi = depth >> 9;\n"
++"      int fog = int(texelFetch(uFogT, ivec2(fi & 255, fi >> 8), 0).r);\n"
++"      if (uFogAlphaOnly == 0) dst.rgb = ((128 - fog) * dst.rgb + uFogColor.rgb * fog) >> 7;\n"
++"      dst.a = ((128 - fog) * dst.a + uFogColor.a * fog) >> 7;\n"
++"    }\n"
++"  }\n"
++"  o = vec4(dst) / 255.0;\n"
++"}\n";
++
++static GLuint CompileShader(GLenum type, const char *src)
++{
++	GLuint s = glCreateShader(type);
++	glShaderSource(s, 1, &src, NULL);
++	glCompileShader(s);
++	GLint ok = 0;
++	glGetShaderiv(s, GL_COMPILE_STATUS, &ok);
++	if (!ok)
++	{
++		char log[2048] = {0};
++		glGetShaderInfoLog(s, sizeof(log) - 1, NULL, log);
++		printf("GLES3: erro no shader: %s\n", log);
++		glDeleteShader(s);
++		return 0;
++	}
++	return s;
++}
++
++static GLuint LinkProgram(const char *vs, const char *fs)
++{
++	GLuint v = CompileShader(GL_VERTEX_SHADER, vs);
++	GLuint f = CompileShader(GL_FRAGMENT_SHADER, fs);
++	if (!v || !f) return 0;
++	GLuint p = glCreateProgram();
++	glAttachShader(p, v);
++	glAttachShader(p, f);
++	glLinkProgram(p);
++	glDeleteShader(v);
++	glDeleteShader(f);
++	GLint ok = 0;
++	glGetProgramiv(p, GL_LINK_STATUS, &ok);
++	if (!ok)
++	{
++		char log[2048] = {0};
++		glGetProgramInfoLog(p, sizeof(log) - 1, NULL, log);
++		printf("GLES3: erro no link: %s\n", log);
++		glDeleteProgram(p);
++		return 0;
++	}
++	return p;
++}
++
++// ---------------------------------------------------------------- estado GL
++
++struct GLES3Renderer::GLState
++{
++	GLuint progGeom, progClear, progResolve;
++	GLint gFbSize, gTex, gTexOn, gWrap, gMode, gAlpha, gHighlight, gAlphaTest, gAlphaRef, gWBuf, gOpaqueSel, gDepthEq, gPolyID, gFog, gIsTrans, gTexSize, gToon;
++	GLint cCC, cCD, cScale, cClearID;
++	GLint rColor, rAttr, rDepth, rFogT, rEdgeOn, rFogOn, rFogAlphaOnly, rClearID, rClearDepth, rFogColor, rEdge;
++
++	GLuint vao, vbo, ibo, emptyVao;
++	size_t vboCap, iboCap;
++	GLuint fbo, texColor, texAttr, texDepth, texDepthC, texFogF;
++	GLuint fboOut, texOut;
++	GLuint texClrColor, texClrDepth, texFog, texDummy;
++	size_t w, h;
++
++	std::vector<float> verts;
++	std::vector<GLuint> idx;
++
++	struct Run
++	{
++		size_t poly;     // primeiro polígono do lote
++		size_t first;    // índice inicial no ibo
++		size_t count;
++		bool lines;
++	};
++	std::vector<Run> runs;
++
++	u8 fogTable[32768];
++	GLint clearID;
++	GLint clearDepth;
++
++};
++
++// ---------------------------------------------------------------- texturas
++
++GLES3Texture::GLES3Texture(TEXIMAGE_PARAM texAttributes, u32 palAttributes) : Render3DTexture(texAttributes, palAttributes)
++{
++	texID = 0;
++	unpackBuffer = (u32 *)malloc_alignedCacheLine(this->_sizeS * this->_sizeT * sizeof(u32));
++}
++
++GLES3Texture::~GLES3Texture()
++{
++	if (texID) glDeleteTextures(1, &texID);
++	free_aligned(unpackBuffer);
++}
++
++void GLES3Texture::LoadGL()
++{
++	// 15bpp = cores 6665 (r,g,b 0..63, a 0..31): o shader faz as contas do DS em inteiros
++	this->Unpack<TexFormat_15bpp>(this->unpackBuffer);
++	if (!texID)
++	{
++		glGenTextures(1, &texID);
++		glBindTexture(GL_TEXTURE_2D, texID);
++		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
++		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
++		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
++		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
++	}
++	else
++	{
++		glBindTexture(GL_TEXTURE_2D, texID);
++	}
++	glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
++	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8UI, this->_sizeS, this->_sizeT, 0, GL_RGBA_INTEGER, GL_UNSIGNED_BYTE, this->unpackBuffer);
++	this->_isLoadNeeded = false;
++}
++
++// ---------------------------------------------------------------- renderizador
++
++GLES3Renderer::GLES3Renderer()
++{
++	_deviceInfo.renderID = RENDERID_GLES3;
++	_deviceInfo.renderName = "GLES3";
++	_deviceInfo.isTexturingSupported = true;
++	_deviceInfo.isEdgeMarkSupported = true;
++	_deviceInfo.isFogSupported = true;
++	_deviceInfo.isTextureSmoothingSupported = false;
++	_deviceInfo.maxAnisotropy = 1.0f;
++	_deviceInfo.maxSamples = 0;
++
++	_gl = new GLState();   // () zera os campos simples
++	_renderState = NULL;
++	_ready = GLES3_MakeContext() && _InitGL();
++	if (_ready)
++	{
++		// o cache de texturas é compartilhado com o SoftRasterizer: não reaproveitar itens dele
++		texCache.Reset();
++	}
++	else
++	{
++		printf("GLES3: sem contexto WebGL2/GLES3; usando o rasterizador por software\n");
++	}
++}
++
++GLES3Renderer::~GLES3Renderer()
++{
++	if (_ready)
++	{
++		GLES3_MakeContext();
++		texCache.Reset();   // apaga as texturas GL enquanto o contexto existe
++		GLState &g = *_gl;
++		glDeleteProgram(g.progGeom);
++		glDeleteProgram(g.progClear);
++		glDeleteProgram(g.progResolve);
++		GLuint bufs[] = { g.vbo, g.ibo };
++		glDeleteBuffers(2, bufs);
++		GLuint vaos[] = { g.vao, g.emptyVao };
++		glDeleteVertexArrays(2, vaos);
++		GLuint fbos[] = { g.fbo, g.fboOut };
++		glDeleteFramebuffers(2, fbos);
++		GLuint texs[] = { g.texColor, g.texAttr, g.texDepth, g.texOut, g.texClrColor, g.texClrDepth, g.texFog, g.texDummy, g.texDepthC, g.texFogF };
++		glDeleteTextures(10, texs);
++	}
++	delete _gl;
++}
++
++static GLuint MakeTex(GLenum internalFmt, GLsizei w, GLsizei h, GLenum fmt, GLenum type, const void *data)
++{
++	GLuint t;
++	glGenTextures(1, &t);
++	glBindTexture(GL_TEXTURE_2D, t);
++	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
++	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
++	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
++	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
++	glTexImage2D(GL_TEXTURE_2D, 0, internalFmt, w, h, 0, fmt, type, data);
++	return t;
++}
++
++bool GLES3Renderer::_InitGL()
++{
++	GLState &g = *_gl;
++
++	g.progGeom = LinkProgram(kGeomVS, kGeomFS);
++	g.progClear = LinkProgram(kFullVS, kClearFS);
++	g.progResolve = LinkProgram(kFullVS, kResolveFS);
++	if (!g.progGeom || !g.progClear || !g.progResolve) return false;
++
++	GLuint p = g.progGeom;
++	g.gFbSize = glGetUniformLocation(p, "uFbSize");
++	g.gTex = glGetUniformLocation(p, "uTex");
++	g.gTexOn = glGetUniformLocation(p, "uTexOn");
++	g.gWrap = glGetUniformLocation(p, "uWrap");
++	g.gMode = glGetUniformLocation(p, "uMode");
++	g.gAlpha = glGetUniformLocation(p, "uAlpha");
++	g.gHighlight = glGetUniformLocation(p, "uHighlight");
++	g.gAlphaTest = glGetUniformLocation(p, "uAlphaTest");
++	g.gAlphaRef = glGetUniformLocation(p, "uAlphaRef");
++	g.gWBuf = glGetUniformLocation(p, "uWBuf");
++	g.gOpaqueSel = glGetUniformLocation(p, "uOpaqueSel");
++	g.gDepthEq = glGetUniformLocation(p, "uDepthEq");
++	g.gPolyID = glGetUniformLocation(p, "uPolyID");
++	g.gFog = glGetUniformLocation(p, "uFog");
++	g.gIsTrans = glGetUniformLocation(p, "uIsTrans");
++	g.gTexSize = glGetUniformLocation(p, "uTexSize");
++	g.gToon = glGetUniformLocation(p, "uToon");
++
++	p = g.progClear;
++	g.cCC = glGetUniformLocation(p, "uCC");
++	g.cCD = glGetUniformLocation(p, "uCD");
++	g.cScale = glGetUniformLocation(p, "uScale");
++	g.cClearID = glGetUniformLocation(p, "uClearID");
++
++	p = g.progResolve;
++	g.rColor = glGetUniformLocation(p, "uColor");
++	g.rAttr = glGetUniformLocation(p, "uAttr");
++	g.rDepth = glGetUniformLocation(p, "uDepth");
++	g.rFogT = glGetUniformLocation(p, "uFogT");
++	g.rEdgeOn = glGetUniformLocation(p, "uEdgeOn");
++	g.rFogOn = glGetUniformLocation(p, "uFogOn");
++	g.rFogAlphaOnly = glGetUniformLocation(p, "uFogAlphaOnly");
++	g.rClearID = glGetUniformLocation(p, "uClearID");
++	g.rClearDepth = glGetUniformLocation(p, "uClearDepth");
++	g.rFogColor = glGetUniformLocation(p, "uFogColor");
++	g.rEdge = glGetUniformLocation(p, "uEdge");
++
++	glGenVertexArrays(1, &g.vao);
++	glGenVertexArrays(1, &g.emptyVao);
++	glGenBuffers(1, &g.vbo);
++	glGenBuffers(1, &g.ibo);
++	glBindVertexArray(g.vao);
++	glBindBuffer(GL_ARRAY_BUFFER, g.vbo);
++	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g.ibo);
++	glEnableVertexAttribArray(0);
++	glEnableVertexAttribArray(1);
++	glEnableVertexAttribArray(2);
++	glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, 9 * sizeof(float), (void *)0);
++	glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 9 * sizeof(float), (void *)(4 * sizeof(float)));
++	glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, 9 * sizeof(float), (void *)(6 * sizeof(float)));
++	glBindVertexArray(0);
++
++	const u32 white = 0x1F3F3F3F;
++	g.texDummy = MakeTex(GL_RGBA8UI, 1, 1, GL_RGBA_INTEGER, GL_UNSIGNED_BYTE, &white);
++	g.texClrColor = MakeTex(GL_RGBA8, 256, 192, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
++	g.texClrDepth = MakeTex(GL_R32UI, 256, 192, GL_RED_INTEGER, GL_UNSIGNED_INT, NULL);
++	g.texFog = MakeTex(GL_R8UI, 256, 128, GL_RED_INTEGER, GL_UNSIGNED_BYTE, NULL);
++
++	glGenFramebuffers(1, &g.fbo);
++	glGenFramebuffers(1, &g.fboOut);
++
++	return glGetError() == GL_NO_ERROR;
++}
++
++bool GLES3Renderer::_ResizeTargets(size_t w, size_t h)
++{
++	GLState &g = *_gl;
++	if (g.w == w && g.h == h && g.texColor) return true;
++
++	if (g.texColor)
++	{
++		GLuint texs[] = { g.texColor, g.texAttr, g.texDepth, g.texOut, g.texDepthC, g.texFogF };
++		glDeleteTextures(6, texs);
++	}
++	g.texColor = MakeTex(GL_RGBA8, (GLsizei)w, (GLsizei)h, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
++	g.texAttr = MakeTex(GL_RGBA8, (GLsizei)w, (GLsizei)h, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
++	g.texDepth = MakeTex(GL_DEPTH24_STENCIL8, (GLsizei)w, (GLsizei)h, GL_DEPTH_STENCIL, GL_UNSIGNED_INT_24_8, NULL);
++	g.texFogF = MakeTex(GL_R8, (GLsizei)w, (GLsizei)h, GL_RED, GL_UNSIGNED_BYTE, NULL);
++	g.texDepthC = MakeTex(GL_RGBA8, (GLsizei)w, (GLsizei)h, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
++	g.texOut = MakeTex(GL_RGBA8, (GLsizei)w, (GLsizei)h, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
++
++	glBindFramebuffer(GL_FRAMEBUFFER, g.fbo);
++	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g.texColor, 0);
++	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, g.texAttr, 0);
++	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT2, GL_TEXTURE_2D, g.texDepthC, 0);
++	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT3, GL_TEXTURE_2D, g.texFogF, 0);
++	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, g.texDepth, 0);
++	const bool okMain = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
++
++	glBindFramebuffer(GL_FRAMEBUFFER, g.fboOut);
++	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g.texOut, 0);
++	const bool okOut = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
++	glBindFramebuffer(GL_FRAMEBUFFER, 0);
++
++	g.w = w;
++	g.h = h;
++	return okMain && okOut;
++}
++
++ClipperMode GLES3Renderer::GetPreferredPolygonClippingMode() const
++{
++	return ClipperMode_Full;
++}
++
++Render3DError GLES3Renderer::Reset()
++{
++	if (_ready) GLES3_MakeContext();
++	return Render3D::Reset();
++}
++
++Render3DError GLES3Renderer::SetFramebufferSize(size_t w, size_t h)
++{
++	Render3DError error = Render3D::SetFramebufferSize(w, h);
++	if (error != RENDER3DERROR_NOERR) return error;
++	if (!_ready) return RENDER3DERROR_NOERR;
++	GLES3_MakeContext();
++	return _ResizeTargets(this->_framebufferWidth, this->_framebufferHeight) ? RENDER3DERROR_NOERR : (Render3DError)1;
++}
++
++static void UpdateFogTable(u8 *fogTable, const GFX3D_State &rs)
++{
++	// igual ao SoftRasterizerRenderer::_UpdateFogTable
++	const u8 *fogDensityTable = rs.fogDensityTable;
++	const int increment = ((1 << 10) >> rs.fogShift);
++	const int incrementDivShift = 10 - rs.fogShift;
++	u32 fogOffset = min<u32>(max<u32>(rs.fogOffset, 0), 32768);
++	u32 iMin = min<u32>(32768, (( 1 + 1) << incrementDivShift) + fogOffset + 1 - increment);
++	u32 iMax = min<u32>(32768, ((32 + 1) << incrementDivShift) + fogOffset + 1 - increment);
++	if (iMin > iMax) iMin = iMax;
++
++	u8 fogFactor = (fogDensityTable[0] == 127) ? 128 : fogDensityTable[0];
++	memset(fogTable, fogFactor, iMin);
++	for (u32 i = iMin; i < iMax; i++)
++	{
++		int num = (i - fogOffset + (increment-1));
++		int j = (num >> incrementDivShift) - 1;
++		u32 value = (num & ~(increment-1)) + fogOffset;
++		u32 diff = value - i;
++		if (j < 1) j = 1;
++		if (j > 31) j = 31;
++		fogFactor = ((diff*(fogDensityTable[j-1]) + (increment-diff)*(fogDensityTable[j])) >> incrementDivShift);
++		fogTable[i] = (fogFactor == 127) ? 128 : fogFactor;
++	}
++	fogFactor = (fogDensityTable[31] == 127) ? 128 : fogDensityTable[31];
++	memset(fogTable + iMax, fogFactor, 32768 - iMax);
++}
++
++Render3DError GLES3Renderer::BeginRender(const GFX3D &engine)
++{
++	if (!_ready) return (Render3DError)1;
++	GLES3_MakeContext();
++	GLState &g = *_gl;
++
++	this->_renderState = &engine.renderState;
++	this->_clippedPolyCount = engine.clippedPolyCount;
++	this->_clippedPolyOpaqueCount = engine.clippedPolyOpaqueCount;
++	this->_clippedPolyList = engine.clippedPolyList;
++
++	const float wScalar = (float)this->_framebufferWidth  / (float)GPU_FRAMEBUFFER_NATIVE_WIDTH;
++	const float hScalar = (float)this->_framebufferHeight / (float)GPU_FRAMEBUFFER_NATIVE_HEIGHT;
++	static const bool visibleFunction[2][4] = {
++		{ false, false, true, true },
++		{ false, true, false, true }
++	};
++
++	g.verts.clear();
++	g.idx.clear();
++	g.runs.clear();
++
++	TEXIMAGE_PARAM lastTex;
++	u32 lastPal = 0;
++	lastTex.value = 0;
++	GLES3Texture *curTexture = NULL;
++	bool haveTex = false;
++
++	GLState::Run run = { 0, 0, 0, false };
++	bool runOpen = false;
++	u32 runAttr = 0, runTexParam = 0, runPal = 0;
++
++	for (size_t i = 0; i < this->_clippedPolyCount; i++)
++	{
++		const CPoly &cp = this->_clippedPolyList[i];
++		const POLY &poly = *cp.poly;
++		const size_t n = cp.type;
++		if (n < 3) { this->_textureList[i] = NULL; continue; }
++
++		// textura (mesma lógica do SoftRasterizer: só recarrega quando muda)
++		if (!haveTex || lastTex.value != poly.texParam.value || lastPal != poly.texPalette)
++		{
++			GLES3Texture *t = (GLES3Texture *)texCache.GetTexture(poly.texParam, poly.texPalette);
++			if (t == NULL)
++			{
++				t = new GLES3Texture(poly.texParam, poly.texPalette);
++				texCache.Add(t);
++			}
++			const bool enabled = (t->GetPackFormat() != TEXMODE_NONE) && this->_enableTextureSampling;
++			t->SetSamplingEnabled(enabled);
++			if (enabled && t->IsLoadNeeded()) t->LoadGL();
++			t->ResetCacheAge();
++			t->IncreaseCacheUsageCount(1);
++			curTexture = t;
++			lastTex = poly.texParam;
++			lastPal = poly.texPalette;
++			haveTex = true;
++		}
++		this->_textureList[i] = curTexture;
++
++		VIEWPORT vp;
++		vp.decode(poly.viewport);
++		const float vpy = (vp.y > 191) ? (float)(vp.y - 0xFF) : (float)vp.y;
++
++		float sx[MAX_CLIPPED_VERTS], sy[MAX_CLIPPED_VERTS];
++		const GLuint base = (GLuint)(g.verts.size() / 9);
++		for (size_t j = 0; j < n; j++)
++		{
++			const VERT &v = cp.clipVerts[j];
++			const float w = (v.coord[3] != 0.0f) ? v.coord[3] : 0.00000001f;
++			const float inv2w = 1.0f / (2.0f * w);
++			float x = (v.coord[0] + w) * inv2w * vp.width + vp.x;
++			float y = 192.0f - ((v.coord[1] + w) * inv2w * vp.height + vpy);
++			const float z = (v.coord[2] + w) * inv2w;
++			sx[j] = x; sy[j] = y;
++			const float vv[9] = { x * wScalar, y * hScalar, z, w, v.texcoord[0], v.texcoord[1], v.fcolor[0], v.fcolor[1], v.fcolor[2] };
++			g.verts.insert(g.verts.end(), vv, vv + 9);
++		}
++
++		// face (mesma fórmula do SoftRasterizer)
++		const size_t last = n - 1;
++		float facing = (sy[0] + sy[last]) * (sx[0] - sx[last]) +
++		               (sy[1] + sy[0]) * (sx[1] - sx[0]) +
++		               (sy[2] + sy[1]) * (sx[2] - sx[1]);
++		for (size_t j = 2; j < last; j++) facing += (sy[j+1] + sy[j]) * (sx[j+1] - sx[j]);
++		const bool back = (facing < 0);
++		if (!visibleFunction[back][poly.attribute.SurfaceCullingMode])
++		{
++			g.verts.resize(base * 9);
++			continue;
++		}
++
++		const bool lines = poly.isWireframe() || (fabsf(facing) < 0.5f);   // degenerado (linha do DS) vira GL_LINES
++
++		const bool sameRun = runOpen && run.lines == lines &&
++			runAttr == poly.attribute.value && runTexParam == poly.texParam.value && runPal == poly.texPalette;
++		if (!sameRun)
++		{
++			if (runOpen && run.count > 0) g.runs.push_back(run);
++			run.poly = i;
++			run.first = g.idx.size();
++			run.count = 0;
++			run.lines = lines;
++			runAttr = poly.attribute.value;
++			runTexParam = poly.texParam.value;
++			runPal = poly.texPalette;
++			runOpen = true;
++		}
++
++		if (lines)
++		{
++			for (size_t j = 0; j < n; j++)
++			{
++				g.idx.push_back(base + (GLuint)j);
++				g.idx.push_back(base + (GLuint)((j + 1) % n));
++			}
++			run.count += n * 2;
++		}
++		else
++		{
++			for (size_t j = 1; j + 1 < n; j++)
++			{
++				g.idx.push_back(base);
++				g.idx.push_back(base + (GLuint)j);
++				g.idx.push_back(base + (GLuint)j + 1);
++			}
++			run.count += (n - 2) * 3;
++		}
++	}
++	if (runOpen && run.count > 0) g.runs.push_back(run);
++	
++	// envia a geometria do quadro
++	glBindVertexArray(g.vao);
++	glBindBuffer(GL_ARRAY_BUFFER, g.vbo);
++	const size_t vbytes = g.verts.size() * sizeof(float);
++	if (vbytes > g.vboCap)
++	{
++		g.vboCap = vbytes * 2;
++		glBufferData(GL_ARRAY_BUFFER, g.vboCap, NULL, GL_DYNAMIC_DRAW);
++	}
++	if (vbytes) glBufferSubData(GL_ARRAY_BUFFER, 0, vbytes, g.verts.data());
++	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g.ibo);
++	const size_t ibytes = g.idx.size() * sizeof(GLuint);
++	if (ibytes > g.iboCap)
++	{
++		g.iboCap = ibytes * 2;
++		glBufferData(GL_ELEMENT_ARRAY_BUFFER, g.iboCap, NULL, GL_DYNAMIC_DRAW);
++	}
++	if (ibytes) glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, 0, ibytes, g.idx.data());
++	glBindVertexArray(0);
++
++	// tabelas
++	glUseProgram(g.progGeom);
++	FragmentColor toon[32];
++	ColorspaceConvertBuffer555To6665Opaque<false, false>(engine.renderState.u16ToonTable, (u32 *)toon, 32);
++	GLint toonI[32 * 4];
++	for (int i = 0; i < 32; i++)
++	{
++		toonI[i*4+0] = toon[i].r; toonI[i*4+1] = toon[i].g; toonI[i*4+2] = toon[i].b; toonI[i*4+3] = toon[i].a;
++	}
++	glUniform4iv(g.gToon, 32, toonI);
++	glUniform2f(g.gFbSize, (float)this->_framebufferWidth, (float)this->_framebufferHeight);
++	glUniform1i(g.gTex, 0);
++	glUniform1i(g.gHighlight, (engine.renderState.shading == PolygonShadingMode_Highlight) ? 1 : 0);
++	glUniform1i(g.gAlphaTest, engine.renderState.enableAlphaTest ? 1 : 0);
++	glUniform1i(g.gAlphaRef, engine.renderState.alphaTestRef);
++	glUniform1i(g.gWBuf, engine.renderState.wbuffer ? 1 : 0);
++
++	if (this->_enableFog)
++	{
++		UpdateFogTable(g.fogTable, engine.renderState);
++		glActiveTexture(GL_TEXTURE0);
++		glBindTexture(GL_TEXTURE_2D, g.texFog);
++		glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
++		glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 256, 128, GL_RED_INTEGER, GL_UNSIGNED_BYTE, g.fogTable);
++	}
++
++	glBindFramebuffer(GL_FRAMEBUFFER, g.fbo);
++	glViewport(0, 0, (GLsizei)this->_framebufferWidth, (GLsizei)this->_framebufferHeight);
++	glDisable(GL_SCISSOR_TEST);
++	glDisable(GL_CULL_FACE);
++	glDisable(GL_DITHER);
++
++	return RENDER3DERROR_NOERR;
++}
++
++Render3DError GLES3Renderer::ClearUsingValues(const FragmentColor &clearColor6665, const FragmentAttributes &clearAttributes)
++{
++	if (!_ready) return RENDER3DERROR_NOERR;
++	GLState &g = *_gl;
++	glBindFramebuffer(GL_FRAMEBUFFER, g.fbo);
++	const GLenum bufs[4] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2, GL_COLOR_ATTACHMENT3 };
++	glDrawBuffers(4, bufs);
++	glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
++	glDepthMask(GL_TRUE);
++	glStencilMask(0xFF);
++
++	const float a = (clearColor6665.a == 0) ? 0.0f : (clearColor6665.a >= 31) ? 1.0f : (clearColor6665.a + 1) / 32.0f;
++	const GLfloat c0[4] = { clearColor6665.r / 63.0f * a, clearColor6665.g / 63.0f * a, clearColor6665.b / 63.0f * a, a };
++	const GLfloat c1[4] = { clearAttributes.opaquePolyID / 63.0f, 0.0f, 0.0f, 1.0f };
++	const GLfloat c3[4] = { clearAttributes.isFogged ? 1.0f : 0.0f, 0.0f, 0.0f, 1.0f };
++	glClearBufferfv(GL_COLOR, 3, c3);
++	glClearBufferfv(GL_COLOR, 0, c0);
++	glClearBufferfv(GL_COLOR, 1, c1);
++	const u32 cd = clearAttributes.depth & 0xFFFFFF;
++	const GLfloat c2[4] = { (cd >> 16) / 255.0f, ((cd >> 8) & 0xFF) / 255.0f, (cd & 0xFF) / 255.0f, 1.0f };
++	glClearBufferfv(GL_COLOR, 2, c2);
++	glClearBufferfi(GL_DEPTH_STENCIL, 0, (GLfloat)((double)clearAttributes.depth / 16777215.0), 0);
++
++	g.clearID = clearAttributes.opaquePolyID;
++	g.clearDepth = (GLint)clearAttributes.depth;
++	return RENDER3DERROR_NOERR;
++}
++
++Render3DError GLES3Renderer::ClearUsingImage(const u16 *__restrict colorBuffer, const u32 *__restrict depthBuffer, const u8 *__restrict fogBuffer, const u8 opaquePolyID)
++{
++	if (!_ready) return RENDER3DERROR_NOERR;
++	GLState &g = *_gl;
++
++	static u32 color[256 * 192];
++	static u32 depth[256 * 192];
++	for (size_t i = 0; i < 256 * 192; i++)
++	{
++		FragmentColor c;
++		c.color = COLOR555TO6665(colorBuffer[i] & 0x7FFF, (colorBuffer[i] >> 15) * 0x1F);
++		if (c.a == 0)
++		{
++			color[i] = 0;
++		}
++		else
++		{
++			FragmentColor o;
++			o.r = (u8)((c.r * 255 + 31) / 63);
++			o.g = (u8)((c.g * 255 + 31) / 63);
++			o.b = (u8)((c.b * 255 + 31) / 63);
++			o.a = 255;
++			color[i] = o.color;
++		}
++		depth[i] = (depthBuffer[i] & 0xFFFFFF) | ((fogBuffer[i] ? 1u : 0u) << 24);
++	}
++	glActiveTexture(GL_TEXTURE0);
++	glBindTexture(GL_TEXTURE_2D, g.texClrColor);
++	glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
++	glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 256, 192, GL_RGBA, GL_UNSIGNED_BYTE, color);
++	glActiveTexture(GL_TEXTURE1);
++	glBindTexture(GL_TEXTURE_2D, g.texClrDepth);
++	glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 256, 192, GL_RED_INTEGER, GL_UNSIGNED_INT, depth);
++
++	glBindFramebuffer(GL_FRAMEBUFFER, g.fbo);
++	const GLenum bufs[4] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2, GL_COLOR_ATTACHMENT3 };
++	glDrawBuffers(4, bufs);
++	glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
++	glDepthMask(GL_TRUE);
++	glStencilMask(0xFF);
++	glClearBufferfi(GL_DEPTH_STENCIL, 0, 1.0f, 0);
++
++	glUseProgram(g.progClear);
++	glUniform1i(g.cCC, 0);
++	glUniform1i(g.cCD, 1);
++	glUniform2f(g.cScale, 256.0f / (float)this->_framebufferWidth, 192.0f / (float)this->_framebufferHeight);
++	glUniform1f(g.cClearID, opaquePolyID / 63.0f);
++	glDisable(GL_BLEND);
++	glDisable(GL_STENCIL_TEST);
++	glEnable(GL_DEPTH_TEST);
++	glDepthFunc(GL_ALWAYS);
++	glBindVertexArray(g.emptyVao);
++	glDrawArrays(GL_TRIANGLES, 0, 3);
++	glBindVertexArray(0);
++	glActiveTexture(GL_TEXTURE0);
++
++	g.clearID = opaquePolyID;
++	g.clearDepth = (GLint)this->_clearAttributes.depth;
++	return RENDER3DERROR_NOERR;
++}
++
++// translúcido: cor sempre; profundidade se o polígono grava; névoa só para apagar (destino E polígono)
++static void SetTransBuffers(const POLYGON_ATTR attr)
++{
++	const GLenum b[4] = { GL_COLOR_ATTACHMENT0, GL_NONE,
++		attr.TranslucentDepthWrite_Enable ? (GLenum)GL_COLOR_ATTACHMENT2 : (GLenum)GL_NONE,
++		attr.Fog_Enable ? (GLenum)GL_NONE : (GLenum)GL_COLOR_ATTACHMENT3 };
++	glDrawBuffers(4, b);
++}
++
++void GLES3Renderer::_DrawPolys()
++{
++	GLState &g = *_gl;
++	const GFX3D_State &rs = *this->_renderState;
++	// a saída de profundidade (cor 2) tem alfa 1: mesmo com mistura ligada ela substitui
++	const GLenum bufsBoth[4] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2, GL_COLOR_ATTACHMENT3 };
++
++	glUseProgram(g.progGeom);
++	glBindVertexArray(g.vao);
++	glActiveTexture(GL_TEXTURE0);
++	glEnable(GL_DEPTH_TEST);
++	glEnable(GL_STENCIL_TEST);
++	glBlendEquationSeparate(GL_FUNC_ADD, GL_MAX);
++	glBlendFuncSeparate(GL_ONE, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE);
++
++	for (size_t r = 0; r < g.runs.size(); r++)
++	{
++		const GLState::Run &run = g.runs[r];
++		const POLY &poly = *this->_clippedPolyList[run.poly].poly;
++		const POLYGON_ATTR attr = poly.attribute;
++		GLES3Texture *tex = (GLES3Texture *)this->_textureList[run.poly];
++		const bool texOn = (tex != NULL) && tex->IsSamplingEnabled() && tex->texID != 0;
++
++		glBindTexture(GL_TEXTURE_2D, texOn ? tex->texID : g.texDummy);
++		glUniform1i(g.gTexOn, texOn ? 1 : 0);
++		if (texOn)
++		{
++			glUniform1i(g.gWrap, poly.texParam.TextureWrapMode);
++			glUniform2i(g.gTexSize, (GLint)tex->GetWidth(), (GLint)tex->GetHeight());
++		}
++		const int alpha = poly.isWireframe() ? 31 : attr.Alpha;
++		glUniform1i(g.gMode, attr.Mode);
++		glUniform1i(g.gAlpha, alpha);
++		glUniform1i(g.gPolyID, attr.PolygonID);
++		glUniform1i(g.gFog, attr.Fog_Enable ? 1 : 0);
++		glUniform1i(g.gDepthEq, attr.DepthEqualTest_Enable ? 1 : 0);
++		const GLenum depthFunc = attr.DepthEqualTest_Enable ? GL_LEQUAL : GL_LESS;
++
++		const GLenum prim = run.lines ? GL_LINES : GL_TRIANGLES;
++		const void *off = (const void *)(run.first * sizeof(GLuint));
++		const bool isTranslucent = poly.isTranslucent();
++		glUniform1i(g.gIsTrans, isTranslucent ? 1 : 0);
++
++		if (attr.Mode == POLYGON_MODE_SHADOW)
++		{
++			glUniform1i(g.gOpaqueSel, 0);
++			glDepthFunc(depthFunc);
++			if (attr.PolygonID == 0)
++			{
++				// máscara: só marca o stencil onde o teste de profundidade FALHA
++				glDisable(GL_BLEND);
++				glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
++				glDepthMask(GL_FALSE);
++				glStencilFunc(GL_ALWAYS, 0x80, 0x80);
++				glStencilOp(GL_KEEP, GL_REPLACE, GL_KEEP);
++				glStencilMask(0x80);
++				glDrawElements(prim, (GLsizei)run.count, GL_UNSIGNED_INT, off);
++				glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
++			}
++			else
++			{
++				// cor da sombra: só onde a máscara marcou; depois limpa a marca
++				SetTransBuffers(attr);
++				if (rs.enableAlphaBlending) glEnable(GL_BLEND); else glDisable(GL_BLEND);
++				glDepthMask(attr.TranslucentDepthWrite_Enable ? GL_TRUE : GL_FALSE);
++				glStencilFunc(GL_EQUAL, 0x80, 0x80);
++				glStencilOp(GL_KEEP, GL_KEEP, GL_ZERO);
++				glStencilMask(0x80);
++				glDrawElements(prim, (GLsizei)run.count, GL_UNSIGNED_INT, off);
++			}
++			continue;
++		}
++
++		const bool alphaTexFmt = (poly.texParam.PackedFormat == TEXMODE_A3I5) || (poly.texParam.PackedFormat == TEXMODE_A5I3);
++		const bool doOpaque = !isTranslucent || (alphaTexFmt && (poly.isWireframe() || poly.isOpaque()));
++
++		if (doOpaque)
++		{
++			glUniform1i(g.gOpaqueSel, isTranslucent ? 2 : 0);
++			glDrawBuffers(4, bufsBoth);
++			glDisable(GL_BLEND);
++			glDepthMask(GL_TRUE);
++			glDepthFunc(depthFunc);
++			glStencilFunc(GL_ALWAYS, 0, 0);
++			glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
++			glStencilMask(0);
++			glDrawElements(prim, (GLsizei)run.count, GL_UNSIGNED_INT, off);
++		}
++		if (isTranslucent)
++		{
++			glUniform1i(g.gOpaqueSel, doOpaque ? 1 : 0);
++			SetTransBuffers(attr);
++			if (rs.enableAlphaBlending) glEnable(GL_BLEND); else glDisable(GL_BLEND);
++			glDepthMask(attr.TranslucentDepthWrite_Enable ? GL_TRUE : GL_FALSE);
++			glDepthFunc(depthFunc);
++			// translúcido não desenha sobre pixel cujo último translúcido tem o mesmo ID
++			glStencilFunc(GL_NOTEQUAL, 0x40 | attr.PolygonID, 0x7F);
++			glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
++			glStencilMask(0x7F);
++			glDrawElements(prim, (GLsizei)run.count, GL_UNSIGNED_INT, off);
++		}
++	}
++
++	glBindVertexArray(0);
++	glDisable(GL_BLEND);
++	glDisable(GL_STENCIL_TEST);
++	glDepthMask(GL_TRUE);
++	glStencilMask(0xFF);
++	glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
++}
++
++Render3DError GLES3Renderer::RenderGeometry()
++{
++	if (!_ready) return RENDER3DERROR_NOERR;
++	if (!_gl->runs.empty()) this->_DrawPolys();
++	texCache.Evict();
++	return RENDER3DERROR_NOERR;
++}
++
++Render3DError GLES3Renderer::PostprocessFramebuffer()
++{
++	return RENDER3DERROR_NOERR;
++}
++
++Render3DError GLES3Renderer::EndRender()
++{
++	if (!_ready) return RENDER3DERROR_NOERR;
++	GLState &g = *_gl;
++	const GFX3D_State &rs = *this->_renderState;
++
++	// passe final para a textura de saída (lida em RenderFinish)
++	glBindFramebuffer(GL_FRAMEBUFFER, g.fboOut);
++	const GLenum buf0 = GL_COLOR_ATTACHMENT0;
++	glDrawBuffers(1, &buf0);
++	glDisable(GL_DEPTH_TEST);
++	glDisable(GL_STENCIL_TEST);
++	glDisable(GL_BLEND);
++	glUseProgram(g.progResolve);
++
++	glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, g.texColor);
++	glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, g.texAttr);
++	glActiveTexture(GL_TEXTURE2); glBindTexture(GL_TEXTURE_2D, g.texDepthC);
++	glActiveTexture(GL_TEXTURE3); glBindTexture(GL_TEXTURE_2D, g.texFog);
++	glActiveTexture(GL_TEXTURE4); glBindTexture(GL_TEXTURE_2D, g.texFogF);
++	glUniform1i(g.rColor, 0);
++	glUniform1i(g.rAttr, 1);
++	glUniform1i(g.rDepth, 2);
++	glUniform1i(g.rFogT, 3);
++	glUniform1i(glGetUniformLocation(g.progResolve, "uFogF"), 4);
++	glUniform1i(g.rEdgeOn, this->_enableEdgeMark ? 1 : 0);
++	glUniform1i(g.rFogOn, this->_enableFog ? 1 : 0);
++	glUniform1i(g.rFogAlphaOnly, rs.enableFogAlphaOnly ? 1 : 0);
++	glUniform1i(g.rClearID, g.clearID);
++	glUniform1i(g.rClearDepth, g.clearDepth);
++
++	FragmentColor fc;
++	fc.color = COLOR555TO6665(rs.fogColor & 0x7FFF, (rs.fogColor >> 16) & 0x1F);
++	glUniform4i(g.rFogColor, fc.r, fc.g, fc.b, fc.a);
++
++	if (this->_enableEdgeMark)
++	{
++		GLint e[8 * 4];
++		for (int i = 0; i < 8; i++)
++		{
++			FragmentColor c;
++			c.color = COLOR555TO6665(rs.edgeMarkColorTable[i] & 0x7FFF, rs.enableAntialiasing ? 0x10 : 0x1F);
++			e[i*4+0] = c.r; e[i*4+1] = c.g; e[i*4+2] = c.b; e[i*4+3] = c.a;
++		}
++		glUniform4iv(g.rEdge, 8, e);
++	}
++
++	glBindVertexArray(g.emptyVao);
++	glDrawArrays(GL_TRIANGLES, 0, 3);
++	glBindVertexArray(0);
++	glActiveTexture(GL_TEXTURE0);
++
++	return RENDER3DERROR_NOERR;
++}
++
++Render3DError GLES3Renderer::RenderFinish()
++{
++	if (!this->_renderNeedsFinish || !_ready)
++	{
++		return RENDER3DERROR_NOERR;
++	}
++
++	GLES3_MakeContext();
++	GLState &g = *_gl;
++	// o passe final já escreveu os bytes 6665: leitura direta no buffer 3D do motor principal
++	glBindFramebuffer(GL_FRAMEBUFFER, g.fboOut);
++	glPixelStorei(GL_PACK_ALIGNMENT, 4);
++	glReadPixels(0, 0, (GLsizei)this->_framebufferWidth, (GLsizei)this->_framebufferHeight, GL_RGBA, GL_UNSIGNED_BYTE, this->_framebufferColor);
++	glBindFramebuffer(GL_FRAMEBUFFER, 0);
++
++	this->_renderNeedsFlushMain = true;
++	this->_renderNeedsFlush16 = true;
++	return RENDER3DERROR_NOERR;
++}
++
++Render3DError GLES3Renderer::RenderFlush(bool willFlushBuffer32, bool willFlushBuffer16)
++{
++	if (!this->_isPoweredOn)
++	{
++		return RENDER3DERROR_NOERR;
++	}
++
++	FragmentColor *framebufferMain = (willFlushBuffer32 && (this->_outputFormat == NDSColorFormat_BGR888_Rev)) ? GPU->GetEngineMain()->Get3DFramebufferMain() : NULL;
++	u16 *framebuffer16 = (willFlushBuffer16) ? GPU->GetEngineMain()->Get3DFramebuffer16() : NULL;
++	this->FlushFramebuffer(this->_framebufferColor, framebufferMain, framebuffer16);
++
++	return RENDER3DERROR_NOERR;
++}
++
++// ---------------------------------------------------------------- interface
++
++static Render3D* GLES3RendererCreate()
++{
++	GLES3Renderer *r = new GLES3Renderer;
++	if (!r->IsReady())
++	{
++		delete r;
++		return NULL;
++	}
++	return r;
++}
++
++static void GLES3RendererDestroy()
++{
++	if (CurrentRenderer != BaseRenderer)
++	{
++		GLES3Renderer *old = (GLES3Renderer *)CurrentRenderer;
++		CurrentRenderer = BaseRenderer;
++		delete old;
++	}
++}
++
++GPU3DInterface gpu3DGLES3 = {
++	"GLES3",
++	GLES3RendererCreate,
++	GLES3RendererDestroy
++};
+diff --git a/desmume/src/GLES3Render.h b/desmume/src/GLES3Render.h
+new file mode 100644
+index 0000000..1707fc5
+--- /dev/null
++++ b/desmume/src/GLES3Render.h
+@@ -0,0 +1,64 @@
++/*
++	Renderizador 3D em GPU (OpenGL ES 3.0 / WebGL2) para o DeSmuME-wasm do Cartuchin.
++
++	Objetivo: resolução interna 2x-4x sem o custo do rasterizador por software.
++	Segue a semântica do SoftRasterizer (rasterize.cpp): sombreamento em inteiros 6665,
++	teste de profundidade do DS (z ou w de 24 bits), ID de polígono translúcido via stencil,
++	sombras via bit 0x80 do stencil, marcação de bordas e névoa num passe final.
++	A saída é lida de volta (glReadPixels) já no formato 6665 que o compositor 2D espera.
++*/
++
++#ifndef GLES3_RENDER_H
++#define GLES3_RENDER_H
++
++#include "render3D.h"
++#include "gfx3d.h"
++#include "texcache.h"
++
++extern GPU3DInterface gpu3DGLES3;
++extern int gles3AllowSlowGL;
++
++class GLES3Texture : public Render3DTexture
++{
++public:
++	unsigned int texID;
++	u32 *unpackBuffer;
++
++	GLES3Texture(TEXIMAGE_PARAM texAttributes, u32 palAttributes);
++	virtual ~GLES3Texture();
++	void LoadGL();
++};
++
++class GLES3Renderer : public Render3D
++{
++protected:
++	struct GLState;
++	GLState *_gl;
++	const GFX3D_State *_renderState;
++	bool _ready;
++
++	bool _InitGL();
++	bool _ResizeTargets(size_t w, size_t h);
++	void _DrawPolys();
++
++	virtual Render3DError BeginRender(const GFX3D &engine);
++	virtual Render3DError RenderGeometry();
++	virtual Render3DError PostprocessFramebuffer();
++	virtual Render3DError EndRender();
++	virtual Render3DError ClearUsingImage(const u16 *__restrict colorBuffer, const u32 *__restrict depthBuffer, const u8 *__restrict fogBuffer, const u8 opaquePolyID);
++	virtual Render3DError ClearUsingValues(const FragmentColor &clearColor6665, const FragmentAttributes &clearAttributes);
++
++public:
++	GLES3Renderer();
++	virtual ~GLES3Renderer();
++
++	bool IsReady() const { return _ready; }
++
++	virtual ClipperMode GetPreferredPolygonClippingMode() const;
++	virtual Render3DError Reset();
++	virtual Render3DError RenderFinish();
++	virtual Render3DError RenderFlush(bool willFlushBuffer32, bool willFlushBuffer16);
++	virtual Render3DError SetFramebufferSize(size_t w, size_t h);
++};
++
++#endif
 diff --git a/desmume/src/NDSSystem.h b/desmume/src/NDSSystem.h
 index 073ed64..c6e6acf 100644
 --- a/desmume/src/NDSSystem.h
@@ -143,6 +1348,18 @@ index 929cdc2..5d5ee5f 100644
  	size_t _nativeLinesPerThread;
  	size_t _nativePixelsPerThread;
  	size_t _customLinesPerThread;
+diff --git a/desmume/src/render3D.h b/desmume/src/render3D.h
+index 587affc..abef1f2 100644
+--- a/desmume/src/render3D.h
++++ b/desmume/src/render3D.h
+@@ -63,6 +63,7 @@ enum RendererID
+ 	RENDERID_OPENGL_AUTO		= 1000,
+ 	RENDERID_OPENGL_LEGACY		= 1001,
+ 	RENDERID_OPENGL_3_2			= 1002,
++	RENDERID_GLES3				= 1003,
+ 	RENDERID_METAL				= 2000
+ };
+ 
 diff --git a/desmume/src/slot1.cpp b/desmume/src/slot1.cpp
 index 50e8bd1..2fb6b76 100644
 --- a/desmume/src/slot1.cpp
@@ -284,13 +1501,14 @@ index 1f8f3b5..423a904 100644
  
  #endif
 diff --git a/desmume/wasm-port/main.cpp b/desmume/wasm-port/main.cpp
-index 44f22c8..1d18d5f 100644
+index 44f22c8..ce7e566 100644
 --- a/desmume/wasm-port/main.cpp
 +++ b/desmume/wasm-port/main.cpp
-@@ -14,22 +14,18 @@
+@@ -14,22 +14,19 @@
  #include "SPU.h"
  #include "mc.h"
  #include "rasterize.h"
++#include "GLES3Render.h"
 +#include "saves.h"
  
  CHEATSEXPORT *cheatsExport = NULL;
@@ -313,7 +1531,7 @@ index 44f22c8..1d18d5f 100644
  
  
  int DESMUME_SAMPLE_RATE = 48000;
-@@ -58,12 +54,26 @@ void SNDWasmMuteAudio() {}
+@@ -58,12 +55,26 @@ void SNDWasmMuteAudio() {}
  void SNDWasmUnMuteAudio() {}
  void SNDWasmSetVolume(int volume) {}
  void SNDWasmClearBuffer() {}
@@ -342,7 +1560,7 @@ index 44f22c8..1d18d5f 100644
  }
  
  // The NDS reads audio samples in the following format:
-@@ -106,7 +116,7 @@ SoundInterface_struct SndWasm = {1,
+@@ -106,16 +117,34 @@ SoundInterface_struct SndWasm = {1,
                                   SNDWasmUnMuteAudio,
                                   SNDWasmSetVolume,
                                   SNDWasmClearBuffer,
@@ -351,7 +1569,10 @@ index 44f22c8..1d18d5f 100644
                                   NULL};
  
  SoundInterface_struct *SNDCoreList[] = {&SNDDummy, &SndWasm, NULL};
-@@ -116,6 +126,24 @@ extern "C" {
+-GPU3DInterface *core3DList[] = {&gpu3DNull, &gpu3DRasterize, NULL};
++GPU3DInterface *core3DList[] = {&gpu3DNull, &gpu3DRasterize, &gpu3DGLES3, NULL};
+ 
+ extern "C" {
  
  u32 dstFrameBuffer[2][256 * 192];
  
@@ -376,7 +1597,7 @@ index 44f22c8..1d18d5f 100644
  static void gpu_screen_to_rgb(u32 *dst) {
    ColorspaceConvertBuffer555To8888Opaque<false, false>(
        (const uint16_t *)GPU->GetDisplayInfo().masterNativeBuffer, dst,
-@@ -132,6 +160,15 @@ void setSampleRate(int r) {
+@@ -132,6 +161,15 @@ void setSampleRate(int r) {
  int main() {
    srand(time(NULL));
  
@@ -392,7 +1613,7 @@ index 44f22c8..1d18d5f 100644
    NDS_Init();
    SPU_ChangeSoundCore(1, 16384);
  
-@@ -139,6 +176,7 @@ int main() {
+@@ -139,6 +177,7 @@ int main() {
    cheatsExport = new CHEATSEXPORT();
    printf("wasm ready.\n");
    EM_ASM(wasmReady(););
@@ -400,7 +1621,7 @@ index 44f22c8..1d18d5f 100644
  }
  
  void *prepareRomBuffer(int rl) {
-@@ -163,6 +201,9 @@ void *getSymbol(int id) {
+@@ -163,6 +202,9 @@ void *getSymbol(int id) {
    if (id == 3) {
      // return NDSCart::CartROM;
    }
@@ -410,7 +1631,7 @@ index 44f22c8..1d18d5f 100644
    if (id == 4) {
      return dstFrameBuffer;
    }
-@@ -184,7 +225,9 @@ int loadROM(int romLen) {
+@@ -184,7 +226,9 @@ int loadROM(int romLen) {
    if (!NDS_LoadROM("rom.nds")) {
      return emuLastError;
    }
@@ -421,7 +1642,7 @@ index 44f22c8..1d18d5f 100644
    SPU_SetVolume(100);
    cheatsExport->load("usrcheat.dat");
    return 0;
-@@ -207,6 +250,13 @@ static inline void convertFB(u8 *dst, u8 *src) {
+@@ -207,6 +251,13 @@ static inline void convertFB(u8 *dst, u8 *src) {
  int savGetSize() { return savFile->size(); }
  
  void *savGetPointer(int desiredSize) {
@@ -435,7 +1656,7 @@ index 44f22c8..1d18d5f 100644
    if (desiredSize > 0) {
      savFile->truncate(desiredSize);
      savFile->fseek(0, SEEK_SET);
-@@ -241,7 +291,8 @@ int runFrame(int shouldDraw, u32 keys, int touched, u32 touchX, u32 touchY) {
+@@ -241,7 +292,8 @@ int runFrame(int shouldDraw, u32 keys, int touched, u32 touchX, u32 touchY) {
    NDS_exec<false>();
  
    if (shouldDraw) {
@@ -445,7 +1666,7 @@ index 44f22c8..1d18d5f 100644
    }
  
    return ret;
-@@ -345,10 +396,75 @@ int micWriteSamples(uint8_t *buffer, int len) {
+@@ -345,10 +397,86 @@ int micWriteSamples(uint8_t *buffer, int len) {
    return len;
  }
  
@@ -459,6 +1680,17 @@ index 44f22c8..1d18d5f 100644
 +      renderScale = v;
 +      GPU->SetCustomFramebufferSize(256 * v, 192 * v);
 +      GPU->SetWillAutoResolveToCustomBuffer(v > 1);
++      return 0;
++    }
++    if (k == 4) {  // renderizador 3D: 1 = software, 2 = GPU (WebGL2); volta ao software se falhar
++      if (v == 3) { gles3AllowSlowGL = 1; v = 2; }  // testes: aceita WebGL por software
++      if (v == 2) {
++        if (cur3DCore == 2) return 0;
++        if (GPU->Change3DRendererByID(2)) return 0;
++        GPU->Change3DRendererByID(RENDERID_SOFTRASTERIZER);
++        return -2;
++      }
++      if (cur3DCore != RENDERID_SOFTRASTERIZER) GPU->Change3DRendererByID(RENDERID_SOFTRASTERIZER);
 +      return 0;
 +    }
      if (k == 0) {
