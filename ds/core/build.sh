@@ -77,7 +77,7 @@ if [[ "$NATIVE_CHECK" == "1" ]]; then
   # TEST=1 nativo: cabeçalhos GLES3/EGL (KHR_INC) e libs (GL_LIBS) para o renderizador em GPU
   if [[ "${TEST:-0}" == "1" ]]; then OBJ="$OBJ-test"; [[ -n "${KHR_INC:-}" ]] && COMMON_FLAGS+=(-I"$KHR_INC"); fi
   # nativo: o bloco do JIT vira uma lista executada em C (mesma formação de blocos e ciclos)
-  if [[ "${JIT:-0}" == "1" ]]; then OBJ="$OBJ-jit"; COMMON_FLAGS+=(-DHAVE_JIT -DJIT_IR_NATIVE); fi
+  if [[ "${JIT:-0}" == "1" ]]; then OBJ="$OBJ-jit"; COMMON_FLAGS+=(-DHAVE_JIT -DJIT_IR_NATIVE -DJIT_FUZZ); fi
 else
   command -v emcc >/dev/null || { echo "emcc não encontrado"; exit 1; }
   WRAP=()   # no emcc o ccache entra pelo EM_COMPILER_WRAPPER
@@ -150,6 +150,10 @@ if [[ "$NATIVE_CHECK" == "1" ]]; then
   if [[ "${TEST:-0}" == "1" ]]; then
     g++ "${OBJS[@]}" "$ROOT/tools/native-stub/bench_main.cpp" \
         -I"$SRC" -o "$OBJ/nds-bench" -lz -lpthread "${GLL[@]}"
+  fi
+  if [[ "${JIT:-0}" == "1" ]]; then
+    # gerador do teste diferencial da fase B do JIT (tools/jit-fuzz.cjs roda no Node)
+    g++ "${OBJS[@]}" "$ROOT/tools/native-stub/jit_fuzz_main.cpp" -o "$OBJ/nds-jitfuzz" -lz -lpthread "${GLL[@]}"
   fi
   echo "OK: link nativo -> $OBJ/nds-native"
   exit 0

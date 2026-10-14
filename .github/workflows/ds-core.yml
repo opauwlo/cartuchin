@@ -139,10 +139,18 @@ jobs:
         working-directory: uptest
         run: |
           set -euo pipefail
+          # 1) fase B: cada instrução emitida em wasm direto contra o interpretador nativo
+          sudo apt-get install -y --no-install-recommends libegl-dev libgles-dev >/dev/null
+          CCACHE=1 TEST=1 JIT=1 NATIVE_CHECK=1 NATIVE_OPT=1 ./build.sh > ../logs/build-jit-native.log 2>&1 || { tail -15 ../logs/build-jit-native.log | sed 's/^/::warning::JIT nativo /'; exit 1; }
+          .obj-native-O1-test-jit/nds-jitfuzz fuzz.json 30000 > ../logs/jit-fuzz.log
+          node tools/jit-fuzz.cjs fuzz.json >> ../logs/jit-fuzz.log 2>&1 || { tail -16 ../logs/jit-fuzz.log | sed 's/^/::warning::FUZZ /'; exit 1; }
+          tail -2 ../logs/jit-fuzz.log | head -1 | sed 's/^/::notice::JIT fase B: /'
+          # 2) ROMs inteiras: JIT e interpretador têm de dar as mesmas imagens
           CCACHE=1 TEST=1 JIT=1 SIMD=1 OUT=dist ./build.sh > ../logs/build-jit.log 2>&1 || { tail -15 ../logs/build-jit.log | sed 's/^/::warning::JIT /'; exit 1; }
           cp "$GITHUB_WORKSPACE/cputorture.nds" ct.nds
+          cp tools/roms/*.nds .
           ok=1
-          for rom in tone.nds ct.nds; do
+          for rom in tone.nds ct.nds bench3d-arm.nds bench3d-thumb.nds scene3d-arm.nds scene3d-thumb.nds; do
             if timeout 600 node tools/node-jit.cjs dist nds-jit "$rom" 600 > "../logs/jit-$rom.log" 2>&1; then :; else ok=0; fi
             grep -E "ms/quadro|ABORT|Error" "../logs/jit-$rom.log" | head -3 | sed 's/^/::notice::JIT /' || true
           done
