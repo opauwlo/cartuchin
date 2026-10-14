@@ -158,17 +158,44 @@ for (const ev of ["pointerdown", "keydown", "touchend"]) window.addEventListener
 /* motivo da última falha, para a mensagem na tela */
 let lastError = "";
 const dsLastError = () => lastError;
+/* Etapas do carregamento escritas na tela: se travar, dá para ver onde (e o erro). */
+let stageEl = null;
+function stage(msg, isError) {
+  const box = $("#game");
+  if (!stageEl || !box.contains(stageEl)) {
+    stageEl = el("div", { class: "ds-stage", role: "status" });
+    box.append(stageEl);
+  }
+  stageEl.textContent = msg;
+  stageEl.classList.toggle("err", !!isError);
+}
+const withTimeout = (p, ms, what) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error(what + ": demorou mais de " + Math.round(ms / 1000) + " s")), ms))]);
+function onPageError(e) {
+  const msg = (e && (e.message || (e.reason && (e.reason.message || String(e.reason))))) || "erro";
+  if (stageEl && document.body.contains(stageEl)) stage("Erro: " + String(msg).slice(0, 200), true);
+}
+window.addEventListener("error", onPageError);
+window.addEventListener("unhandledrejection", onPageError);
+
 async function createDsEmulator(romBytes, gameName, startSav) {
   let M;
+  $("#game").replaceChildren();
+  stage("Carregando o emulador de DS…");
   try {
-    [M] = await Promise.all([loadCore(), audio.init().catch(() => {})]);
+    // o som não pode segurar o jogo: se o áudio demorar, segue sem ele
+    withTimeout(audio.init(), 5000, "som").catch((e) => console.warn("[ds] som", e));
+    M = await withTimeout(loadCore(), 30000, "core");
   } catch (e) {
     console.warn(e);
     lastError = "core: " + String(e && e.message || e).slice(0, 160);
+    stage("Não carregou o emulador: " + lastError, true);
     return null;
   }
+  stage(`Abrindo a ROM (${Math.round(romBytes.length / 1048576)} MB)…`);
+  await new Promise((r) => setTimeout(r, 30));   // deixa a mensagem aparecer antes do trabalho pesado
   const box = $("#game");
   box.replaceChildren();
+  stageEl = null;
   box.classList.add("ds-game");
   const view = el("canvas", { class: "ds-view", width: String(W), height: String(H * 2), "aria-label": "Telas do DS" });
   box.append(view);
@@ -465,8 +492,14 @@ async function createDsEmulator(romBytes, gameName, startSav) {
   }
 
   // ---- liga ----
-  const p = M._prepareRomBuffer(romLen);
-  if (!p) return null;
+  stage(`Abrindo a ROM (${Math.round(romLen / 1048576)} MB)…`);
+  let p = 0;
+  try { p = M._prepareRomBuffer(romLen); } catch (e) { p = 0; }
+  if (!p) {
+    lastError = "sem memória para a ROM";
+    stage("Não deu: " + lastError, true);
+    return null;
+  }
   M.HEAPU8.set(romBytes, p);
   M._savGetPointer(-1);
   if (startSav && startSav.length) {   // o player manda o save junto (não chama mais writeSav no DS)
@@ -476,12 +509,15 @@ async function createDsEmulator(romBytes, gameName, startSav) {
   applyCfg();
   try { bootRom(); } catch (e) {
     lastError = "ROM: " + String(e && e.message || e);
+    stage("Não abriu a ROM: " + lastError, true);
     toast(String(e.message) === "rom-encrypted" ? "Essa ROM de DS está criptografada. Use uma versão \"decrypted\"." : "Não deu para abrir essa ROM de DS.", 5000);
     destroy();
     return null;
   }
   syncSizes();
   emu.started = true;
+  stage("Iniciando…");
+  setTimeout(() => { if (emu.frames > 0 && stageEl) { stageEl.remove(); stageEl = null; } else if (stageEl) stage("O jogo não começou a rodar (0 quadros). Mande um print disto.", true); }, 4000);
   raf = requestAnimationFrame(tick);
   setTimeout(() => { for (const cb of listeners.start || []) cb(); }, 0);
   return emu;
