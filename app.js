@@ -358,6 +358,8 @@
     // "quadros" mode: JPEG frames over the data channel
     drawn: 0,
     padTimer: null,
+    /** @type {(() => void) | null} manda o estado dos botões agora */
+    pushPad: null,
     /** @type {ReturnType<typeof setInterval> | null} */
     pingTimer: null,
     /** @type {number[]} control channel round trips (ms) */
@@ -498,6 +500,10 @@
     const tick = () => {
       if (!tvScreen.active) return;
       requestAnimationFrame(tick);
+      pushPad();
+    };
+    tvScreen.pushPad = pushPad;
+    function pushPad() {
       const dc = tvScreen.dc;
       if (!dc || dc.readyState !== "open") return;
       const mask = readPad(), now = performance.now();
@@ -522,7 +528,7 @@
         send();
         lastBeat = now;
       }
-    };
+    }
     requestAnimationFrame(tick);
   }
   var brightnessCanvas = null;
@@ -966,10 +972,13 @@ void main() {
     }
     keysDown.add(k);
     e.preventDefault();
+    if (tvScreen.pushPad) tvScreen.pushPad();
   });
   window.addEventListener("keyup", (e) => {
     const k = KEYMAP[e.key] || KEYCODES[e.keyCode];
-    if (k) keysDown.delete(k);
+    if (!k) return;
+    keysDown.delete(k);
+    if (tvScreen.active && tvScreen.pushPad) tvScreen.pushPad();
   });
 
   // src/cast/common.js
@@ -1563,6 +1572,7 @@ void main() {
       }
       const dc = pc.createDataChannel("controle", { ordered: false, maxRetransmits: 0 });
       cast.dc = dc;
+      dc.onopen = () => window.dispatchEvent(new Event("cast-open"));
       dc.onmessage = (e) => {
         const d = String(e.data);
         if (d[0] === "{") {
@@ -2780,6 +2790,7 @@ void main() {
     perf: ls.get("cartucho.ds.perf") || "auto",
     level: Math.min(LEVELS.length - 1, Number(ls.get("cartucho.ds.level") || 1))
   };
+  window.__ds = ds;
   var WORKLET_SRC = `
 class DSOut extends AudioWorkletProcessor {
   constructor() {
@@ -3562,6 +3573,7 @@ void main() {
     }
   }
   setInterval(sendTvView, 3e3);
+  window.addEventListener("cast-open", sendTvView);
   function nextOf(list2, cur) {
     return list2[(list2.indexOf(cur) + 1) % list2.length];
   }

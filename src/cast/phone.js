@@ -225,6 +225,7 @@ async function castTo(code, attempt = 0) {
     }
     const dc = pc.createDataChannel("controle", { ordered: false, maxRetransmits: 0 });
     cast.dc = dc;
+    dc.onopen = () => window.dispatchEvent(new Event("cast-open"));
     dc.onmessage = (e) => {
       const d = String(e.data);
       // the TV also reports what it receives and decodes (JSON); everything else is the pad

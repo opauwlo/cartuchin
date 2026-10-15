@@ -28,10 +28,12 @@ jobs:
           node-version: 22
       - run: npm install --no-audit --no-fund
       - run: npx playwright install --with-deps chromium
-      - name: Core estável 1x
+      - name: Core estável 1x (segunda tela em todos os formatos e arrumações)
         run: node tests/ds-e2e.mjs
       - name: Core de teste + JIT 6x (segunda tela no limite)
         run: node tests/ds-e2e.mjs
         env:
           CORE: jit
           SCALE: "6"
+          CAST_MODES: "0"
+          CAST_LAYOUTS: top

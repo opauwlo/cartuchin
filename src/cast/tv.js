@@ -24,6 +24,7 @@ const tvScreen = window.__tvScreen = {
   framesMode: false,  // "quadros" mode: JPEG frames over the data channel
   drawn: 0,
   padTimer: null,
+  /** @type {(() => void) | null} manda o estado dos botões agora */ pushPad: null,
   /** @type {ReturnType<typeof setInterval> | null} */ pingTimer: null,
   /** @type {number[]} control channel round trips (ms) */ rtt: [],
   /** @type {number[]} "quadros" mode: arrival → drawn (ms) */ decMs: [],
@@ -127,6 +128,11 @@ async function startScreen() {
   const tick = () => {
     if (!tvScreen.active) return;
     requestAnimationFrame(tick);
+    pushPad();
+  };
+  // tecla do controle remoto/teclado sai na hora, sem esperar o próximo quadro da TV
+  tvScreen.pushPad = pushPad;
+  function pushPad() {
     const dc = tvScreen.dc;
     if (!dc || dc.readyState !== "open") return;
     const mask = readPad(), now = performance.now();
@@ -148,7 +154,7 @@ async function startScreen() {
       send();
       lastBeat = now;
     }
-  };
+  }
   requestAnimationFrame(tick);
 }
 /* average brightness (0-255) of a picture, through a tiny canvas; -1 if it can't be read */
@@ -536,10 +542,13 @@ window.addEventListener("keydown", (e) => {
   }
   keysDown.add(k);
   e.preventDefault();
+  if (tvScreen.pushPad) tvScreen.pushPad();
 });
 window.addEventListener("keyup", (e) => {
   const k = KEYMAP[e.key] || KEYCODES[e.keyCode];
-  if (k) keysDown.delete(k);
+  if (!k) return;
+  keysDown.delete(k);
+  if (tvScreen.active && tvScreen.pushPad) tvScreen.pushPad();
 });
 
 export { tvScreen, brightness };

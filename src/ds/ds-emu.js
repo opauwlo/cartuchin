@@ -59,6 +59,8 @@ const ds = {
   level: Math.min(LEVELS.length - 1, Number(ls.get("cartucho.ds.level") || 1)),
 };
 
+window.__ds = ds;   // usado pelo teste automático
+
 const WORKLET_SRC = `
 class DSOut extends AudioWorkletProcessor {
   constructor() {
@@ -723,6 +725,7 @@ function sendTvView() {
   if (c && c.dc && c.dc.readyState === "open") { try { c.dc.send(JSON.stringify({ view: { smooth: ds.tvq === "suave", mode: ds.tvq, grid } })); } catch (e) {} }
 }
 setInterval(sendTvView, 3000);   // também cobre a TV que conectou depois
+window.addEventListener("cast-open", sendTvView);   // e logo que conecta, sem esperar os 3 s
 
 /* ---------- opções do DS para o menu do jogo ---------- */
 function nextOf(list, cur) { return list[(list.indexOf(cur) + 1) % list.length]; }

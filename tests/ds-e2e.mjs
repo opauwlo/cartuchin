@@ -143,66 +143,80 @@ if (!ONLY || ONLY === "state") {
   ok(left === 0, "apagar estados limpa a galeria");
 }
 
-if (!ONLY || ONLY === "cast") {
+// Segunda tela: cada formato de vídeo (VP8, H.264, quadros pelo canal de dados) em cada
+// arrumação das telas. CAST_MODES=0,1,2 e CAST_LAYOUTS=top,both,side limitam a matriz.
+const CAST_MODES = (process.env.CAST_MODES || "0,1,2").split(",").map(Number);
+const CAST_LAYOUTS = (process.env.CAST_LAYOUTS || "top,both,side").split(",");
+const MODE_NAME = ["VP8", "H.264", "quadros"];
+async function shownOnTv(tv) {
+  return tv.evaluate(() => {
+    const v = document.querySelector("#scrVideo");
+    const c = document.querySelector("#scrGl:not([hidden])") || document.querySelector("#scrCanvas:not([hidden])") || (v && v.videoWidth ? v : null);
+    if (!c) return null;
+    const t = document.createElement("canvas"); t.width = 64; t.height = 48;
+    const g = t.getContext("2d"); g.drawImage(c, 0, 0, 64, 48);
+    const d = g.getImageData(0, 0, 64, 48).data; let s = 0;
+    for (let i = 0; i < d.length; i += 4) s += d[i] + d[i + 1] + d[i + 2];
+    return { id: c.id, w: c.width || c.videoWidth, h: c.height || c.videoHeight, b: s / (64 * 48 * 3), drawn: window.__tvScreen.drawnSharp + window.__tvScreen.drawn };
+  });
+}
+async function castOnce(mode, layout) {
+  const tag = `[${MODE_NAME[mode]}, ${layout}]`;
+  await phone.evaluate(([m, lo]) => {
+    localStorage.setItem("cartucho.castMode", String(m));
+    localStorage.setItem("cartucho.ds.cast", lo);
+  }, [mode, layout]);
+  await phone.evaluate((lo) => { window.__ds.cast = lo; window.__cartucho.emu.relayout(); }, layout);
   const tv = await ctx.newPage();
   tv.on("pageerror", (e) => errors.push("tela: " + e.message));
   await tv.goto(base);
   await tv.click("#screenBtn");
   await tv.waitForFunction(() => window.__tvScreen && window.__tvScreen.code, null, { timeout: 15000 });
   const code = await tv.evaluate(() => window.__tvScreen.code);
+  await phone.bringToFront();
   await phone.click("#castBtn");
   await phone.fill(".dialog input", code);
   await phone.click(".dialog button[type=submit]");
   const connected = await phone.waitForFunction(() => window.__cast.pc && window.__cast.pc.connectionState === "connected", null, { timeout: 30000 }).then(() => true, () => false);
-  ok(connected, "celular conecta com a segunda tela");
-  const rate = await phone.evaluate(async () => {
-    const pc = window.__cast.pc, emu = window.__cartucho.emu;
-    const sent = async () => { let n = 0; (await pc.getStats()).forEach((x) => { if (x.type === "outbound-rtp" && x.kind === "video") n = x.framesSent; }); return n; };
-    const a = await sent(), fa = emu.frames;
-    await new Promise((r) => setTimeout(r, 4000));
-    return { fps: ((await sent()) - a) / 4, game: (emu.frames - fa) / 4 };
-  });
-  console.log(`  envio: ${rate.fps} quadros/s de vídeo, jogo a ${rate.game} quadros/s`);
-  ok(rate.fps > 0, "celular envia vídeo");
-  const frames = await tv.waitForFunction(() => {
-    const v = document.querySelector("#scrVideo");
-    const q = v && v.getVideoPlaybackQuality ? v.getVideoPlaybackQuality().totalVideoFrames : 0;
-    return q > 10 && v.videoWidth > 0 ? { q, w: v.videoWidth, h: v.videoHeight } : false;
-  }, null, { timeout: 30000, polling: 500 }).then((h) => h.jsonValue(), () => null);
-  if (!frames) console.log("  tela:", await tv.evaluate(() => { const v = document.querySelector("#scrVideo"); return JSON.stringify({ q: v && v.getVideoPlaybackQuality && v.getVideoPlaybackQuality(), w: v && v.videoWidth, rs: v && v.readyState, paused: v && v.paused }); }),
-    "\n  celular:", await phone.evaluate(() => JSON.stringify(window.__cast.tvStats)));
-  ok(!!frames, `segunda tela recebe vídeo${frames ? ` (${frames.w}x${frames.h}, ${frames.q} quadros)` : ""}`);
-  const info = await phone.evaluate(() => ({ w: window.__cartucho.emu.streamW, h: window.__cartucho.emu.streamH, cw: window.__cartucho.emu.canvas.width, ch: window.__cartucho.emu.canvas.height, layout: window.__cartucho.emu.localLayout() }));
-  ok(info.layout === "bottom", `celular fica com a tela de baixo (${info.layout})`);
-  // a imagem não pode ser preta: lê um quadro do vídeo na TV
-  const bright = await tv.evaluate(() => {
-    const v = document.querySelector("#scrVideo"), c = document.createElement("canvas");
-    c.width = 64; c.height = 48;
-    const g = c.getContext("2d");
-    g.drawImage(v, 0, 0, 64, 48);
-    const d = g.getImageData(0, 0, 64, 48).data;
-    let s = 0;
-    for (let i = 0; i < d.length; i += 4) s += d[i] + d[i + 1] + d[i + 2];
-    return s / (64 * 48 * 3);
-  });
-  ok(bright > 3, `imagem na segunda tela não é preta (brilho ${bright.toFixed(1)})`);
-  // o que a TV desenha de fato (ampliação WebGL): tamanho dentro do limite e com imagem
-  await tv.waitForTimeout(3500);   // a TV recebe o "view" a cada 3 s
-  const shown = await tv.evaluate(() => {
-    const c = document.querySelector("#scrGl:not([hidden])") || document.querySelector("#scrCanvas:not([hidden])");
-    if (!c) return null;
-    const t = document.createElement("canvas"); t.width = 64; t.height = 48;
-    const g = t.getContext("2d"); g.drawImage(c, 0, 0, 64, 48);
-    const d = g.getImageData(0, 0, 64, 48).data; let s = 0;
-    for (let i = 0; i < d.length; i += 4) s += d[i] + d[i + 1] + d[i + 2];
-    return { id: c.id, w: c.width, h: c.height, b: s / (64 * 48 * 3), drawn: window.__tvScreen.drawnSharp };
-  });
-  ok(!!shown && shown.w <= 4096 && shown.h <= 4096, `tela desenhada no limite${shown ? ` (${shown.id} ${shown.w}x${shown.h})` : ""}`);
-  ok(!!shown && shown.b > 3 && shown.drawn > 5, `tela desenhada tem imagem${shown ? ` (brilho ${shown.b.toFixed(1)}, ${shown.drawn} quadros)` : ""}`);
-  ok(info.cw <= 1536 && info.ch <= 1536, `vídeo enviado no limite (${info.cw}x${info.ch})`);
-  // toque: um botão apertado na tela chega no jogo do celular
-  const pad = await tv.evaluate(() => !!window.__tvScreen.dc && window.__tvScreen.dc.readyState === "open");
-  ok(pad, "canal de controle aberto");
+  ok(connected, `${tag} conecta`);
+  if (!connected) { await tv.close(); return; }
+  const used = await phone.evaluate(() => window.__cast.mode);
+  ok(used === mode, `${tag} usa o formato pedido (${MODE_NAME[used]})`);
+  // a TV recebe e desenha imagem que não é preta
+  const t0 = Date.now();
+  let shown = null;
+  while (Date.now() - t0 < 30000) {
+    shown = await shownOnTv(tv);
+    if (shown && shown.b > 3 && shown.drawn > 5) break;
+    await tv.waitForTimeout(500);
+  }
+  ok(!!shown && shown.b > 3 && shown.drawn > 5, `${tag} imagem aparece na tela${shown ? ` (${shown.id} ${shown.w}x${shown.h}, brilho ${shown.b.toFixed(0)}, ${shown.drawn} quadros)` : ""}`);
+  ok(!!shown && shown.w <= 4096 && shown.h <= 4096, `${tag} tamanho no limite`);
+  const sent = await phone.evaluate(() => ({ w: window.__cartucho.emu.canvas.width, h: window.__cartucho.emu.canvas.height, layout: window.__cartucho.emu.localLayout() }));
+  const ratio = sent.w / sent.h, want = layout === "both" ? 256 / 384 : layout === "side" ? 512 / 192 : 256 / 192;
+  ok(Math.abs(ratio - want) < 0.01 && sent.w <= 1536 && sent.h <= 1536, `${tag} vídeo enviado ${sent.w}x${sent.h}`);
+  ok(sent.layout === "bottom", `${tag} celular mostra a tela de toque (${sent.layout})`);
+  // controle: seta na TV chega no jogo do celular
+  await tv.bringToFront();
+  const k0 = Date.now();
+  await tv.keyboard.down("ArrowRight");
+  const got = await phone.waitForFunction(() => (window.__cast.remoteMask & (1 << 6)) !== 0, null, { timeout: 5000, polling: 10 }).then(() => Date.now() - k0, () => -1);
+  await tv.keyboard.up("ArrowRight");
+  const rel = await phone.waitForFunction(() => window.__cast.remoteMask === 0, null, { timeout: 5000, polling: 10 }).then(() => true, () => false);
+  ok(got >= 0 && rel, `${tag} botão da tela chega no jogo e solta${got >= 0 ? ` (${got} ms)` : ""}`);
+  // toque na tela de baixo, que fica no celular
+  await phone.bringToFront();
+  const box = await phone.locator("#game .ds-view").boundingBox();
+  await phone.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await phone.mouse.down();
+  const touched = await phone.waitForFunction(() => window.__cartucho.emu.touch, null, { timeout: 3000 }).then(() => true, () => false);
+  await phone.mouse.up();
+  ok(touched, `${tag} toque na tela de baixo funciona transmitindo`);
+  await tv.close();
+  await phone.waitForFunction(() => !window.__cast.pc, null, { timeout: 15000 }).catch(() => {});
+}
+if (!ONLY || ONLY === "cast") {
+  for (const mode of CAST_MODES) for (const layout of CAST_LAYOUTS) await castOnce(mode, layout);
 }
 
 ok(errors.length === 0, `sem erros de JavaScript${errors.length ? ":\n  " + errors.join("\n  ") : ""}`);
