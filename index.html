@@ -198,7 +198,13 @@ button { cursor: pointer; }
 .pad-dpad[data-dir~="UP"] .arr.up, .pad-dpad[data-dir~="DOWN"] .arr.down, .pad-dpad[data-dir~="LEFT"] .arr.left, .pad-dpad[data-dir~="RIGHT"] .arr.right { opacity: 1; border-color: transparent; }
 .pad-dpad[data-dir~="UP"] .arr.up { border-bottom-color: var(--glow); } .pad-dpad[data-dir~="DOWN"] .arr.down { border-top-color: var(--glow); }
 .pad-dpad[data-dir~="LEFT"] .arr.left { border-right-color: var(--glow); } .pad-dpad[data-dir~="RIGHT"] .arr.right { border-left-color: var(--glow); }
-.pad-dpad[data-dir]:not([data-dir=""]) .cross { transform: translateY(2px); box-shadow: inset 0 1px 0 rgba(255,255,255,0.08), 0 3px 0 var(--key-lo); }
+/* direcional "gangorra": o lado apertado afunda e o oposto sobe, como num controle de verdade */
+.pad-dpad { perspective: 380px; }
+.pad-dpad .rock { position: absolute; inset: 0; transform: rotateX(var(--rx, 0deg)) rotateY(var(--ry, 0deg)); transition: transform 0.06s ease-out; }
+.pad-dpad[data-dir~="UP"] { --rx: 16deg; } .pad-dpad[data-dir~="DOWN"] { --rx: -16deg; }
+.pad-dpad[data-dir~="LEFT"] { --ry: -16deg; } .pad-dpad[data-dir~="RIGHT"] { --ry: 16deg; }
+.pad-dpad[data-dir]:not([data-dir=""]) .cross { box-shadow: inset 0 1px 0 rgba(255,255,255,0.08), 0 3px 0 var(--key-lo); }
+@media (prefers-reduced-motion: reduce) { .pad-dpad .rock { transition: none; } }
 .pad-ab { grid-area: ab; position: relative; width: min(100%, 220px); aspect-ratio: 1; align-self: center; justify-self: center; max-height: 100%; }
 .pad-face { position: absolute; width: 44%; aspect-ratio: 1; border-radius: 50%; border: 0; font-size: 1.25rem;
   background: radial-gradient(circle at 50% 32%, var(--face-hi), var(--face) 62%, #2d3bb0 100%);
@@ -386,6 +392,16 @@ button { cursor: pointer; }
 #pad.local.port { grid-template-rows: var(--game-h) auto auto 1fr auto; grid-template-areas: "game game" "l r" "extra extra" "dpad ab" "meta meta"; }
 #pad.local.land { grid-template-rows: auto 1fr auto auto; grid-template-areas: "l game r" "dpad game ab" "sel game start" "ext game ext2"; }
 #pad.local.land .pad-extra { display: contents; }
+/* deitado com o controle na tela: sem a barra de cima (Salvar/Carregar/2ª tela ficam no Menu) */
+#player.touch-pad.land .pbar { display: none; }
+#player.touch-pad.land { justify-content: center; }
+/* DS em pé: telas com a largura toda; L, 2x/Menu e R numa linha só; direcional e botões no
+   tamanho que sobrar (--ctl, calculado no layoutPad) */
+#pad.local.port.ds { grid-template-columns: 1fr auto 1fr; grid-template-rows: var(--game-h) auto 1fr auto; grid-template-areas: "game game game" "l extra r" "dpad . ab" "meta meta meta"; gap: 8px 10px; padding-inline: 12px; padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px)); }
+#pad.local.port.ds .pad-sh { height: 38px; width: min(100%, 140px); font-size: 0.9rem; }
+#pad.local.port.ds .pad-extra { gap: 6px; } #pad.local.port.ds .pad-extra .pad-pill { min-width: 0; padding: 7px 10px; }
+#pad.local.port.ds .pad-dpad, #pad.local.port.ds .pad-ab { width: var(--ctl, 180px); }
+#pad.local.port.ds .pad-meta .pad-pill { padding: 7px 14px; min-width: 72px; }
 #pad.local.land .pad-ff { grid-area: ext; justify-self: center; }
 #pad.local.land #padMenu { grid-area: ext2; justify-self: center; }
 #player.show-ejs .ejs_menu_bar { display: flex !important; }
@@ -566,9 +582,11 @@ body { margin: 0; }
     <button type="button" data-btn="L" class="pad-sh l">L</button>
     <button type="button" data-btn="R" class="pad-sh r">R</button>
     <div class="pad-dpad" aria-label="Direcional">
-      <span class="cross v"></span><span class="cross h"></span>
-      <span class="arr up"></span><span class="arr down"></span><span class="arr left"></span><span class="arr right"></span>
-      <span class="hub"></span>
+      <div class="rock">
+        <span class="cross v"></span><span class="cross h"></span>
+        <span class="arr up"></span><span class="arr down"></span><span class="arr left"></span><span class="arr right"></span>
+        <span class="hub"></span>
+      </div>
     </div>
     <div class="pad-meta">
       <button type="button" data-btn="SELECT" class="pad-pill">SELECT</button>
@@ -665,9 +683,9 @@ body { margin: 0; }
 
 <div id="dialogRoot"></div>
 
-<script src="config.js?v=20261014235939"></script>
+<script src="config.js?v=20261015001354"></script>
 <script src="vendor/lang-pt-BR.js?v=20261013202456"></script>
 <script src="vendor/qrcode.js"></script>
-<script src="app.js?v=20261014235939"></script>
+<script src="app.js?v=20261015001354"></script>
 </body>
 </html>

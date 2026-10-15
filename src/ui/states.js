@@ -46,6 +46,7 @@ function thumb() {
   const lo = src.dataset && src.dataset.layout;
   if (lo === "both") sh /= 2;
   else if (lo === "side") sw /= 2;
+  else if (lo === "focus") sw = sw * 2 / 3;
   const c = document.createElement("canvas");
   c.width = 192;
   c.height = Math.round(192 * sh / sw);

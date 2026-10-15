@@ -34,8 +34,8 @@ const PERF_MODES = ["auto", "60", "30"];
 const PERF_LABEL = { auto: "Automático", 60: "60 fps", 30: "Vídeo a 30 fps" };
 
 /* telas: "both" (uma em cima da outra), "side" (lado a lado), "top", "bottom" */
-const LAYOUT_LABEL = { auto: "Automático", both: "As duas", side: "Lado a lado", top: "Só a de cima", bottom: "Só a de baixo" };
-const LOCAL_LAYOUTS = ["auto", "both", "top", "bottom"];
+const LAYOUT_LABEL = { auto: "Automático", both: "As duas", side: "Lado a lado", focus: "Destaque (a de cima grande)", top: "Só a de cima", bottom: "Só a de baixo" };
+const LOCAL_LAYOUTS = ["auto", "both", "side", "focus", "top", "bottom"];
 const CAST_LAYOUTS = ["top", "both", "side"];
 const MAX_SCALE = 6;
 const CORE_LABEL = { estavel: "Estável", teste: "Teste", jit: "Teste + JIT (mais rápido)", mt: "Teste + threads (3D em outros núcleos)" };
@@ -382,10 +382,11 @@ async function createDsEmulator(romBytes, gameName, startSav) {
   function localLayout() {
     if (casting()) return ds.cast === "bottom" ? "top" : "bottom";   // a TV mostra o resto; o celular fica com a tela de toque
     if (ds.local !== "auto") return ds.local;
-    return innerWidth > innerHeight * 1.15 ? "side" : "both";
+    // deitado: a de cima grande e a de baixo menor ao lado (aproveita a altura da tela)
+    return innerWidth > innerHeight * 1.15 ? "focus" : "both";
   }
   function sizeFor(layout) {
-    return layout === "both" ? [W * S, H * 2 * S] : layout === "side" ? [W * 2 * S, H * S] : [W * S, H * S];
+    return layout === "both" ? [W * S, H * 2 * S] : layout === "side" ? [W * 2 * S, H * S] : layout === "focus" ? [W * S * 3 / 2, H * S] : [W * S, H * S];
   }
   // A imagem vai crua para a TV, que amplia (EPX/exata) na GPU dela. Em 1x cada pixel vira um
   // bloco 2x2 (a compressão do vídeo guarda cor a cada 2x2: sem isso pixels finos borram);
@@ -406,6 +407,15 @@ async function createDsEmulator(romBytes, gameName, startSav) {
     const w = W * S, h = H * S;
     if (layout === "both") ctx.drawImage(fb, 0, 0);
     else if (layout === "side") { ctx.drawImage(fb, 0, 0, w, h, 0, 0, w, h); ctx.drawImage(fb, 0, h, w, h, w, 0, w, h); }
+    else if (layout === "focus") {
+      // a de cima inteira; a de baixo pela metade, embaixo à direita (suavizada: metade de pixel)
+      ctx.drawImage(fb, 0, 0, w, h, 0, 0, w, h);
+      ctx.fillStyle = "#1b1e2b";   // o canto vazio com a cor do controle
+      ctx.fillRect(w, 0, w / 2, h / 2);
+      ctx.imageSmoothingEnabled = true;
+      ctx.drawImage(fb, 0, h, w, h, w, h / 2, w / 2, h / 2);
+      ctx.imageSmoothingEnabled = false;
+    }
     else ctx.drawImage(fb, 0, layout === "top" ? 0 : h, w, h, 0, 0, w, h);
   }
   let shownLocal = "", shownCast = "";
@@ -515,7 +525,7 @@ async function createDsEmulator(romBytes, gameName, startSav) {
     else { r.height = b.width / ar; r.top += (b.height - r.height) / 2; }
     const lo = shownLocal;
     // retângulo da tela de baixo dentro do canvas, em fração
-    const area = lo === "both" ? [0, 0.5, 1, 0.5] : lo === "side" ? [0.5, 0, 0.5, 1] : lo === "bottom" ? [0, 0, 1, 1] : null;
+    const area = lo === "both" ? [0, 0.5, 1, 0.5] : lo === "side" ? [0.5, 0, 0.5, 1] : lo === "focus" ? [2 / 3, 0.5, 1 / 3, 0.5] : lo === "bottom" ? [0, 0, 1, 1] : null;
     if (!area) return false;
     const fx = (e.clientX - r.left) / r.width, fy = (e.clientY - r.top) / r.height;
     const x = (fx - area[0]) / area[2], y = (fy - area[1]) / area[3];
@@ -600,6 +610,7 @@ async function createDsEmulator(romBytes, gameName, startSav) {
       M._runFrame(want ? 1 : 0, keys, emu.touch ? 1 : 0, emu.tx, emu.ty);
       drainAudio(emu.turbo === 1 && !emu.muted);
       emu.frames++;
+      if (emu.frames === 3 && stageEl) { stageEl.remove(); stageEl = null; }   // já rodando: tira o "Iniciando…"
       stF++;
       if (want) drew = true;
     }

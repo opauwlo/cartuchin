@@ -63,6 +63,10 @@ function fillGameMenu() {
       closeSheets();
       $("#pullBtn").click();
     }),
+    sheetAction("sliders", "Jogar numa segunda tela", () => {
+      closeSheets();
+      $("#castBtn").click();
+    }),
     sheetAction("save", "Salvar estado", async () => {
       await saveState();
       fillGameMenu();

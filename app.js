@@ -2584,15 +2584,26 @@ void main() {
       const ar = player.isDs && player.emu && player.emu.aspect || 1.5;
       let gw, gh2;
       if (upright) {
-        gh2 = Math.min(availW / ar, availH * (player.isDs ? 0.5 : 0.55));
+        gh2 = Math.min(availW / ar, player.isDs ? Math.max(availH * 0.5, availH - 250) : availH * 0.55);
         gw = gh2 * ar;
+        if (player.isDs) pad.style.setProperty("--ctl", Math.round(Math.max(110, Math.min(210, availH - gh2 - 112, availW * 0.44))) + "px");
       } else {
-        gw = Math.min(availH * ar, availW * 0.62);
+        gw = Math.min(availH * ar, availW * (player.isDs ? 0.7 : 0.62));
         gh2 = gw / ar;
       }
       for (const n of [pad, pl]) {
         n.classList.toggle("port", upright);
         n.classList.toggle("land", !upright);
+      }
+      pad.classList.toggle("ds", !!player.isDs);
+      if ($(".pbar").getBoundingClientRect().bottom !== bar.bottom && !layoutPad.again) {
+        layoutPad.again = true;
+        try {
+          layoutPad();
+        } finally {
+          layoutPad.again = false;
+        }
+        return;
       }
       pl.style.setProperty("--game-w", Math.floor(gw) + "px");
       pl.style.setProperty("--game-h", Math.floor(gh2) + "px");
@@ -2766,8 +2777,8 @@ void main() {
   ];
   var PERF_MODES = ["auto", "60", "30"];
   var PERF_LABEL = { auto: "Automático", 60: "60 fps", 30: "Vídeo a 30 fps" };
-  var LAYOUT_LABEL = { auto: "Automático", both: "As duas", side: "Lado a lado", top: "Só a de cima", bottom: "Só a de baixo" };
-  var LOCAL_LAYOUTS = ["auto", "both", "top", "bottom"];
+  var LAYOUT_LABEL = { auto: "Automático", both: "As duas", side: "Lado a lado", focus: "Destaque (a de cima grande)", top: "Só a de cima", bottom: "Só a de baixo" };
+  var LOCAL_LAYOUTS = ["auto", "both", "side", "focus", "top", "bottom"];
   var CAST_LAYOUTS = ["top", "both", "side"];
   var MAX_SCALE = 6;
   var CORE_LABEL = { estavel: "Estável", teste: "Teste", jit: "Teste + JIT (mais rápido)", mt: "Teste + threads (3D em outros núcleos)" };
@@ -3193,10 +3204,10 @@ registerProcessor("ds-out", DSOut);
     function localLayout() {
       if (casting()) return ds.cast === "bottom" ? "top" : "bottom";
       if (ds.local !== "auto") return ds.local;
-      return innerWidth > innerHeight * 1.15 ? "side" : "both";
+      return innerWidth > innerHeight * 1.15 ? "focus" : "both";
     }
     function sizeFor(layout) {
-      return layout === "both" ? [W * S, H * 2 * S] : layout === "side" ? [W * 2 * S, H * S] : [W * S, H * S];
+      return layout === "both" ? [W * S, H * 2 * S] : layout === "side" ? [W * 2 * S, H * S] : layout === "focus" ? [W * S * 3 / 2, H * S] : [W * S, H * S];
     }
     function castScale() {
       if (!castGl) return 1;
@@ -3214,6 +3225,13 @@ registerProcessor("ds-out", DSOut);
       else if (layout === "side") {
         ctx.drawImage(fb, 0, 0, w, h, 0, 0, w, h);
         ctx.drawImage(fb, 0, h, w, h, w, 0, w, h);
+      } else if (layout === "focus") {
+        ctx.drawImage(fb, 0, 0, w, h, 0, 0, w, h);
+        ctx.fillStyle = "#1b1e2b";
+        ctx.fillRect(w, 0, w / 2, h / 2);
+        ctx.imageSmoothingEnabled = true;
+        ctx.drawImage(fb, 0, h, w, h, w, h / 2, w / 2, h / 2);
+        ctx.imageSmoothingEnabled = false;
       } else ctx.drawImage(fb, 0, layout === "top" ? 0 : h, w, h, 0, 0, w, h);
     }
     let shownLocal = "", shownCast = "";
@@ -3332,7 +3350,7 @@ registerProcessor("ds-out", DSOut);
         r.top += (b.height - r.height) / 2;
       }
       const lo = shownLocal;
-      const area = lo === "both" ? [0, 0.5, 1, 0.5] : lo === "side" ? [0.5, 0, 0.5, 1] : lo === "bottom" ? [0, 0, 1, 1] : null;
+      const area = lo === "both" ? [0, 0.5, 1, 0.5] : lo === "side" ? [0.5, 0, 0.5, 1] : lo === "focus" ? [2 / 3, 0.5, 1 / 3, 0.5] : lo === "bottom" ? [0, 0, 1, 1] : null;
       if (!area) return false;
       const fx = (e.clientX - r.left) / r.width, fy = (e.clientY - r.top) / r.height;
       const x = (fx - area[0]) / area[2], y = (fy - area[1]) / area[3];
@@ -3428,6 +3446,10 @@ registerProcessor("ds-out", DSOut);
         M._runFrame(want ? 1 : 0, keys, emu.touch ? 1 : 0, emu.tx, emu.ty);
         drainAudio(emu.turbo === 1 && !emu.muted);
         emu.frames++;
+        if (emu.frames === 3 && stageEl) {
+          stageEl.remove();
+          stageEl = null;
+        }
         stF++;
         if (want) drew = true;
       }
@@ -5357,6 +5379,7 @@ Content-Type: ${type}\r
     const lo = src.dataset && src.dataset.layout;
     if (lo === "both") sh /= 2;
     else if (lo === "side") sw /= 2;
+    else if (lo === "focus") sw = sw * 2 / 3;
     const c = document.createElement("canvas");
     c.width = 192;
     c.height = Math.round(192 * sh / sw);
@@ -5616,6 +5639,10 @@ Content-Type: ${type}\r
       sheetAction("download", "Carregar o save da nuvem", () => {
         closeSheets();
         $("#pullBtn").click();
+      }),
+      sheetAction("sliders", "Jogar numa segunda tela", () => {
+        closeSheets();
+        $("#castBtn").click();
       }),
       sheetAction("save", "Salvar estado", async () => {
         await saveState();

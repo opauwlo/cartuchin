@@ -143,16 +143,26 @@ function layoutPad() {
     const ar = (player.isDs && player.emu && player.emu.aspect) || 1.5;
     let gw, gh;
     if (upright) {
-      gh = Math.min(availW / ar, availH * (player.isDs ? 0.5 : 0.55));
+      // DS: as telas ocupam a largura toda; os controles ficam com o resto (direcional de
+      // pelo menos 140 px + ~110 px das linhas de L/R e Start/Select)
+      gh = Math.min(availW / ar, player.isDs ? Math.max(availH * 0.5, availH - 250) : availH * 0.55);
       gw = gh * ar;
+      if (player.isDs) pad.style.setProperty("--ctl", Math.round(Math.max(110, Math.min(210, availH - gh - 112, availW * 0.44))) + "px");
     }
     else {
-      gw = Math.min(availH * ar, availW * 0.62);
+      gw = Math.min(availH * ar, availW * (player.isDs ? 0.7 : 0.62));
       gh = gw / ar;
     }
     for (const n of [pad, pl]) {
       n.classList.toggle("port", upright);
       n.classList.toggle("land", !upright);
+    }
+    pad.classList.toggle("ds", !!player.isDs);
+    // deitado a barra de cima some (CSS): mede de novo uma vez com o espaço que sobrou
+    if ($(".pbar").getBoundingClientRect().bottom !== bar.bottom && !layoutPad.again) {
+      layoutPad.again = true;
+      try { layoutPad(); } finally { layoutPad.again = false; }
+      return;
     }
     pl.style.setProperty("--game-w", Math.floor(gw) + "px");
     pl.style.setProperty("--game-h", Math.floor(gh) + "px");
