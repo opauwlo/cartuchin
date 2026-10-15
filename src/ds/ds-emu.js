@@ -131,6 +131,16 @@ function loadCore() {
     w.Module = {
       locateFile: (p) => "ds/" + p.replace(/^nds(-nosimd|-test-mt|-test|-jit)?\.wasm$/, name + ".wasm"),
       print: () => {}, printErr: (t) => console.warn("[ds]", t),
+      // .wasm baixado por aqui (barra de progresso; aproveita a pré-carga da biblioteca)
+      instantiateWasm: mt ? undefined : (imports, done) => {
+        const d = download("ds/" + name + ".wasm");
+        if (coreProgress && d.got) coreProgress(d.got, d.total);
+        d.promise.then((bytes) => {
+          if (coreProgress) coreProgress(1, 0, true);
+          return WebAssembly.instantiate(bytes, imports);
+        }).then((res) => done(res.instance, res.module), (e) => reject(e));
+        return {};
+      },
       onAbort: (r) => reject(new Error("core: " + r)),
     };
     const s = el("script", { src: "ds/" + name + ".js" });
@@ -186,14 +196,55 @@ let lastError = "";
 const dsLastError = () => lastError;
 /* Etapas do carregamento escritas na tela: se travar, dá para ver onde (e o erro). */
 let stageEl = null;
-function stage(msg, isError) {
+/* Cartão de carregamento no meio da tela: nome do jogo, etapa e barra (com fração
+   quando se sabe quanto falta; animada quando não). Nunca fica tela preta parada. */
+function stage(msg, isError, frac) {
   const box = $("#game");
   if (!stageEl || !box.contains(stageEl)) {
-    stageEl = el("div", { class: "ds-stage", role: "status" });
+    const title = (window.__cartucho && window.__cartucho.meta && window.__cartucho.meta.title) || "Nintendo DS";
+    stageEl = el("div", { class: "ds-stage", role: "status", "aria-live": "polite" },
+      el("div", { class: "ds-stage-card" },
+        el("b", { class: "ds-stage-title" }, title),
+        el("span", { class: "ds-stage-msg" }),
+        el("div", { class: "ds-stage-bar" }, el("i"))));
     box.append(stageEl);
   }
-  stageEl.textContent = msg;
+  stageEl.querySelector(".ds-stage-msg").textContent = msg;
   stageEl.classList.toggle("err", !!isError);
+  const bar = stageEl.querySelector(".ds-stage-bar");
+  bar.classList.toggle("indet", frac == null && !isError);
+  bar.firstChild.style.width = frac == null ? "" : Math.round(Math.max(0.03, Math.min(1, frac)) * 100) + "%";
+}
+const mb = (n) => (n / 1048576).toLocaleString("pt-BR", { maximumFractionDigits: 1 });
+let coreProgress = null;   // (baixado, total) enquanto o core baixa
+/* download do .wasm com contagem de bytes; o mesmo download serve a pré-carga da
+   biblioteca e o "Jogar" (não baixa duas vezes) */
+const downloads = new Map();
+function download(url) {
+  if (downloads.has(url)) return downloads.get(url);
+  const d = { got: 0, total: 0 };
+  d.promise = (async () => {
+    const r = await fetch(url);
+    if (!r.ok) throw new Error(url + " " + r.status);
+    // comprimido pela rede: o tamanho do cabeçalho não é o do arquivo
+    d.total = r.headers.get("content-encoding") ? 0 : Number(r.headers.get("content-length")) || 0;
+    if (!r.body) return new Uint8Array(await r.arrayBuffer());
+    const reader = r.body.getReader(), parts = [];
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      parts.push(value);
+      d.got += value.byteLength;
+      if (coreProgress) coreProgress(d.got, d.total);
+    }
+    const out = new Uint8Array(d.got);
+    let o = 0;
+    for (const p of parts) { out.set(p, o); o += p.byteLength; }
+    return out;
+  })();
+  d.promise.catch(() => downloads.delete(url));
+  downloads.set(url, d);
+  return d;
 }
 const withTimeout = (p, ms, what) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error(what + ": demorou mais de " + Math.round(ms / 1000) + " s")), ms))]);
 function onPageError(e) {
@@ -207,17 +258,21 @@ async function createDsEmulator(romBytes, gameName, startSav) {
   let M;
   $("#game").replaceChildren();
   stage("Carregando o emulador de DS…");
+  coreProgress = (got, total, compiling) => compiling ? stage("Preparando o emulador…", false, 0.9)
+    : stage(total ? `Baixando o emulador… ${mb(got)} de ${mb(total)} MB` : `Baixando o emulador… ${mb(got)} MB`, false, total ? Math.min(0.85, got / total * 0.85) : null);
   try {
     // o som não pode segurar o jogo: se o áudio demorar, segue sem ele
     withTimeout(audio.init(), 5000, "som").catch((e) => console.warn("[ds] som", e));
-    M = await withTimeout(loadCore(), 30000, "core");
+    M = await withTimeout(loadCore(), 90000, "core");   // rede ruim: a barra mostra que está andando
+    coreProgress = null;
   } catch (e) {
     console.warn(e);
     lastError = "core: " + String(e && e.message || e).slice(0, 160);
     stage("Não carregou o emulador: " + lastError, true);
     return null;
   }
-  stage(`Abrindo a ROM (${Math.round(romBytes.length / 1048576)} MB)…`);
+  coreProgress = null;
+  stage(`Abrindo o jogo (${Math.round(romBytes.length / 1048576)} MB)…`, false, 0.95);
   await new Promise((r) => setTimeout(r, 30));   // deixa a mensagem aparecer antes do trabalho pesado
   const box = $("#game");
   box.replaceChildren();
@@ -843,4 +898,15 @@ function expItems(emu, refresh) {
 /* load state corrigido no core (fseek(-1) com save vazio tentava alocar 4 GB) */
 const dsStatesOk = true;
 
-export { createDsEmulator, dsMenuItems, ds, dsStatesOk, dsLastError };
+/* Na biblioteca, com jogo de DS na lista: baixa o core quando o aparelho está à toa, para
+   o "Jogar" não esperar o download (o navegador guarda em cache). */
+let prefetched = false;
+function prefetchDsCore() {
+  if (prefetched || (navigator.connection && navigator.connection.saveData)) return;
+  prefetched = true;
+  const simd = WebAssembly.validate(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 123, 3, 2, 1, 0, 10, 10, 1, 8, 0, 65, 0, 253, 15, 253, 98, 11]));
+  const name = (ds.core === "teste" || ds.core === "mt") && simd ? "nds-test" : ds.core === "jit" && simd ? "nds-jit" : simd ? "nds" : "nds-nosimd";
+  const go = () => { fetch("ds/" + name + ".js", { priority: "low" }).catch(() => {}); download("ds/" + name + ".wasm"); };
+  (window.requestIdleCallback || ((f) => setTimeout(f, 2500)))(go, { timeout: 5000 });
+}
+export { prefetchDsCore, createDsEmulator, dsMenuItems, ds, dsStatesOk, dsLastError };

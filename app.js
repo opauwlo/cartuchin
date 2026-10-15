@@ -2053,699 +2053,6 @@ void main() {
     );
   }
 
-  // src/ui/screens.js
-  var localOnly = () => ls.get("cartucho.localOnly") === "1";
-  function showWelcome() {
-    closeSheets();
-    ls.set("cartucho.localOnly", "");
-    $("#connect").hidden = false;
-    $("#home").hidden = true;
-    $("#notice").hidden = true;
-    if (typeof showConnect === "function") showConnect();
-  }
-  function showAvatar() {
-    const a = cloud.auth;
-    const name = a && (a.email || a.owner);
-    let letter = name ? name[0].toUpperCase() : "";
-    if (letter) ls.set("cartucho.avatar", letter);
-    else if (a) letter = ls.get("cartucho.avatar") || (a.kind === "google" ? "G" : "?");
-    $("#avatarLetter").textContent = letter || "?";
-  }
-  function render() {
-    if (!cloud.ready) return;
-    const welcome = !cloud.auth && !localOnly();
-    $("#connect").hidden = !welcome;
-    $("#home").hidden = welcome;
-    $("#accountBtn").hidden = welcome;
-    showAvatar();
-    $("#connText").textContent = isGoogle() ? cloud.db ? `Google Drive${cloud.auth.email ? ": " + cloud.auth.email : ""}` : "Google Drive: reconecte para sincronizar" : cloud.db ? `GitHub: ${cloud.auth.owner}/${cloud.auth.repo}` : cloud.auth ? "GitHub indisponível agora" : "Sem conta: os jogos ficam só neste aparelho.";
-    $("#pairOtherBtn").hidden = !cloud.db || isGoogle();
-    $("#disconnectBtn").hidden = !cloud.auth;
-    $("#connectBtn").hidden = !!cloud.auth;
-    const n = $("#notice");
-    if (n.dataset.sticky !== "1") {
-      if (!welcome && !cloud.auth && googleAvailable()) {
-        n.className = "notice";
-        n.hidden = false;
-        n.replaceChildren(el("span", {}, "Seus jogos estão só neste aparelho. "), el("button", { class: "btn small", type: "button", onclick: showWelcome }, "Entrar com Google"));
-      } else n.hidden = true;
-    }
-    if (welcome) return;
-    const keys = /* @__PURE__ */ new Set([...roms.keys(), ...cloud.docs.keys(), ...cloud.roms.keys()]);
-    const games = [...keys].map(gameInfo).sort((a, b) => (b.save && b.save.at || 0) - (a.save && a.save.at || 0) || a.title.localeCompare(b.title, "pt"));
-    const recent = games.find((g) => g.save && g.playable);
-    if (recent) continueHero(recent);
-    else $("#continue").hidden = true;
-    const box = $("#games");
-    box.replaceChildren();
-    $("#empty").hidden = games.length > 0;
-    box.hidden = games.length === 0;
-    for (const g of games) box.append(tile(g));
-    $("#dsPromo").hidden = !games.length || games.some((g) => g.system === "nds") || ls.get("cartucho.dsPromo") === "off";
-    if (games.length) box.append(addTile());
-    if (sheetKey) fillGameSheet(sheetKey);
-  }
-
-  // src/ui/dialogs.js
-  function dialog(title, text, buttons) {
-    return new Promise((resolve) => {
-      const root = $("#dialogRoot");
-      const close = (v) => {
-        root.replaceChildren();
-        resolve(v);
-      };
-      const box = el(
-        "div",
-        { class: "dialog", role: "dialog", "aria-modal": "true", "aria-label": title },
-        el("h2", {}, title),
-        text ? el("p", {}, text) : null,
-        ...buttons.map((b) => el(
-          "button",
-          { class: "btn " + (b.cls || "") + (b.sub ? " choice" : ""), type: "button", onclick: () => close(b.value) },
-          b.label,
-          b.sub ? el("small", {}, b.sub) : null
-        ))
-      );
-      root.replaceChildren(el("div", { class: "scrim", onclick: (e) => {
-        if (e.target === e.currentTarget) close(null);
-      } }, box));
-      const first = box.querySelector("button");
-      if (first) first.focus();
-    });
-  }
-  async function confirmRestore(key, save) {
-    const p = save.prev;
-    const ok = await dialog(
-      "Voltar à versão anterior?",
-      `A versão anterior é de ${ago(p.at)} (${p.device || "outro aparelho"}). A versão atual vira a anterior, então dá para desfazer.`,
-      [{ label: "Voltar à anterior", value: true, cls: "primary" }, { label: "Cancelar", value: false }]
-    );
-    if (!ok) return;
-    try {
-      const sav = await unpack(p);
-      const doc = await writeCloud(key, { title: save.title, system: save.system, code: save.code }, sav, p.sha || await sha(sav));
-      await idb.del("pend", key);
-      await idb.put("sync", key, { lastSha: doc.sha, baseRev: doc.rev });
-      toast("Versão anterior restaurada");
-    } catch (e) {
-      toast("Não deu para restaurar agora. Tente de novo.");
-    }
-  }
-  async function confirmRemoveRom(key, title) {
-    const ok = await dialog(
-      `Tirar ${title} deste aparelho?`,
-      "A ROM sai só daqui. O save na nuvem continua lá.",
-      [{ label: "Tirar ROM", value: true, cls: "primary" }, { label: "Cancelar", value: false }]
-    );
-    if (!ok) return;
-    await idb.del("roms", key);
-    await loadRoms();
-    render();
-  }
-  async function confirmDeleteGame(key, title, withRom) {
-    const where = cloud.db ? ` deste aparelho e do ${cloudName()}` : " deste aparelho";
-    const ok = await dialog(
-      withRom ? `Apagar ${title}?` : `Apagar o save de ${title}?`,
-      (withRom ? "A ROM, o save e o progresso saem" : 'O save e o progresso ("continuar de onde parou") saem') + where + ". Não dá para desfazer.",
-      [{ label: withRom ? "Apagar jogo" : "Apagar save", value: true, cls: "primary" }, { label: "Cancelar", value: false }]
-    );
-    if (!ok) return false;
-    for (const k of [key, "state:" + key, "quick:" + key]) await idb.del("pend", k);
-    await idb.del("sync", key);
-    if (withRom) {
-      await idb.del("roms", key);
-      await idb.del("covers", key);
-    }
-    try {
-      await deleteCloudGame(key, title, withRom);
-    } catch (e) {
-      toast(`Apagado neste aparelho, mas não deu para apagar no ${cloudName()} agora.`, 4e3);
-      await loadRoms();
-      render();
-      return true;
-    }
-    await loadRoms();
-    render();
-    toast(withRom ? `${title} apagado` : `Save de ${title} apagado`);
-    return true;
-  }
-  async function downloadSave(save) {
-    try {
-      const sav = await unpack(save);
-      const name = (save.title || save.game).replace(/[^\w\- ]+/g, "").trim() || "save";
-      const url = URL.createObjectURL(new Blob([sav], { type: "application/octet-stream" }));
-      const a = el("a", { href: url, download: name + ".sav" });
-      document.body.append(a);
-      a.click();
-      a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 1e4);
-    } catch (e) {
-      toast("Não deu para baixar o save aqui.");
-    }
-  }
-
-  // src/diag.js
-  var DIAG_STEPS = [
-    { id: "pad", label: "Controle na tela, horizontal", pad: "h" },
-    { id: "padv", label: "Controle na tela, vertical", pad: "v" },
-    { id: "padrich", label: "Controle com sombras suaves (visual anterior)", pad: "h", rich: true },
-    { id: "touch", label: "Controle + dedos se mexendo", pad: "h", touch: true },
-    { id: "local", label: "Jogando no próprio celular, com o controle na tela", local: true, touch: true },
-    { id: "cast", label: "Transmissão de vídeo e som (sem rede)", cast: true },
-    { id: "all", label: "Tudo junto", pad: "h", touch: true, cast: true },
-    { id: "recast", label: "Depois de ligar e desligar a transmissão 3 vezes", recast: 3 }
-  ];
-  var diag = window.__diag = { running: false, done: false, results: [], bases: [], only: null };
-  var GBA_FPS = 59.7275;
-  function diagShow(html) {
-    $("#diagBody").innerHTML = html;
-  }
-  var median = (xs) => {
-    const v = [...xs].sort((a, b) => a - b);
-    return v.length ? v[Math.floor(v.length / 2)] : 0;
-  };
-  function diagRow(r) {
-    const pct = Math.round(r.fps / GBA_FPS * 100);
-    if (r.rel == null) return `<tr><td>${r.label}</td><td class="num">${pct}%</td><td class="num">referência</td></tr>`;
-    const rel = Math.round(r.rel * 100);
-    const cls = rel >= 92 ? "ok" : rel >= 80 ? "warn" : "bad";
-    return `<tr><td>${r.label}</td><td class="num">${pct}%</td><td class="num ${cls}">${rel >= 100 ? "sem perda" : "−" + (100 - rel) + "%"}</td></tr>`;
-  }
-  function diagTable() {
-    return `<table class="diag-table"><thead><tr><th>Situação</th><th class="num">Capacidade</th><th class="num">Custo</th></tr></thead><tbody>${diag.results.map(diagRow).join("")}</tbody></table>`;
-  }
-  function diagReport() {
-    const lines = diag.results.map((r) => `${r.label}: ${Math.round(r.fps / GBA_FPS * 100)}%${r.rel != null ? ` (${Math.round(r.rel * 100)}% do normal)` : ""}`);
-    return [
-      "Cartuchin, teste de velocidade",
-      (/* @__PURE__ */ new Date()).toLocaleString("pt-BR"),
-      `Aparelho: ${device.name} · ${navigator.userAgent}`,
-      `Núcleos: ${navigator.hardwareConcurrency || "?"} · Tela: ${screen.width}x${screen.height} @${window.devicePixelRatio || 1}x`,
-      `Desempenho: ${perf.mode}${perf.learned ? " (aprendeu modo leve)" : ""} · Controle: ${ls.get("cartucho.pad.orient") || "h"}`,
-      `Medidas do emulador sozinho, em ordem: ${diag.bases.map((b) => Math.round(b / GBA_FPS * 100) + "%").join(", ")}`,
-      "",
-      ...lines
-    ].join("\n");
-  }
-  function diagTouches() {
-    let t = 0, down = false;
-    const fire = (type, x, y, id) => $("#pad").dispatchEvent(new PointerEvent(type, { pointerId: id, clientX: x, clientY: y, bubbles: true, cancelable: true, isPrimary: id === 31 }));
-    const timer = setInterval(() => {
-      const geo = padGeometry(), d = geo.find((g) => g.id === "dpad"), a = geo.find((g) => g.id === "A");
-      if (!d || !a) return;
-      const r = (d.r - d.l) * 0.35, x = d.cx + Math.cos(t / 6) * r, y = d.cy + Math.sin(t / 6) * r;
-      if (!down) {
-        fire("pointerdown", x, y, 31);
-        down = true;
-      } else fire("pointermove", x, y, 31);
-      if (t % 12 === 0) fire("pointerdown", a.cx, a.cy, 32);
-      if (t % 12 === 6) fire("pointerup", a.cx, a.cy, 32);
-      t++;
-    }, 8);
-    return () => {
-      clearInterval(timer);
-      if (down) fire("pointerup", 0, 0, 31);
-      fire("pointerup", 0, 0, 32);
-    };
-  }
-  async function diagLoopback(emu) {
-    window.__castCap = 1;
-    window.dispatchEvent(new Event("resize"));
-    await sleep(200);
-    const a = new RTCPeerConnection(), b = new RTCPeerConnection();
-    a.onicecandidate = (e) => e.candidate && b.addIceCandidate(e.candidate).catch(() => {
-    });
-    b.onicecandidate = (e) => e.candidate && a.addIceCandidate(e.candidate).catch(() => {
-    });
-    const stream = emu.canvas.captureStream(60);
-    a.addTrack(stream.getVideoTracks()[0], stream);
-    const tap = (window.__audioTaps || [])[0];
-    if (tap && tap.out) {
-      const at = tap.out.stream.getAudioTracks()[0];
-      if (at) a.addTrack(at, stream);
-    }
-    const v = document.createElement("video");
-    v.muted = true;
-    v.playsInline = true;
-    b.ontrack = (e) => {
-      v.srcObject = e.streams[0];
-      v.play().catch(() => {
-      });
-    };
-    await a.setLocalDescription(await a.createOffer());
-    await b.setRemoteDescription(a.localDescription);
-    await b.setLocalDescription(await b.createAnswer());
-    await a.setRemoteDescription(b.localDescription);
-    return () => {
-      try {
-        a.close();
-        b.close();
-      } catch (e) {
-      }
-      for (const t of stream.getVideoTracks()) t.stop();
-      v.srcObject = null;
-      window.__castCap = 0;
-      window.dispatchEvent(new Event("resize"));
-    };
-  }
-  async function runDiagnostic() {
-    if (diag.running) return;
-    diag.running = true;
-    diag.done = false;
-    diag.results = [];
-    $("#library").hidden = true;
-    $("#player").hidden = false;
-    $("#diag").hidden = false;
-    $("#pName").textContent = "Teste de velocidade";
-    diagShow("<p>Carregando o emulador…</p>");
-    keepAwake();
-    let bytes;
-    try {
-      bytes = new Uint8Array(await (await fetch("bench.gba")).arrayBuffer());
-    } catch (e) {
-      diagShow("<p>Não deu para baixar o programa de teste. Confira a internet.</p>");
-      diag.running = false;
-      return;
-    }
-    const emu = await createEmulator(new File([bytes], "bench.gba"), "cartuchin-bench", { ...coreOptions(), mgba_frameskip: "disabled" });
-    if (!emu) {
-      diagShow("<p>Não deu para carregar o emulador.</p>");
-      diag.running = false;
-      return;
-    }
-    player.emu = emu;
-    await new Promise((res) => emu.on("start", res));
-    await sleep(1500);
-    const gm = emu.gameManager;
-    try {
-      gm.setFastForwardRatio(0);
-      gm.toggleFastForward(1);
-    } catch (e) {
-    }
-    diagShow("<p>Aquecendo o emulador…</p>");
-    await sleep(5e3);
-    const measure = async () => {
-      const windows = [];
-      for (let w = 0; w < 3; w++) {
-        const f0 = Number(gm.getFrameNum()), t0 = performance.now();
-        await sleep(1300);
-        windows.push((Number(gm.getFrameNum()) - f0) / ((performance.now() - t0) / 1e3));
-      }
-      return median(windows);
-    };
-    diag.bases = [await measure()];
-    diag.results = [{ id: "base", label: "Só o emulador", fps: diag.bases[0] }];
-    const steps = diag.only ? DIAG_STEPS.filter((st) => diag.only.includes(st.id)) : DIAG_STEPS;
-    for (const [i, step] of steps.entries()) {
-      diagShow(`<p class="diag-now">Medindo ${i + 1} de ${steps.length}: <b>${step.label}</b></p>${diagTable()}`);
-      const undo = [];
-      if (step.pad) {
-        padState.forceOrient = step.pad;
-        $("#pad").classList.toggle("rich", !!step.rich);
-        showPad(true);
-        undo.push(() => {
-          showPad(false);
-          $("#pad").classList.remove("rich");
-          padState.forceOrient = null;
-        });
-      }
-      if (step.local) {
-        padState.forceLocal = true;
-        showPad(false);
-        undo.push(() => {
-          padState.forceLocal = false;
-          showPad(false);
-        });
-      }
-      if (step.touch) {
-        await sleep(100);
-        undo.push(diagTouches());
-      }
-      if (step.cast) {
-        try {
-          undo.push(await diagLoopback(emu));
-        } catch (e) {
-        }
-      }
-      for (let k = 0; k < (step.recast || 0); k++) {
-        try {
-          const stop = await diagLoopback(emu);
-          await sleep(700);
-          stop();
-          await sleep(200);
-        } catch (e) {
-        }
-      }
-      await sleep(1e3);
-      const fps = await measure();
-      for (const u of undo.reverse()) try {
-        u();
-      } catch (e) {
-      }
-      await sleep(500);
-      const after = await measure();
-      const before = diag.bases[diag.bases.length - 1];
-      diag.bases.push(after);
-      diag.results.push({ id: step.id, label: step.label, fps, rel: fps / ((before + after) / 2) });
-      diag.results[0].fps = median(diag.bases);
-    }
-    try {
-      gm.toggleFastForward(0);
-    } catch (e) {
-    }
-    diag.running = false;
-    diag.done = true;
-    const base = diag.results[0].fps;
-    const worst = diag.results.filter((r) => r.rel != null).reduce((w, r) => r.rel < w.rel ? r : w, { rel: Infinity });
-    const verdict = Math.round(base / GBA_FPS * 100) < 100 ? `Este aparelho emula no máximo ${Math.round(base / GBA_FPS * 100)}% da velocidade de um GBA no pior caso, então jogos pesados vão ficar lentos aqui mesmo sem nada a mais.` : worst.rel < 0.85 ? `O que mais pesa neste aparelho: <b>${worst.label}</b>.` : "Nenhum recurso extra pesa de forma relevante neste aparelho.";
-    diagShow(`<p class="diag-now">${verdict}</p>${diagTable()}<p class="diag-note">Capacidade é a velocidade máxima que o aparelho consegue com um programa que nunca descansa (100% = um GBA de verdade). Jogos reais pesam menos que isso.</p>
-    <div class="diag-actions"><button class="btn primary" id="diagCopy" type="button">Copiar resultado</button><button class="btn" id="diagClose" type="button">Fechar</button></div>
-    <pre class="diag-pre" id="diagText"></pre>`);
-    $("#diagText").textContent = diagReport();
-    $("#diagCopy").addEventListener("click", async () => {
-      try {
-        await navigator.clipboard.writeText(diagReport());
-        toast("Resultado copiado");
-      } catch (e) {
-        const r = document.createRange();
-        r.selectNodeContents($("#diagText"));
-        const sel = getSelection();
-        sel.removeAllRanges();
-        sel.addRange(r);
-        toast("Selecionei o texto: copie com o menu do navegador");
-      }
-    });
-    $("#diagClose").addEventListener("click", () => location.reload());
-  }
-  $("#diagBtn").addEventListener("click", runDiagnostic);
-  function resetEmulatorSettings() {
-    let n = 0;
-    try {
-      for (const k of Object.keys(localStorage)) if (/^ejs-/.test(k) || /^cartucho\.perf\./.test(k)) {
-        localStorage.removeItem(k);
-        n++;
-      }
-    } catch (e) {
-    }
-    perf.mode = "auto";
-    perf.learned = guessDevice() === "TV";
-    renderPerf();
-    return n;
-  }
-  $("#resetEmuBtn").addEventListener("click", async () => {
-    const ok = await dialog(
-      "Restaurar as configurações do emulador?",
-      "Controles, vídeo, som e as opções do menu do emulador voltam ao padrão, e o desempenho volta para Automático. Seus jogos, saves e a conexão com a nuvem continuam.",
-      [{ label: "Restaurar", value: true, cls: "primary" }, { label: "Cancelar", value: false }]
-    );
-    if (!ok) return;
-    resetEmulatorSettings();
-    toast("Configurações do emulador restauradas");
-  });
-
-  // src/cast/pad.js
-  var padTouches = /* @__PURE__ */ new Map();
-  var padState = { rot: 0, geo: null, shownMask: -1, shownOver: "", shownDir: "" };
-  function padGeometry() {
-    if (padState.geo) return padState.geo;
-    const geo = [];
-    for (const n of $$("#pad [data-btn], #pad .pad-dpad")) {
-      const r = n.getBoundingClientRect();
-      if (!r.width || !r.height) continue;
-      geo.push({
-        id: n.classList.contains("pad-dpad") ? "dpad" : n.dataset.btn,
-        round: n.classList.contains("pad-face"),
-        l: r.left,
-        t: r.top,
-        r: r.right,
-        b: r.bottom,
-        cx: (r.left + r.right) / 2,
-        cy: (r.top + r.bottom) / 2,
-        rad: Math.min(r.width, r.height) / 2
-      });
-    }
-    return padState.geo = geo;
-  }
-  function controlAt(x, y) {
-    let best = null, bestD = Infinity;
-    for (const g of padGeometry()) {
-      const w = (g.r - g.l) / 2, h = (g.b - g.t) / 2;
-      let d;
-      if (g.round) d = Math.hypot(x - g.cx, y - g.cy) / g.rad;
-      else d = Math.max(Math.abs(x - g.cx) / w, Math.abs(y - g.cy) / h);
-      const reach = g.id === "dpad" ? 1.35 : g.round ? 1.3 : 1.15;
-      if (d <= reach && d < bestD) {
-        best = g.id;
-        bestD = d;
-      }
-    }
-    return best;
-  }
-  function dpadMask(x, y, prev) {
-    const d = padGeometry().find((g) => g.id === "dpad");
-    if (!d) return 0;
-    let dx = (x - d.cx) / ((d.r - d.l) / 2), dy = (y - d.cy) / ((d.b - d.t) / 2);
-    if (padState.rot === 90) [dx, dy] = [dy, -dx];
-    else if (padState.rot === -90) [dx, dy] = [-dy, dx];
-    if (Math.hypot(dx, dy) < 0.15) return 0;
-    const bit = (k) => 1 << PAD_BITS.indexOf(k);
-    const a = Math.atan2(dy, dx) * 180 / Math.PI;
-    const diag2 = [[45, "RIGHT", "DOWN"], [135, "DOWN", "LEFT"], [-135, "LEFT", "UP"], [-45, "UP", "RIGHT"]];
-    for (const [c, k1, k2] of diag2) {
-      let off = Math.abs(a - c);
-      if (off > 180) off = 360 - off;
-      if (off <= 10) return bit(k1) | bit(k2);
-    }
-    const cards = [[0, "RIGHT"], [90, "DOWN"], [180, "LEFT"], [-90, "UP"]];
-    let best = null, bestOff = 999;
-    for (const [c, k] of cards) {
-      let off = Math.abs(a - c);
-      if (off > 180) off = 360 - off;
-      if (prev & bit(k)) off -= 4;
-      if (off < bestOff) {
-        bestOff = off;
-        best = k;
-      }
-    }
-    return bit(best);
-  }
-  function touchMask(p) {
-    if (p.anchor === "dpad") return dpadMask(p.x, p.y, p.mask);
-    if (p.anchor && p.over === p.anchor) return 1 << PAD_BITS.indexOf(p.anchor);
-    return 0;
-  }
-  function padUpdate() {
-    let m = 0;
-    const over = [];
-    for (const p of padTouches.values()) {
-      const pm = touchMask(p);
-      p.mask = pm;
-      m |= pm;
-      if (p.over && p.over !== "dpad" && !(pm & 1 << PAD_BITS.indexOf(p.over))) over.push(p.over);
-    }
-    if (m & ~cast.localMask) cast.touchAt = performance.now();
-    cast.localMask = m;
-    applyInput();
-    const overKey = over.sort().join(" ");
-    if (m !== padState.shownMask || overKey !== padState.shownOver) {
-      padState.shownMask = m;
-      padState.shownOver = overKey;
-      for (const b of $$("#pad [data-btn]")) {
-        const bit = 1 << PAD_BITS.indexOf(b.dataset.btn);
-        b.classList.toggle("on", !!(m & bit));
-        b.classList.toggle("over", over.includes(b.dataset.btn));
-      }
-      const dirs = ["UP", "DOWN", "LEFT", "RIGHT"].filter((k) => m & 1 << PAD_BITS.indexOf(k)).join(" ");
-      if (dirs !== padState.shownDir) {
-        padState.shownDir = dirs;
-        $("#pad .pad-dpad").dataset.dir = dirs;
-      }
-    }
-  }
-  var padMsgTimer = null;
-  function padMsg(text) {
-    const n = $("#padMsg");
-    n.textContent = text;
-    n.classList.add("show");
-    clearTimeout(padMsgTimer);
-    padMsgTimer = setTimeout(() => n.classList.remove("show"), 2600);
-  }
-  function layoutPad() {
-    const pad = $("#pad");
-    if (pad.hidden) return;
-    padState.geo = null;
-    if (padState.mode === "local") {
-      padState.rot = 0;
-      pad.classList.remove("rot", "wide");
-      pad.style.width = pad.style.height = pad.style.transform = "";
-      const pl = $("#player"), bar = $(".pbar").getBoundingClientRect();
-      const availH = innerHeight - bar.bottom, availW = innerWidth;
-      const upright = availH > availW;
-      const ar = player.isDs && player.emu && player.emu.aspect || 1.5;
-      let gw, gh2;
-      if (upright) {
-        gh2 = Math.min(availW / ar, player.isDs ? Math.max(availH * 0.5, availH - 250) : availH * 0.55);
-        gw = gh2 * ar;
-        if (player.isDs) pad.style.setProperty("--ctl", Math.round(Math.max(110, Math.min(210, availH - gh2 - 112, availW * 0.46))) + "px");
-      } else {
-        gw = Math.min(availH * ar, availW * (player.isDs ? 0.7 : 0.62));
-        gh2 = gw / ar;
-      }
-      for (const n of [pad, pl]) {
-        n.classList.toggle("port", upright);
-        n.classList.toggle("land", !upright);
-      }
-      pad.classList.toggle("ds", !!player.isDs);
-      if ($(".pbar").getBoundingClientRect().bottom !== bar.bottom && !layoutPad.again) {
-        layoutPad.again = true;
-        try {
-          layoutPad();
-        } finally {
-          layoutPad.again = false;
-        }
-        return;
-      }
-      pl.style.setProperty("--game-w", Math.floor(gw) + "px");
-      pl.style.setProperty("--game-h", Math.floor(gh2) + "px");
-      pad.style.setProperty("--pad-top", bar.bottom + "px");
-      requestAnimationFrame(() => {
-        padState.geo = null;
-      });
-      return;
-    }
-    for (const n of [pad, $("#player")]) n.classList.remove("port", "land");
-    const pref = padState.forceOrient || ls.get("cartucho.pad.orient") || "h";
-    const portrait = innerHeight > innerWidth;
-    padState.rot = pref === "v" || !portrait ? 0 : pref === "hr" ? -90 : 90;
-    pad.classList.toggle("rot", padState.rot !== 0);
-    pad.classList.toggle("wide", padState.rot !== 0 || !portrait);
-    if (padState.rot === 0) {
-      pad.style.width = pad.style.height = pad.style.transform = "";
-      return;
-    }
-    pad.style.width = innerHeight + "px";
-    pad.style.height = innerWidth + "px";
-    pad.style.transform = padState.rot === 90 ? `translateX(${innerWidth}px) rotate(90deg)` : `translateY(${innerHeight}px) rotate(-90deg)`;
-    requestAnimationFrame(() => {
-      padState.geo = null;
-    });
-  }
-  window.addEventListener("resize", layoutPad);
-  window.addEventListener("ds-layout", layoutPad);
-  if (window.ResizeObserver) new ResizeObserver(() => {
-    if (padState.mode === "local") layoutPad();
-  }).observe(document.documentElement);
-  (() => {
-    const pad = $("#pad");
-    const isUi = (e) => e.target.closest(".pad-top, .pad-extra");
-    const down = (e) => {
-      if (isUi(e)) return;
-      if (!padTouches.size) padState.geo = null;
-      e.preventDefault();
-      try {
-        pad.setPointerCapture(e.pointerId);
-      } catch (x) {
-      }
-      const c = controlAt(e.clientX, e.clientY);
-      padTouches.set(e.pointerId, { x: e.clientX, y: e.clientY, anchor: c, over: c, mask: 0 });
-      padUpdate();
-    };
-    const move = (e) => {
-      const p = padTouches.get(e.pointerId);
-      if (!p) return;
-      e.preventDefault();
-      p.x = e.clientX;
-      p.y = e.clientY;
-      const c = controlAt(p.x, p.y);
-      p.over = c;
-      padUpdate();
-    };
-    const up = (e) => {
-      if (!padTouches.delete(e.pointerId)) return;
-      padUpdate();
-    };
-    pad.addEventListener("pointerdown", down);
-    pad.addEventListener("pointermove", move);
-    pad.addEventListener("pointerup", up);
-    pad.addEventListener("pointercancel", up);
-    pad.addEventListener("contextmenu", (e) => e.preventDefault());
-    $("#padStop").addEventListener("click", () => stopCast("Transmissão encerrada."));
-    $("#padSave").addEventListener("click", async () => {
-      await tokenFromTap();
-      padMsg("Enviando o save…");
-      await flush();
-      const okState = await uploadState({ force: true });
-      if (player.state === "ok" || okState) {
-        padMsg(cloud.db ? "Progresso salvo: continua daqui em qualquer aparelho" : "Progresso salvo neste celular");
-      } else if (player.state === "none") padMsg("Ainda não há save. Salve dentro do jogo primeiro.");
-      else if (player.state === "local") padMsg("Save guardado neste celular (sem nuvem conectada)");
-      else padMsg("Save guardado aqui. Ele sobe quando a internet voltar.");
-    });
-    $("#padRotate").addEventListener("click", () => {
-      const order = ["h", "hr", "v"], cur = ls.get("cartucho.pad.orient") || "h";
-      const next = order[(order.indexOf(cur) + 1) % order.length];
-      ls.set("cartucho.pad.orient", next);
-      layoutPad();
-      padMsg(next === "v" ? "Controle na vertical" : "Controle na horizontal");
-    });
-  })();
-  var touchDevice = () => matchMedia("(pointer: coarse)").matches && guessDevice() !== "TV";
-  padState.mode = "off";
-  function showPad(on) {
-    const pad = $("#pad");
-    padTouches.clear();
-    cast.localMask = 0;
-    applyInput();
-    if (on) padState.mode = player.isDs ? "local" : "cast";
-    else padState.mode = (player.key || padState.forceLocal) && touchDevice() ? "local" : "off";
-    pad.hidden = padState.mode === "off";
-    pad.classList.toggle("local", padState.mode === "local");
-    pad.classList.toggle("ds", !!player.isDs);
-    $("#player").classList.toggle("casting", padState.mode === "cast");
-    $("#player").classList.toggle("touch-pad", padState.mode === "local");
-    layoutPad();
-  }
-  function askCastCode() {
-    if (cast.pc) {
-      stopCast("Transmissão encerrada.");
-      return;
-    }
-    const root = $("#dialogRoot");
-    const input = el("input", { id: "castInput", type: "text", maxlength: "9", autocomplete: "off", autocapitalize: "characters", placeholder: "ABCD 1234", class: "code-input" });
-    const close = () => root.replaceChildren();
-    root.replaceChildren(el("div", { class: "scrim" }, el(
-      "form",
-      { class: "dialog", onsubmit: (e) => {
-        e.preventDefault();
-        const c = normCode(input.value);
-        if (c.length !== 8) {
-          input.focus();
-          return;
-        }
-        close();
-        castTo(c);
-      } },
-      el("h2", {}, "Jogar numa segunda tela"),
-      el("p", {}, 'Na TV, tablet ou notebook, abra o Cartuchin e escolha "Usar como tela". Digite aqui o código que aparecer. Os dois precisam estar no mesmo Wi-Fi.'),
-      input,
-      el("button", { class: "btn primary", type: "submit" }, "Transmitir"),
-      el("button", { class: "btn", type: "button", onclick: close }, "Cancelar")
-    )));
-    input.focus();
-  }
-  $("#castBtn").addEventListener("click", askCastCode);
-  function handleScreenLink() {
-    const m = location.hash.match(/^#tela-([A-Za-z0-9]{8})$/);
-    if (!m) return;
-    try {
-      history.replaceState(null, "", location.pathname);
-    } catch (e) {
-    }
-    cast.pending = normCode(m[1]);
-    $("#notice").dataset.sticky = "1";
-    notice("Segunda tela pronta! Escolha o jogo: ele roda aqui e aparece lá. Este celular vira o controle.");
-  }
-
   // src/ds/ds-emu.js
   var FPS = 59.8261;
   var FRAME_MS = 1e3 / FPS;
@@ -2902,6 +2209,16 @@ registerProcessor("ds-out", DSOut);
         print: () => {
         },
         printErr: (t) => console.warn("[ds]", t),
+        // .wasm baixado por aqui (barra de progresso; aproveita a pré-carga da biblioteca)
+        instantiateWasm: mt ? void 0 : (imports, done) => {
+          const d = download("ds/" + name + ".wasm");
+          if (coreProgress && d.got) coreProgress(d.got, d.total);
+          d.promise.then((bytes) => {
+            if (coreProgress) coreProgress(1, 0, true);
+            return WebAssembly.instantiate(bytes, imports);
+          }).then((res) => done(res.instance, res.module), (e) => reject(e));
+          return {};
+        },
         onAbort: (r) => reject(new Error("core: " + r))
       };
       const s = el("script", { src: "ds/" + name + ".js" });
@@ -2987,14 +2304,59 @@ registerProcessor("ds-out", DSOut);
   var lastError = "";
   var dsLastError = () => lastError;
   var stageEl = null;
-  function stage(msg, isError) {
+  function stage(msg, isError, frac) {
     const box = $("#game");
     if (!stageEl || !box.contains(stageEl)) {
-      stageEl = el("div", { class: "ds-stage", role: "status" });
+      const title = window.__cartucho && window.__cartucho.meta && window.__cartucho.meta.title || "Nintendo DS";
+      stageEl = el(
+        "div",
+        { class: "ds-stage", role: "status", "aria-live": "polite" },
+        el(
+          "div",
+          { class: "ds-stage-card" },
+          el("b", { class: "ds-stage-title" }, title),
+          el("span", { class: "ds-stage-msg" }),
+          el("div", { class: "ds-stage-bar" }, el("i"))
+        )
+      );
       box.append(stageEl);
     }
-    stageEl.textContent = msg;
+    stageEl.querySelector(".ds-stage-msg").textContent = msg;
     stageEl.classList.toggle("err", !!isError);
+    const bar = stageEl.querySelector(".ds-stage-bar");
+    bar.classList.toggle("indet", frac == null && !isError);
+    bar.firstChild.style.width = frac == null ? "" : Math.round(Math.max(0.03, Math.min(1, frac)) * 100) + "%";
+  }
+  var mb = (n) => (n / 1048576).toLocaleString("pt-BR", { maximumFractionDigits: 1 });
+  var coreProgress = null;
+  var downloads = /* @__PURE__ */ new Map();
+  function download(url) {
+    if (downloads.has(url)) return downloads.get(url);
+    const d = { got: 0, total: 0 };
+    d.promise = (async () => {
+      const r = await fetch(url);
+      if (!r.ok) throw new Error(url + " " + r.status);
+      d.total = r.headers.get("content-encoding") ? 0 : Number(r.headers.get("content-length")) || 0;
+      if (!r.body) return new Uint8Array(await r.arrayBuffer());
+      const reader = r.body.getReader(), parts = [];
+      for (; ; ) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        parts.push(value);
+        d.got += value.byteLength;
+        if (coreProgress) coreProgress(d.got, d.total);
+      }
+      const out = new Uint8Array(d.got);
+      let o = 0;
+      for (const p of parts) {
+        out.set(p, o);
+        o += p.byteLength;
+      }
+      return out;
+    })();
+    d.promise.catch(() => downloads.delete(url));
+    downloads.set(url, d);
+    return d;
   }
   var withTimeout = (p, ms, what) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error(what + ": demorou mais de " + Math.round(ms / 1e3) + " s")), ms))]);
   function onPageError(e) {
@@ -3007,16 +2369,19 @@ registerProcessor("ds-out", DSOut);
     let M;
     $("#game").replaceChildren();
     stage("Carregando o emulador de DS…");
+    coreProgress = (got, total, compiling) => compiling ? stage("Preparando o emulador…", false, 0.9) : stage(total ? `Baixando o emulador… ${mb(got)} de ${mb(total)} MB` : `Baixando o emulador… ${mb(got)} MB`, false, total ? Math.min(0.85, got / total * 0.85) : null);
     try {
       withTimeout(audio.init(), 5e3, "som").catch((e) => console.warn("[ds] som", e));
-      M = await withTimeout(loadCore(), 3e4, "core");
+      M = await withTimeout(loadCore(), 9e4, "core");
+      coreProgress = null;
     } catch (e) {
       console.warn(e);
       lastError = "core: " + String(e && e.message || e).slice(0, 160);
       stage("Não carregou o emulador: " + lastError, true);
       return null;
     }
-    stage(`Abrindo a ROM (${Math.round(romBytes.length / 1048576)} MB)…`);
+    coreProgress = null;
+    stage(`Abrindo o jogo (${Math.round(romBytes.length / 1048576)} MB)…`, false, 0.95);
     await new Promise((r) => setTimeout(r, 30));
     const box = $("#game");
     box.replaceChildren();
@@ -3731,6 +3096,713 @@ void main() {
     ];
   }
   var dsStatesOk = true;
+  var prefetched = false;
+  function prefetchDsCore() {
+    if (prefetched || navigator.connection && navigator.connection.saveData) return;
+    prefetched = true;
+    const simd = WebAssembly.validate(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 123, 3, 2, 1, 0, 10, 10, 1, 8, 0, 65, 0, 253, 15, 253, 98, 11]));
+    const name = (ds.core === "teste" || ds.core === "mt") && simd ? "nds-test" : ds.core === "jit" && simd ? "nds-jit" : simd ? "nds" : "nds-nosimd";
+    const go = () => {
+      fetch("ds/" + name + ".js", { priority: "low" }).catch(() => {
+      });
+      download("ds/" + name + ".wasm");
+    };
+    (window.requestIdleCallback || ((f) => setTimeout(f, 2500)))(go, { timeout: 5e3 });
+  }
+
+  // src/ui/screens.js
+  var localOnly = () => ls.get("cartucho.localOnly") === "1";
+  function showWelcome() {
+    closeSheets();
+    ls.set("cartucho.localOnly", "");
+    $("#connect").hidden = false;
+    $("#home").hidden = true;
+    $("#notice").hidden = true;
+    if (typeof showConnect === "function") showConnect();
+  }
+  function showAvatar() {
+    const a = cloud.auth;
+    const name = a && (a.email || a.owner);
+    let letter = name ? name[0].toUpperCase() : "";
+    if (letter) ls.set("cartucho.avatar", letter);
+    else if (a) letter = ls.get("cartucho.avatar") || (a.kind === "google" ? "G" : "?");
+    $("#avatarLetter").textContent = letter || "?";
+  }
+  function render() {
+    if (!cloud.ready) return;
+    const welcome = !cloud.auth && !localOnly();
+    $("#connect").hidden = !welcome;
+    $("#home").hidden = welcome;
+    $("#accountBtn").hidden = welcome;
+    showAvatar();
+    $("#connText").textContent = isGoogle() ? cloud.db ? `Google Drive${cloud.auth.email ? ": " + cloud.auth.email : ""}` : "Google Drive: reconecte para sincronizar" : cloud.db ? `GitHub: ${cloud.auth.owner}/${cloud.auth.repo}` : cloud.auth ? "GitHub indisponível agora" : "Sem conta: os jogos ficam só neste aparelho.";
+    $("#pairOtherBtn").hidden = !cloud.db || isGoogle();
+    $("#disconnectBtn").hidden = !cloud.auth;
+    $("#connectBtn").hidden = !!cloud.auth;
+    const n = $("#notice");
+    if (n.dataset.sticky !== "1") {
+      if (!welcome && !cloud.auth && googleAvailable()) {
+        n.className = "notice";
+        n.hidden = false;
+        n.replaceChildren(el("span", {}, "Seus jogos estão só neste aparelho. "), el("button", { class: "btn small", type: "button", onclick: showWelcome }, "Entrar com Google"));
+      } else n.hidden = true;
+    }
+    if (welcome) return;
+    const keys = /* @__PURE__ */ new Set([...roms.keys(), ...cloud.docs.keys(), ...cloud.roms.keys()]);
+    const games = [...keys].map(gameInfo).sort((a, b) => (b.save && b.save.at || 0) - (a.save && a.save.at || 0) || a.title.localeCompare(b.title, "pt"));
+    const recent = games.find((g) => g.save && g.playable);
+    if (recent) continueHero(recent);
+    else $("#continue").hidden = true;
+    const box = $("#games");
+    box.replaceChildren();
+    $("#empty").hidden = games.length > 0;
+    box.hidden = games.length === 0;
+    for (const g of games) box.append(tile(g));
+    $("#dsPromo").hidden = !games.length || games.some((g) => g.system === "nds") || ls.get("cartucho.dsPromo") === "off";
+    if (games.some((g) => g.system === "nds" && g.playable)) prefetchDsCore();
+    if (games.length) box.append(addTile());
+    if (sheetKey) fillGameSheet(sheetKey);
+  }
+
+  // src/ui/dialogs.js
+  function dialog(title, text, buttons) {
+    return new Promise((resolve) => {
+      const root = $("#dialogRoot");
+      const close = (v) => {
+        root.replaceChildren();
+        resolve(v);
+      };
+      const box = el(
+        "div",
+        { class: "dialog", role: "dialog", "aria-modal": "true", "aria-label": title },
+        el("h2", {}, title),
+        text ? el("p", {}, text) : null,
+        ...buttons.map((b) => el(
+          "button",
+          { class: "btn " + (b.cls || "") + (b.sub ? " choice" : ""), type: "button", onclick: () => close(b.value) },
+          b.label,
+          b.sub ? el("small", {}, b.sub) : null
+        ))
+      );
+      root.replaceChildren(el("div", { class: "scrim", onclick: (e) => {
+        if (e.target === e.currentTarget) close(null);
+      } }, box));
+      const first = box.querySelector("button");
+      if (first) first.focus();
+    });
+  }
+  async function confirmRestore(key, save) {
+    const p = save.prev;
+    const ok = await dialog(
+      "Voltar à versão anterior?",
+      `A versão anterior é de ${ago(p.at)} (${p.device || "outro aparelho"}). A versão atual vira a anterior, então dá para desfazer.`,
+      [{ label: "Voltar à anterior", value: true, cls: "primary" }, { label: "Cancelar", value: false }]
+    );
+    if (!ok) return;
+    try {
+      const sav = await unpack(p);
+      const doc = await writeCloud(key, { title: save.title, system: save.system, code: save.code }, sav, p.sha || await sha(sav));
+      await idb.del("pend", key);
+      await idb.put("sync", key, { lastSha: doc.sha, baseRev: doc.rev });
+      toast("Versão anterior restaurada");
+    } catch (e) {
+      toast("Não deu para restaurar agora. Tente de novo.");
+    }
+  }
+  async function confirmRemoveRom(key, title) {
+    const ok = await dialog(
+      `Tirar ${title} deste aparelho?`,
+      "A ROM sai só daqui. O save na nuvem continua lá.",
+      [{ label: "Tirar ROM", value: true, cls: "primary" }, { label: "Cancelar", value: false }]
+    );
+    if (!ok) return;
+    await idb.del("roms", key);
+    await loadRoms();
+    render();
+  }
+  async function confirmDeleteGame(key, title, withRom) {
+    const where = cloud.db ? ` deste aparelho e do ${cloudName()}` : " deste aparelho";
+    const ok = await dialog(
+      withRom ? `Apagar ${title}?` : `Apagar o save de ${title}?`,
+      (withRom ? "A ROM, o save e o progresso saem" : 'O save e o progresso ("continuar de onde parou") saem') + where + ". Não dá para desfazer.",
+      [{ label: withRom ? "Apagar jogo" : "Apagar save", value: true, cls: "primary" }, { label: "Cancelar", value: false }]
+    );
+    if (!ok) return false;
+    for (const k of [key, "state:" + key, "quick:" + key]) await idb.del("pend", k);
+    await idb.del("sync", key);
+    if (withRom) {
+      await idb.del("roms", key);
+      await idb.del("covers", key);
+    }
+    try {
+      await deleteCloudGame(key, title, withRom);
+    } catch (e) {
+      toast(`Apagado neste aparelho, mas não deu para apagar no ${cloudName()} agora.`, 4e3);
+      await loadRoms();
+      render();
+      return true;
+    }
+    await loadRoms();
+    render();
+    toast(withRom ? `${title} apagado` : `Save de ${title} apagado`);
+    return true;
+  }
+  async function downloadSave(save) {
+    try {
+      const sav = await unpack(save);
+      const name = (save.title || save.game).replace(/[^\w\- ]+/g, "").trim() || "save";
+      const url = URL.createObjectURL(new Blob([sav], { type: "application/octet-stream" }));
+      const a = el("a", { href: url, download: name + ".sav" });
+      document.body.append(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1e4);
+    } catch (e) {
+      toast("Não deu para baixar o save aqui.");
+    }
+  }
+
+  // src/diag.js
+  var DIAG_STEPS = [
+    { id: "pad", label: "Controle na tela, horizontal", pad: "h" },
+    { id: "padv", label: "Controle na tela, vertical", pad: "v" },
+    { id: "padrich", label: "Controle com sombras suaves (visual anterior)", pad: "h", rich: true },
+    { id: "touch", label: "Controle + dedos se mexendo", pad: "h", touch: true },
+    { id: "local", label: "Jogando no próprio celular, com o controle na tela", local: true, touch: true },
+    { id: "cast", label: "Transmissão de vídeo e som (sem rede)", cast: true },
+    { id: "all", label: "Tudo junto", pad: "h", touch: true, cast: true },
+    { id: "recast", label: "Depois de ligar e desligar a transmissão 3 vezes", recast: 3 }
+  ];
+  var diag = window.__diag = { running: false, done: false, results: [], bases: [], only: null };
+  var GBA_FPS = 59.7275;
+  function diagShow(html) {
+    $("#diagBody").innerHTML = html;
+  }
+  var median = (xs) => {
+    const v = [...xs].sort((a, b) => a - b);
+    return v.length ? v[Math.floor(v.length / 2)] : 0;
+  };
+  function diagRow(r) {
+    const pct = Math.round(r.fps / GBA_FPS * 100);
+    if (r.rel == null) return `<tr><td>${r.label}</td><td class="num">${pct}%</td><td class="num">referência</td></tr>`;
+    const rel = Math.round(r.rel * 100);
+    const cls = rel >= 92 ? "ok" : rel >= 80 ? "warn" : "bad";
+    return `<tr><td>${r.label}</td><td class="num">${pct}%</td><td class="num ${cls}">${rel >= 100 ? "sem perda" : "−" + (100 - rel) + "%"}</td></tr>`;
+  }
+  function diagTable() {
+    return `<table class="diag-table"><thead><tr><th>Situação</th><th class="num">Capacidade</th><th class="num">Custo</th></tr></thead><tbody>${diag.results.map(diagRow).join("")}</tbody></table>`;
+  }
+  function diagReport() {
+    const lines = diag.results.map((r) => `${r.label}: ${Math.round(r.fps / GBA_FPS * 100)}%${r.rel != null ? ` (${Math.round(r.rel * 100)}% do normal)` : ""}`);
+    return [
+      "Cartuchin, teste de velocidade",
+      (/* @__PURE__ */ new Date()).toLocaleString("pt-BR"),
+      `Aparelho: ${device.name} · ${navigator.userAgent}`,
+      `Núcleos: ${navigator.hardwareConcurrency || "?"} · Tela: ${screen.width}x${screen.height} @${window.devicePixelRatio || 1}x`,
+      `Desempenho: ${perf.mode}${perf.learned ? " (aprendeu modo leve)" : ""} · Controle: ${ls.get("cartucho.pad.orient") || "h"}`,
+      `Medidas do emulador sozinho, em ordem: ${diag.bases.map((b) => Math.round(b / GBA_FPS * 100) + "%").join(", ")}`,
+      "",
+      ...lines
+    ].join("\n");
+  }
+  function diagTouches() {
+    let t = 0, down = false;
+    const fire = (type, x, y, id) => $("#pad").dispatchEvent(new PointerEvent(type, { pointerId: id, clientX: x, clientY: y, bubbles: true, cancelable: true, isPrimary: id === 31 }));
+    const timer = setInterval(() => {
+      const geo = padGeometry(), d = geo.find((g) => g.id === "dpad"), a = geo.find((g) => g.id === "A");
+      if (!d || !a) return;
+      const r = (d.r - d.l) * 0.35, x = d.cx + Math.cos(t / 6) * r, y = d.cy + Math.sin(t / 6) * r;
+      if (!down) {
+        fire("pointerdown", x, y, 31);
+        down = true;
+      } else fire("pointermove", x, y, 31);
+      if (t % 12 === 0) fire("pointerdown", a.cx, a.cy, 32);
+      if (t % 12 === 6) fire("pointerup", a.cx, a.cy, 32);
+      t++;
+    }, 8);
+    return () => {
+      clearInterval(timer);
+      if (down) fire("pointerup", 0, 0, 31);
+      fire("pointerup", 0, 0, 32);
+    };
+  }
+  async function diagLoopback(emu) {
+    window.__castCap = 1;
+    window.dispatchEvent(new Event("resize"));
+    await sleep(200);
+    const a = new RTCPeerConnection(), b = new RTCPeerConnection();
+    a.onicecandidate = (e) => e.candidate && b.addIceCandidate(e.candidate).catch(() => {
+    });
+    b.onicecandidate = (e) => e.candidate && a.addIceCandidate(e.candidate).catch(() => {
+    });
+    const stream = emu.canvas.captureStream(60);
+    a.addTrack(stream.getVideoTracks()[0], stream);
+    const tap = (window.__audioTaps || [])[0];
+    if (tap && tap.out) {
+      const at = tap.out.stream.getAudioTracks()[0];
+      if (at) a.addTrack(at, stream);
+    }
+    const v = document.createElement("video");
+    v.muted = true;
+    v.playsInline = true;
+    b.ontrack = (e) => {
+      v.srcObject = e.streams[0];
+      v.play().catch(() => {
+      });
+    };
+    await a.setLocalDescription(await a.createOffer());
+    await b.setRemoteDescription(a.localDescription);
+    await b.setLocalDescription(await b.createAnswer());
+    await a.setRemoteDescription(b.localDescription);
+    return () => {
+      try {
+        a.close();
+        b.close();
+      } catch (e) {
+      }
+      for (const t of stream.getVideoTracks()) t.stop();
+      v.srcObject = null;
+      window.__castCap = 0;
+      window.dispatchEvent(new Event("resize"));
+    };
+  }
+  async function runDiagnostic() {
+    if (diag.running) return;
+    diag.running = true;
+    diag.done = false;
+    diag.results = [];
+    $("#library").hidden = true;
+    $("#player").hidden = false;
+    $("#diag").hidden = false;
+    $("#pName").textContent = "Teste de velocidade";
+    diagShow("<p>Carregando o emulador…</p>");
+    keepAwake();
+    let bytes;
+    try {
+      bytes = new Uint8Array(await (await fetch("bench.gba")).arrayBuffer());
+    } catch (e) {
+      diagShow("<p>Não deu para baixar o programa de teste. Confira a internet.</p>");
+      diag.running = false;
+      return;
+    }
+    const emu = await createEmulator(new File([bytes], "bench.gba"), "cartuchin-bench", { ...coreOptions(), mgba_frameskip: "disabled" });
+    if (!emu) {
+      diagShow("<p>Não deu para carregar o emulador.</p>");
+      diag.running = false;
+      return;
+    }
+    player.emu = emu;
+    await new Promise((res) => emu.on("start", res));
+    await sleep(1500);
+    const gm = emu.gameManager;
+    try {
+      gm.setFastForwardRatio(0);
+      gm.toggleFastForward(1);
+    } catch (e) {
+    }
+    diagShow("<p>Aquecendo o emulador…</p>");
+    await sleep(5e3);
+    const measure = async () => {
+      const windows = [];
+      for (let w = 0; w < 3; w++) {
+        const f0 = Number(gm.getFrameNum()), t0 = performance.now();
+        await sleep(1300);
+        windows.push((Number(gm.getFrameNum()) - f0) / ((performance.now() - t0) / 1e3));
+      }
+      return median(windows);
+    };
+    diag.bases = [await measure()];
+    diag.results = [{ id: "base", label: "Só o emulador", fps: diag.bases[0] }];
+    const steps = diag.only ? DIAG_STEPS.filter((st) => diag.only.includes(st.id)) : DIAG_STEPS;
+    for (const [i, step] of steps.entries()) {
+      diagShow(`<p class="diag-now">Medindo ${i + 1} de ${steps.length}: <b>${step.label}</b></p>${diagTable()}`);
+      const undo = [];
+      if (step.pad) {
+        padState.forceOrient = step.pad;
+        $("#pad").classList.toggle("rich", !!step.rich);
+        showPad(true);
+        undo.push(() => {
+          showPad(false);
+          $("#pad").classList.remove("rich");
+          padState.forceOrient = null;
+        });
+      }
+      if (step.local) {
+        padState.forceLocal = true;
+        showPad(false);
+        undo.push(() => {
+          padState.forceLocal = false;
+          showPad(false);
+        });
+      }
+      if (step.touch) {
+        await sleep(100);
+        undo.push(diagTouches());
+      }
+      if (step.cast) {
+        try {
+          undo.push(await diagLoopback(emu));
+        } catch (e) {
+        }
+      }
+      for (let k = 0; k < (step.recast || 0); k++) {
+        try {
+          const stop = await diagLoopback(emu);
+          await sleep(700);
+          stop();
+          await sleep(200);
+        } catch (e) {
+        }
+      }
+      await sleep(1e3);
+      const fps = await measure();
+      for (const u of undo.reverse()) try {
+        u();
+      } catch (e) {
+      }
+      await sleep(500);
+      const after = await measure();
+      const before = diag.bases[diag.bases.length - 1];
+      diag.bases.push(after);
+      diag.results.push({ id: step.id, label: step.label, fps, rel: fps / ((before + after) / 2) });
+      diag.results[0].fps = median(diag.bases);
+    }
+    try {
+      gm.toggleFastForward(0);
+    } catch (e) {
+    }
+    diag.running = false;
+    diag.done = true;
+    const base = diag.results[0].fps;
+    const worst = diag.results.filter((r) => r.rel != null).reduce((w, r) => r.rel < w.rel ? r : w, { rel: Infinity });
+    const verdict = Math.round(base / GBA_FPS * 100) < 100 ? `Este aparelho emula no máximo ${Math.round(base / GBA_FPS * 100)}% da velocidade de um GBA no pior caso, então jogos pesados vão ficar lentos aqui mesmo sem nada a mais.` : worst.rel < 0.85 ? `O que mais pesa neste aparelho: <b>${worst.label}</b>.` : "Nenhum recurso extra pesa de forma relevante neste aparelho.";
+    diagShow(`<p class="diag-now">${verdict}</p>${diagTable()}<p class="diag-note">Capacidade é a velocidade máxima que o aparelho consegue com um programa que nunca descansa (100% = um GBA de verdade). Jogos reais pesam menos que isso.</p>
+    <div class="diag-actions"><button class="btn primary" id="diagCopy" type="button">Copiar resultado</button><button class="btn" id="diagClose" type="button">Fechar</button></div>
+    <pre class="diag-pre" id="diagText"></pre>`);
+    $("#diagText").textContent = diagReport();
+    $("#diagCopy").addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(diagReport());
+        toast("Resultado copiado");
+      } catch (e) {
+        const r = document.createRange();
+        r.selectNodeContents($("#diagText"));
+        const sel = getSelection();
+        sel.removeAllRanges();
+        sel.addRange(r);
+        toast("Selecionei o texto: copie com o menu do navegador");
+      }
+    });
+    $("#diagClose").addEventListener("click", () => location.reload());
+  }
+  $("#diagBtn").addEventListener("click", runDiagnostic);
+  function resetEmulatorSettings() {
+    let n = 0;
+    try {
+      for (const k of Object.keys(localStorage)) if (/^ejs-/.test(k) || /^cartucho\.perf\./.test(k)) {
+        localStorage.removeItem(k);
+        n++;
+      }
+    } catch (e) {
+    }
+    perf.mode = "auto";
+    perf.learned = guessDevice() === "TV";
+    renderPerf();
+    return n;
+  }
+  $("#resetEmuBtn").addEventListener("click", async () => {
+    const ok = await dialog(
+      "Restaurar as configurações do emulador?",
+      "Controles, vídeo, som e as opções do menu do emulador voltam ao padrão, e o desempenho volta para Automático. Seus jogos, saves e a conexão com a nuvem continuam.",
+      [{ label: "Restaurar", value: true, cls: "primary" }, { label: "Cancelar", value: false }]
+    );
+    if (!ok) return;
+    resetEmulatorSettings();
+    toast("Configurações do emulador restauradas");
+  });
+
+  // src/cast/pad.js
+  var padTouches = /* @__PURE__ */ new Map();
+  var padState = { rot: 0, geo: null, shownMask: -1, shownOver: "", shownDir: "" };
+  function padGeometry() {
+    if (padState.geo) return padState.geo;
+    const geo = [];
+    for (const n of $$("#pad [data-btn], #pad .pad-dpad")) {
+      const r = n.getBoundingClientRect();
+      if (!r.width || !r.height) continue;
+      geo.push({
+        id: n.classList.contains("pad-dpad") ? "dpad" : n.dataset.btn,
+        round: n.classList.contains("pad-face"),
+        l: r.left,
+        t: r.top,
+        r: r.right,
+        b: r.bottom,
+        cx: (r.left + r.right) / 2,
+        cy: (r.top + r.bottom) / 2,
+        rad: Math.min(r.width, r.height) / 2
+      });
+    }
+    return padState.geo = geo;
+  }
+  function controlAt(x, y) {
+    let best = null, bestD = Infinity;
+    for (const g of padGeometry()) {
+      const w = (g.r - g.l) / 2, h = (g.b - g.t) / 2;
+      let d;
+      if (g.round) d = Math.hypot(x - g.cx, y - g.cy) / g.rad;
+      else d = Math.max(Math.abs(x - g.cx) / w, Math.abs(y - g.cy) / h);
+      const reach = g.id === "dpad" ? 1.35 : g.round ? 1.3 : 1.15;
+      if (d <= reach && d < bestD) {
+        best = g.id;
+        bestD = d;
+      }
+    }
+    return best;
+  }
+  function dpadMask(x, y, prev) {
+    const d = padGeometry().find((g) => g.id === "dpad");
+    if (!d) return 0;
+    let dx = (x - d.cx) / ((d.r - d.l) / 2), dy = (y - d.cy) / ((d.b - d.t) / 2);
+    if (padState.rot === 90) [dx, dy] = [dy, -dx];
+    else if (padState.rot === -90) [dx, dy] = [-dy, dx];
+    if (Math.hypot(dx, dy) < 0.15) return 0;
+    const bit = (k) => 1 << PAD_BITS.indexOf(k);
+    const a = Math.atan2(dy, dx) * 180 / Math.PI;
+    const diag2 = [[45, "RIGHT", "DOWN"], [135, "DOWN", "LEFT"], [-135, "LEFT", "UP"], [-45, "UP", "RIGHT"]];
+    for (const [c, k1, k2] of diag2) {
+      let off = Math.abs(a - c);
+      if (off > 180) off = 360 - off;
+      if (off <= 10) return bit(k1) | bit(k2);
+    }
+    const cards = [[0, "RIGHT"], [90, "DOWN"], [180, "LEFT"], [-90, "UP"]];
+    let best = null, bestOff = 999;
+    for (const [c, k] of cards) {
+      let off = Math.abs(a - c);
+      if (off > 180) off = 360 - off;
+      if (prev & bit(k)) off -= 4;
+      if (off < bestOff) {
+        bestOff = off;
+        best = k;
+      }
+    }
+    return bit(best);
+  }
+  function touchMask(p) {
+    if (p.anchor === "dpad") return dpadMask(p.x, p.y, p.mask);
+    if (p.anchor && p.over === p.anchor) return 1 << PAD_BITS.indexOf(p.anchor);
+    return 0;
+  }
+  function padUpdate() {
+    let m = 0;
+    const over = [];
+    for (const p of padTouches.values()) {
+      const pm = touchMask(p);
+      p.mask = pm;
+      m |= pm;
+      if (p.over && p.over !== "dpad" && !(pm & 1 << PAD_BITS.indexOf(p.over))) over.push(p.over);
+    }
+    if (m & ~cast.localMask) cast.touchAt = performance.now();
+    cast.localMask = m;
+    applyInput();
+    const overKey = over.sort().join(" ");
+    if (m !== padState.shownMask || overKey !== padState.shownOver) {
+      padState.shownMask = m;
+      padState.shownOver = overKey;
+      for (const b of $$("#pad [data-btn]")) {
+        const bit = 1 << PAD_BITS.indexOf(b.dataset.btn);
+        b.classList.toggle("on", !!(m & bit));
+        b.classList.toggle("over", over.includes(b.dataset.btn));
+      }
+      const dirs = ["UP", "DOWN", "LEFT", "RIGHT"].filter((k) => m & 1 << PAD_BITS.indexOf(k)).join(" ");
+      if (dirs !== padState.shownDir) {
+        padState.shownDir = dirs;
+        $("#pad .pad-dpad").dataset.dir = dirs;
+      }
+    }
+  }
+  var padMsgTimer = null;
+  function padMsg(text) {
+    const n = $("#padMsg");
+    n.textContent = text;
+    n.classList.add("show");
+    clearTimeout(padMsgTimer);
+    padMsgTimer = setTimeout(() => n.classList.remove("show"), 2600);
+  }
+  function layoutPad() {
+    const pad = $("#pad");
+    if (pad.hidden) return;
+    padState.geo = null;
+    if (padState.mode === "local") {
+      padState.rot = 0;
+      pad.classList.remove("rot", "wide");
+      pad.style.width = pad.style.height = pad.style.transform = "";
+      const pl = $("#player"), bar = $(".pbar").getBoundingClientRect();
+      const availH = innerHeight - bar.bottom, availW = innerWidth;
+      const upright = availH > availW;
+      const ar = player.isDs && player.emu && player.emu.aspect || 1.5;
+      let gw, gh2;
+      if (upright) {
+        gh2 = Math.min(availW / ar, player.isDs ? Math.max(availH * 0.5, availH - 250) : availH * 0.55);
+        gw = gh2 * ar;
+        if (player.isDs) pad.style.setProperty("--ctl", Math.round(Math.max(110, Math.min(210, availH - gh2 - 112, availW * 0.46))) + "px");
+      } else {
+        gw = Math.min(availH * ar, availW * (player.isDs ? 0.7 : 0.62));
+        gh2 = gw / ar;
+      }
+      for (const n of [pad, pl]) {
+        n.classList.toggle("port", upright);
+        n.classList.toggle("land", !upright);
+      }
+      pad.classList.toggle("ds", !!player.isDs);
+      if ($(".pbar").getBoundingClientRect().bottom !== bar.bottom && !layoutPad.again) {
+        layoutPad.again = true;
+        try {
+          layoutPad();
+        } finally {
+          layoutPad.again = false;
+        }
+        return;
+      }
+      pl.style.setProperty("--game-w", Math.floor(gw) + "px");
+      pl.style.setProperty("--game-h", Math.floor(gh2) + "px");
+      pad.style.setProperty("--pad-top", bar.bottom + "px");
+      requestAnimationFrame(() => {
+        padState.geo = null;
+      });
+      return;
+    }
+    for (const n of [pad, $("#player")]) n.classList.remove("port", "land");
+    const pref = padState.forceOrient || ls.get("cartucho.pad.orient") || "h";
+    const portrait = innerHeight > innerWidth;
+    padState.rot = pref === "v" || !portrait ? 0 : pref === "hr" ? -90 : 90;
+    pad.classList.toggle("rot", padState.rot !== 0);
+    pad.classList.toggle("wide", padState.rot !== 0 || !portrait);
+    if (padState.rot === 0) {
+      pad.style.width = pad.style.height = pad.style.transform = "";
+      return;
+    }
+    pad.style.width = innerHeight + "px";
+    pad.style.height = innerWidth + "px";
+    pad.style.transform = padState.rot === 90 ? `translateX(${innerWidth}px) rotate(90deg)` : `translateY(${innerHeight}px) rotate(-90deg)`;
+    requestAnimationFrame(() => {
+      padState.geo = null;
+    });
+  }
+  window.addEventListener("resize", layoutPad);
+  window.addEventListener("ds-layout", layoutPad);
+  if (window.ResizeObserver) new ResizeObserver(() => {
+    if (padState.mode === "local") layoutPad();
+  }).observe(document.documentElement);
+  (() => {
+    const pad = $("#pad");
+    const isUi = (e) => e.target.closest(".pad-top, .pad-extra");
+    const down = (e) => {
+      if (isUi(e)) return;
+      if (!padTouches.size) padState.geo = null;
+      e.preventDefault();
+      try {
+        pad.setPointerCapture(e.pointerId);
+      } catch (x) {
+      }
+      const c = controlAt(e.clientX, e.clientY);
+      padTouches.set(e.pointerId, { x: e.clientX, y: e.clientY, anchor: c, over: c, mask: 0 });
+      padUpdate();
+    };
+    const move = (e) => {
+      const p = padTouches.get(e.pointerId);
+      if (!p) return;
+      e.preventDefault();
+      p.x = e.clientX;
+      p.y = e.clientY;
+      const c = controlAt(p.x, p.y);
+      p.over = c;
+      padUpdate();
+    };
+    const up = (e) => {
+      if (!padTouches.delete(e.pointerId)) return;
+      padUpdate();
+    };
+    pad.addEventListener("pointerdown", down);
+    pad.addEventListener("pointermove", move);
+    pad.addEventListener("pointerup", up);
+    pad.addEventListener("pointercancel", up);
+    pad.addEventListener("contextmenu", (e) => e.preventDefault());
+    $("#padStop").addEventListener("click", () => stopCast("Transmissão encerrada."));
+    $("#padSave").addEventListener("click", async () => {
+      await tokenFromTap();
+      padMsg("Enviando o save…");
+      await flush();
+      const okState = await uploadState({ force: true });
+      if (player.state === "ok" || okState) {
+        padMsg(cloud.db ? "Progresso salvo: continua daqui em qualquer aparelho" : "Progresso salvo neste celular");
+      } else if (player.state === "none") padMsg("Ainda não há save. Salve dentro do jogo primeiro.");
+      else if (player.state === "local") padMsg("Save guardado neste celular (sem nuvem conectada)");
+      else padMsg("Save guardado aqui. Ele sobe quando a internet voltar.");
+    });
+    $("#padRotate").addEventListener("click", () => {
+      const order = ["h", "hr", "v"], cur = ls.get("cartucho.pad.orient") || "h";
+      const next = order[(order.indexOf(cur) + 1) % order.length];
+      ls.set("cartucho.pad.orient", next);
+      layoutPad();
+      padMsg(next === "v" ? "Controle na vertical" : "Controle na horizontal");
+    });
+  })();
+  var touchDevice = () => matchMedia("(pointer: coarse)").matches && guessDevice() !== "TV";
+  padState.mode = "off";
+  function showPad(on) {
+    const pad = $("#pad");
+    padTouches.clear();
+    cast.localMask = 0;
+    applyInput();
+    if (on) padState.mode = player.isDs ? "local" : "cast";
+    else padState.mode = (player.key || padState.forceLocal) && touchDevice() ? "local" : "off";
+    pad.hidden = padState.mode === "off";
+    pad.classList.toggle("local", padState.mode === "local");
+    pad.classList.toggle("ds", !!player.isDs);
+    $("#player").classList.toggle("casting", padState.mode === "cast");
+    $("#player").classList.toggle("touch-pad", padState.mode === "local");
+    layoutPad();
+  }
+  function askCastCode() {
+    if (cast.pc) {
+      stopCast("Transmissão encerrada.");
+      return;
+    }
+    const root = $("#dialogRoot");
+    const input = el("input", { id: "castInput", type: "text", maxlength: "9", autocomplete: "off", autocapitalize: "characters", placeholder: "ABCD 1234", class: "code-input" });
+    const close = () => root.replaceChildren();
+    root.replaceChildren(el("div", { class: "scrim" }, el(
+      "form",
+      { class: "dialog", onsubmit: (e) => {
+        e.preventDefault();
+        const c = normCode(input.value);
+        if (c.length !== 8) {
+          input.focus();
+          return;
+        }
+        close();
+        castTo(c);
+      } },
+      el("h2", {}, "Jogar numa segunda tela"),
+      el("p", {}, 'Na TV, tablet ou notebook, abra o Cartuchin e escolha "Usar como tela". Digite aqui o código que aparecer. Os dois precisam estar no mesmo Wi-Fi.'),
+      input,
+      el("button", { class: "btn primary", type: "submit" }, "Transmitir"),
+      el("button", { class: "btn", type: "button", onclick: close }, "Cancelar")
+    )));
+    input.focus();
+  }
+  $("#castBtn").addEventListener("click", askCastCode);
+  function handleScreenLink() {
+    const m = location.hash.match(/^#tela-([A-Za-z0-9]{8})$/);
+    if (!m) return;
+    try {
+      history.replaceState(null, "", location.pathname);
+    } catch (e) {
+    }
+    cast.pending = normCode(m[1]);
+    $("#notice").dataset.sticky = "1";
+    notice("Segunda tela pronta! Escolha o jogo: ele roda aqui e aparece lá. Este celular vira o controle.");
+  }
 
   // src/player/player.js
   var player = window.__cartucho = {
@@ -5138,6 +5210,25 @@ Content-Type: ${type}\r
       cloud.docs.set(d.data.game, d.data);
       cloud.saveShas.set(d.data.game, d.sha);
     }
+    idb.put("sync", "__library__", { at: Date.now(), index: cloud.index, indexSha: cloud.indexSha, docs: [...cloud.docs.values()], shas: [...cloud.saveShas] }).catch(() => {
+    });
+  }
+  async function showCachedLibrary() {
+    const snap = await idb.get("sync", "__library__").catch(() => null);
+    if (!snap || !snap.index) return false;
+    cloud.index = snap.index;
+    cloud.indexSha = snap.indexSha;
+    cloud.roms.clear();
+    for (const [key, g] of Object.entries(cloud.index.games || {})) if (g && g.rom) cloud.roms.set(key, { game: key, ...g });
+    cloud.docs.clear();
+    for (const d of snap.docs || []) if (d && d.game) cloud.docs.set(d.game, d);
+    for (const [k, v] of snap.shas || []) cloud.saveShas.set(k, v);
+    return true;
+  }
+  function setSyncing(on) {
+    cloud.syncing = on;
+    const b = $("#accountBtn");
+    if (b) b.classList.toggle("syncing", on);
   }
   async function connect() {
     cloud.auth = loadAuth();
@@ -5147,6 +5238,18 @@ Content-Type: ${type}\r
       showConnect();
       return;
     }
+    if (await showCachedLibrary()) {
+      cloud.ready = true;
+      setSyncing(true);
+      render();
+    }
+    try {
+      await connectCloud();
+    } finally {
+      setSyncing(false);
+    }
+  }
+  async function connectCloud() {
     if (isGoogle()) {
       await connectGoogle();
       handlePairLink();

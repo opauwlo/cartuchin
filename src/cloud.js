@@ -386,6 +386,26 @@ async function refreshLibrary() {
     cloud.docs.set(d.data.game, d.data);
     cloud.saveShas.set(d.data.game, d.sha);
   }
+  // cópia local da biblioteca da nuvem: na próxima abertura a home aparece na hora
+  idb.put("sync", "__library__", { at: Date.now(), index: cloud.index, indexSha: cloud.indexSha, docs: [...cloud.docs.values()], shas: [...cloud.saveShas] }).catch(() => {});
+}
+/* mostra a última biblioteca conhecida enquanto a nuvem responde (sem tela vazia) */
+async function showCachedLibrary() {
+  const snap = await idb.get("sync", "__library__").catch(() => null);
+  if (!snap || !snap.index) return false;
+  cloud.index = snap.index;
+  cloud.indexSha = snap.indexSha;
+  cloud.roms.clear();
+  for (const [key, g] of Object.entries(cloud.index.games || {})) if (g && g.rom) cloud.roms.set(key, { game: key, ...g });
+  cloud.docs.clear();
+  for (const d of snap.docs || []) if (d && d.game) cloud.docs.set(d.game, d);
+  for (const [k, v] of snap.shas || []) cloud.saveShas.set(k, v);
+  return true;
+}
+function setSyncing(on) {
+  cloud.syncing = on;
+  const b = $("#accountBtn");
+  if (b) b.classList.toggle("syncing", on);
 }
 
 async function connect() {
@@ -396,6 +416,15 @@ async function connect() {
     showConnect();
     return;
   }
+  // a home aparece já com a última biblioteca conhecida; a nuvem atualiza por trás
+  if (await showCachedLibrary()) {
+    cloud.ready = true;
+    setSyncing(true);
+    render();
+  }
+  try { await connectCloud(); } finally { setSyncing(false); }
+}
+async function connectCloud() {
   if (isGoogle()) {
     await connectGoogle();
     handlePairLink();

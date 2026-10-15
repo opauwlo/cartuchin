@@ -3,6 +3,7 @@ import { showConnect } from "../connect.js";
 import { addTile, continueHero, gameInfo, roms, tile } from "../library.js";
 import { closeSheets, fillGameSheet, sheetKey } from "./sheets.js";
 import { $, el, ls } from "../util.js";
+import { prefetchDsCore } from "../ds/ds-emu.js";
 
 /* ---------------- screens ---------------- */
 const localOnly = () => ls.get("cartucho.localOnly") === "1";
@@ -63,6 +64,7 @@ function render() {
   for (const g of games) box.append(tile(g));
   // destaque do DS: some quando já há um jogo de DS ou quando a pessoa dispensa
   $("#dsPromo").hidden = !games.length || games.some((g) => g.system === "nds") || ls.get("cartucho.dsPromo") === "off";
+  if (games.some((g) => g.system === "nds" && g.playable)) prefetchDsCore();   // "Jogar" sem esperar o download
   if (games.length) box.append(addTile());
   if (sheetKey) fillGameSheet(sheetKey);
 }
