@@ -130,6 +130,18 @@ jobs:
           tail -1 ../logs/node-test-core.log | sed 's/^/::notice::nds-test: /'
           [ "$code" != 1 ]
 
+      # Core de teste com threads (ds/nds-test-mt): o 3D em software roda em outros núcleos.
+      # Só funciona na página isolada do DS (?ds=, cabeçalhos COOP/COEP na Vercel).
+      - name: Core de teste com threads
+        id: mtcore
+        if: steps.testcore.outcome == 'success'
+        continue-on-error: true
+        working-directory: uptest
+        run: |
+          set -euo pipefail
+          CCACHE=1 TEST=1 MT=1 SIMD=1 OUT=dist ./build.sh > ../logs/build-test-mt.log 2>&1 || { tail -15 ../logs/build-test-mt.log | sed 's/^/::warning::TESTE MT /'; exit 1; }
+          ls -la dist/nds-test-mt.*
+
       # Core de teste + JIT de ARM para WebAssembly (ds/nds-jit). Só publica se, no Node,
       # o JIT der exatamente as mesmas imagens que o interpretador.
       - name: Core JIT
@@ -179,6 +191,9 @@ jobs:
           for f in nds-mt.js nds-mt.wasm; do if [ -s "up/dist/$f" ]; then cp "up/dist/$f" "ds/$f"; fi; done
           if [ "${{ steps.testcore.outcome }}" = success ]; then
             for f in nds-test.js nds-test.wasm; do if [ -s "uptest/dist/$f" ]; then cp "uptest/dist/$f" "ds/$f"; git add "ds/$f"; fi; done
+          fi
+          if [ "${{ steps.mtcore.outcome }}" = success ]; then
+            for f in nds-test-mt.js nds-test-mt.wasm; do if [ -s "uptest/dist/$f" ]; then cp "uptest/dist/$f" "ds/$f"; git add "ds/$f"; fi; done
           fi
           if [ "${{ steps.jitcore.outcome }}" = success ]; then
             for f in nds-jit.js nds-jit.wasm; do if [ -s "uptest/dist/$f" ]; then cp "uptest/dist/$f" "ds/$f"; git add "ds/$f"; fi; done

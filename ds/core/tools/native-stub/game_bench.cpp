@@ -80,5 +80,6 @@ int main(int argc, char **argv) {
   CALLGRIND_STOP_INSTRUMENTATION;
   shot("5-andando.ppm");
   printf("parado: %.3f ms/quadro (%.0f fps)  andando: %.3f ms/quadro (%.0f fps)\n", still, 1000 / still, walk, 1000 / walk);
-  return 0;
+  fflush(stdout);
+  _Exit(0);   // sem destrutores globais (com threads o fechamento da ROM pode cair)
 }
