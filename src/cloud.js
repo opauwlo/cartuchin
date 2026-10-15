@@ -111,7 +111,43 @@ async function getBinary(path) {   // a Response whose body is the file
 const CONFIG = window.CARTUCHIN_CONFIG || {};
 const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.appdata";
 const DRIVE = "https://www.googleapis.com/drive/v3", DRIVE_UP = "https://www.googleapis.com/upload/drive/v3";
-const gauth = { client: null, waiters: [], loading: null, lastAsk: 0 };
+const gauth = { client: null, waiters: [], loading: null, lastAsk: 0, server: false, refreshing: null };
+/* Sessão que não cai: com o servidor (api/google.js) configurado, o login usa o fluxo de
+   "code"; o servidor guarda o refresh token num cookie HttpOnly e entrega um token novo
+   sempre que o de 1 hora vence, sem popup. Sem servidor, fica o fluxo antigo (1 hora). */
+async function apiGoogle(action, body) {
+  const r = await fetch("api/google?action=" + action, {
+    method: "POST", credentials: "same-origin", cache: "no-store",
+    headers: { "Content-Type": "application/json", "X-Cartuchin": "1" }, body: JSON.stringify(body || {}),
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    /** @type {any} */ const e = new Error(j.error || "api " + r.status);
+    e.status = r.status;
+    throw e;
+  }
+  return j;
+}
+gauth.check = apiGoogle("status").then((j) => { gauth.server = !!j.configured; }, () => { gauth.server = false; });
+function setGoogleToken(token, expiresIn) {
+  cloud.auth = { ...(isGoogle() ? cloud.auth : {}), kind: "google", token, exp: Date.now() + (Number(expiresIn) || 3600) * 1000 };
+}
+/* token novo pelo servidor (sem popup); um pedido por vez */
+function serverToken() {
+  if (!gauth.refreshing) gauth.refreshing = apiGoogle("token").then((j) => {
+    setGoogleToken(j.access_token, j.expires_in);
+    cloud.auth.server = true;
+    saveAuth(cloud.auth);
+    return j.access_token;
+  }, (e) => {
+    if (e.status === 401 && isGoogle()) { cloud.auth.server = false; saveAuth(cloud.auth); }
+    throw e;
+  }).finally(() => { gauth.refreshing = null; });
+  return gauth.refreshing;
+}
+const hasServerSession = () => isGoogle() && !!cloud.auth.server;
+// renova antes de vencer: o save sobe mesmo jogando por horas sem tocar na biblioteca
+setInterval(() => { if (hasServerSession() && cloud.auth.exp - Date.now() < 10 * 60000) serverToken().catch(() => {}); }, 60000);
 const googleAvailable = () => !!CONFIG.googleClientId;
 const tokenFresh = () => isGoogle() && cloud.auth.token && cloud.auth.exp - Date.now() > 60000;
 function loadGis() {
@@ -152,12 +188,38 @@ function gisClient() {
 }
 /* must be called straight from a tap, before any await, or the browser blocks the window */
 function askGoogleToken(first, consent) {
+  if (gauth.server && window.google && google.accounts && google.accounts.oauth2 && google.accounts.oauth2.initCodeClient) return askGoogleCode(first, consent);
   const c = gisClient();
   if (!c) return Promise.reject(new Error("gis-not-ready"));
   gauth.lastAsk = Date.now();
   return new Promise((res, rej) => {
     gauth.waiters.push({ res, rej });
     c.requestAccessToken({ prompt: consent ? "consent" : first ? "select_account" : "", hint: (cloud.auth && cloud.auth.email) || undefined });
+  });
+}
+function askGoogleCode(first, consent) {
+  gauth.lastAsk = Date.now();
+  return new Promise((res, rej) => {
+    const o2 = google.accounts.oauth2;
+    const client = o2.initCodeClient({
+      client_id: CONFIG.googleClientId, scope: DRIVE_SCOPE, ux_mode: "popup",
+      // sem sessão guardada ainda: "consent" garante que o Google mande o refresh token
+      prompt: consent || first || !hasServerSession() ? "consent" : "",
+      hint: (cloud.auth && cloud.auth.email) || undefined,
+      callback: async (resp) => {
+        if (!resp || resp.error || !resp.code) { rej(new Error((resp && resp.error) || "denied")); return; }
+        if (o2.hasGrantedAllScopes && !o2.hasGrantedAllScopes(resp, DRIVE_SCOPE)) { rej(new Error("scope")); return; }
+        try {
+          const j = await apiGoogle("login", { code: resp.code });
+          setGoogleToken(j.access_token, j.expires_in);
+          cloud.auth.server = !!j.kept;
+          saveAuth(cloud.auth);
+          res(cloud.auth.token);
+        } catch (e) { rej(e); }
+      },
+      error_callback: (err) => rej(new Error((err && err.type) || "popup")),
+    });
+    client.requestCode();
   });
 }
 function needToken() {
@@ -173,12 +235,16 @@ const drive = {
   files: new Map(),   // name -> { id, t }
   listedAt: 0,
   async api(url, opts = {}) {
+    if (!tokenFresh() && hasServerSession()) await serverToken().catch(() => {});
     if (!tokenFresh()) throw needToken();
     const headers = Object.assign({ Authorization: "Bearer " + cloud.auth.token }, opts.headers || {});
     const r = await fetch(url, { method: opts.method || "GET", headers, body: opts.body, cache: "no-store", keepalive: !!opts.keepalive, signal: readTimeout(opts.method, opts.big) });
     if (r.status === 401) {
       cloud.auth.exp = 0;
       saveAuth(cloud.auth);
+      if (hasServerSession() && !opts.retried) {
+        try { await serverToken(); return this.api(url, { ...opts, retried: true }); } catch (e) {}
+      }
       throw needToken();
     }
     if (!r.ok) {
@@ -358,6 +424,7 @@ async function connect() {
 
 async function connectGoogle() {
   if (googleAvailable()) loadGis().then(gisClient).catch(() => {});
+  if (!tokenFresh() && hasServerSession()) await serverToken().catch(() => {});
   if (!tokenFresh()) {
     cloud.db = false;
     cloud.ready = true;
@@ -442,7 +509,9 @@ async function afterGoogleToken() {
   else await connectGoogle();
 }
 window.addEventListener("pointerdown", (e) => {
-  if (!isGoogle() || tokenFresh() || !gauth.client || Date.now() - gauth.lastAsk < 20000) return;
+  if (!isGoogle() || tokenFresh()) return;
+  if (hasServerSession()) { serverToken().then(afterGoogleToken, () => {}); return; }   // sem popup
+  if (!gauth.client || Date.now() - gauth.lastAsk < 20000) return;
   // only on the library or the game's top bar: never in the middle of playing
   const target = /** @type {HTMLElement} */ (e.target);
   if (!$("#library").hidden || (target.closest && target.closest(".pbar, .pad-top"))) {
@@ -594,4 +663,4 @@ async function fetchRom(key) {
   }
 }
 
-export { deleteCloudGame, cloud, busy, isGoogle, cloudName, saveAuth, clearAuth, gh, utf8, readJson, putFile, putBinary, getBinary, gauth, googleAvailable, tokenFresh, loadGis, gisClient, askGoogleToken, updateIndex, refreshLibrary, connect, googleNeedsTap, getSaveDoc, writeCloud, uploadRom, fetchRom };
+export { apiGoogle, serverToken, hasServerSession, deleteCloudGame, cloud, busy, isGoogle, cloudName, saveAuth, clearAuth, gh, utf8, readJson, putFile, putBinary, getBinary, gauth, googleAvailable, tokenFresh, loadGis, gisClient, askGoogleToken, updateIndex, refreshLibrary, connect, googleNeedsTap, getSaveDoc, writeCloud, uploadRom, fetchRom };

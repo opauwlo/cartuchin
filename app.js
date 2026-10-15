@@ -4242,6 +4242,11 @@ void main() {
   $("#pullBtn").addEventListener("click", () => pullSave((m) => m && toast(m)));
   $("#padPull").addEventListener("click", () => pullSave((m) => m && padMsg(m)));
   function tokenFromTap() {
+    if (hasServerSession() && !tokenFresh()) return serverToken().then(() => {
+      googleNeedsTap(false);
+      cloud.db = true;
+    }, () => {
+    });
     if (window.crossOriginIsolated) return Promise.resolve();
     if (isGoogle() && !tokenFresh() && gauth.client) return askGoogleToken(false).then(() => {
       googleNeedsTap(false);
@@ -4588,6 +4593,8 @@ void main() {
         });
       } catch (e) {
       }
+      if (isGoogle()) await apiGoogle("logout").catch(() => {
+      });
       clearAuth();
       location.reload();
     }
@@ -4813,7 +4820,53 @@ void main() {
   var DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.appdata";
   var DRIVE = "https://www.googleapis.com/drive/v3";
   var DRIVE_UP = "https://www.googleapis.com/upload/drive/v3";
-  var gauth = { client: null, waiters: [], loading: null, lastAsk: 0 };
+  var gauth = { client: null, waiters: [], loading: null, lastAsk: 0, server: false, refreshing: null };
+  async function apiGoogle(action, body) {
+    const r = await fetch("api/google?action=" + action, {
+      method: "POST",
+      credentials: "same-origin",
+      cache: "no-store",
+      headers: { "Content-Type": "application/json", "X-Cartuchin": "1" },
+      body: JSON.stringify(body || {})
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      const e = new Error(j.error || "api " + r.status);
+      e.status = r.status;
+      throw e;
+    }
+    return j;
+  }
+  gauth.check = apiGoogle("status").then((j) => {
+    gauth.server = !!j.configured;
+  }, () => {
+    gauth.server = false;
+  });
+  function setGoogleToken(token, expiresIn) {
+    cloud.auth = { ...isGoogle() ? cloud.auth : {}, kind: "google", token, exp: Date.now() + (Number(expiresIn) || 3600) * 1e3 };
+  }
+  function serverToken() {
+    if (!gauth.refreshing) gauth.refreshing = apiGoogle("token").then((j) => {
+      setGoogleToken(j.access_token, j.expires_in);
+      cloud.auth.server = true;
+      saveAuth(cloud.auth);
+      return j.access_token;
+    }, (e) => {
+      if (e.status === 401 && isGoogle()) {
+        cloud.auth.server = false;
+        saveAuth(cloud.auth);
+      }
+      throw e;
+    }).finally(() => {
+      gauth.refreshing = null;
+    });
+    return gauth.refreshing;
+  }
+  var hasServerSession = () => isGoogle() && !!cloud.auth.server;
+  setInterval(() => {
+    if (hasServerSession() && cloud.auth.exp - Date.now() < 10 * 6e4) serverToken().catch(() => {
+    });
+  }, 6e4);
   var googleAvailable = () => !!CONFIG.googleClientId;
   var tokenFresh = () => isGoogle() && cloud.auth.token && cloud.auth.exp - Date.now() > 6e4;
   function loadGis() {
@@ -4856,12 +4909,48 @@ void main() {
     return gauth.client;
   }
   function askGoogleToken(first, consent) {
+    if (gauth.server && window.google && google.accounts && google.accounts.oauth2 && google.accounts.oauth2.initCodeClient) return askGoogleCode(first, consent);
     const c = gisClient();
     if (!c) return Promise.reject(new Error("gis-not-ready"));
     gauth.lastAsk = Date.now();
     return new Promise((res, rej) => {
       gauth.waiters.push({ res, rej });
       c.requestAccessToken({ prompt: consent ? "consent" : first ? "select_account" : "", hint: cloud.auth && cloud.auth.email || void 0 });
+    });
+  }
+  function askGoogleCode(first, consent) {
+    gauth.lastAsk = Date.now();
+    return new Promise((res, rej) => {
+      const o2 = google.accounts.oauth2;
+      const client = o2.initCodeClient({
+        client_id: CONFIG.googleClientId,
+        scope: DRIVE_SCOPE,
+        ux_mode: "popup",
+        // sem sessão guardada ainda: "consent" garante que o Google mande o refresh token
+        prompt: consent || first || !hasServerSession() ? "consent" : "",
+        hint: cloud.auth && cloud.auth.email || void 0,
+        callback: async (resp) => {
+          if (!resp || resp.error || !resp.code) {
+            rej(new Error(resp && resp.error || "denied"));
+            return;
+          }
+          if (o2.hasGrantedAllScopes && !o2.hasGrantedAllScopes(resp, DRIVE_SCOPE)) {
+            rej(new Error("scope"));
+            return;
+          }
+          try {
+            const j = await apiGoogle("login", { code: resp.code });
+            setGoogleToken(j.access_token, j.expires_in);
+            cloud.auth.server = !!j.kept;
+            saveAuth(cloud.auth);
+            res(cloud.auth.token);
+          } catch (e) {
+            rej(e);
+          }
+        },
+        error_callback: (err) => rej(new Error(err && err.type || "popup"))
+      });
+      client.requestCode();
     });
   }
   function needToken() {
@@ -4875,12 +4964,21 @@ void main() {
     // name -> { id, t }
     listedAt: 0,
     async api(url, opts = {}) {
+      if (!tokenFresh() && hasServerSession()) await serverToken().catch(() => {
+      });
       if (!tokenFresh()) throw needToken();
       const headers = Object.assign({ Authorization: "Bearer " + cloud.auth.token }, opts.headers || {});
       const r = await fetch(url, { method: opts.method || "GET", headers, body: opts.body, cache: "no-store", keepalive: !!opts.keepalive, signal: readTimeout(opts.method, opts.big) });
       if (r.status === 401) {
         cloud.auth.exp = 0;
         saveAuth(cloud.auth);
+        if (hasServerSession() && !opts.retried) {
+          try {
+            await serverToken();
+            return this.api(url, { ...opts, retried: true });
+          } catch (e) {
+          }
+        }
         throw needToken();
       }
       if (!r.ok) {
@@ -5064,6 +5162,8 @@ Content-Type: ${type}\r
   async function connectGoogle() {
     if (googleAvailable()) loadGis().then(gisClient).catch(() => {
     });
+    if (!tokenFresh() && hasServerSession()) await serverToken().catch(() => {
+    });
     if (!tokenFresh()) {
       cloud.db = false;
       cloud.ready = true;
@@ -5154,7 +5254,13 @@ Content-Type: ${type}\r
     } else await connectGoogle();
   }
   window.addEventListener("pointerdown", (e) => {
-    if (!isGoogle() || tokenFresh() || !gauth.client || Date.now() - gauth.lastAsk < 2e4) return;
+    if (!isGoogle() || tokenFresh()) return;
+    if (hasServerSession()) {
+      serverToken().then(afterGoogleToken, () => {
+      });
+      return;
+    }
+    if (!gauth.client || Date.now() - gauth.lastAsk < 2e4) return;
     const target = (
       /** @type {HTMLElement} */
       e.target

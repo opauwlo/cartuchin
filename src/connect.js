@@ -1,5 +1,5 @@
 import { b64, unb64 } from "./bytes.js";
-import { askGoogleToken, clearAuth, cloud, cloudName, gh, gisClient, googleAvailable, isGoogle, loadGis, saveAuth, utf8 } from "./cloud.js";
+import { apiGoogle, askGoogleToken, clearAuth, cloud, cloudName, gh, gisClient, googleAvailable, isGoogle, loadGis, saveAuth, utf8 } from "./cloud.js";
 import { notice } from "./library.js";
 import { dialog } from "./ui/dialogs.js";
 import { pickRom } from "./ui/pickers.js";
@@ -85,6 +85,7 @@ $("#disconnectBtn").addEventListener("click", async () => {
     [{ label: "Desconectar", value: true, cls: "primary" }, { label: "Cancelar", value: false }]);
   if (ok) {
     if (isGoogle() && cloud.auth.token && window.google && google.accounts && google.accounts.oauth2) try { google.accounts.oauth2.revoke(cloud.auth.token, () => {}); } catch (e) {}
+    if (isGoogle()) await apiGoogle("logout").catch(() => {});   // apaga o cookie da sessão longa
     clearAuth();
     location.reload();
   }

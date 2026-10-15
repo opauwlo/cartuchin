@@ -2,7 +2,7 @@ import { b64, pack, sha, unpack } from "../bytes.js";
 import { STREAM_H, STREAM_W } from "../cast/constants.js";
 import { padMsg, showPad } from "../cast/pad.js";
 import { cast, castTo } from "../cast/phone.js";
-import { askGoogleToken, cloud, cloudName, fetchRom, gauth, getSaveDoc, googleNeedsTap, isGoogle, putFile, readJson, refreshLibrary, tokenFresh, utf8, writeCloud } from "../cloud.js";
+import { askGoogleToken, cloud, cloudName, fetchRom, gauth, getSaveDoc, googleNeedsTap, isGoogle, putFile, readJson, refreshLibrary, tokenFresh, utf8, writeCloud, hasServerSession, serverToken } from "../cloud.js";
 import { device } from "../device.js";
 import { idb } from "../idb.js";
 import { roms } from "../library.js";
@@ -474,6 +474,8 @@ $("#padPull").addEventListener("click", () => pullSave((m) => m && padMsg(m)));
 function tokenFromTap() {
   // na página isolada do DS o popup do Google não consegue responder: o save fica
   // guardado aqui e sobe quando houver token (na biblioteca ele é renovado)
+  // sessão longa (servidor): renova sem popup, até na página isolada do DS
+  if (hasServerSession() && !tokenFresh()) return serverToken().then(() => { googleNeedsTap(false); cloud.db = true; }, () => {});
   if (window.crossOriginIsolated) return Promise.resolve();
   if (isGoogle() && !tokenFresh() && gauth.client) return askGoogleToken(false).then(() => {
     googleNeedsTap(false);
