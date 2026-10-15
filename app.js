@@ -2586,7 +2586,7 @@ void main() {
       if (upright) {
         gh2 = Math.min(availW / ar, player.isDs ? Math.max(availH * 0.5, availH - 250) : availH * 0.55);
         gw = gh2 * ar;
-        if (player.isDs) pad.style.setProperty("--ctl", Math.round(Math.max(110, Math.min(210, availH - gh2 - 112, availW * 0.44))) + "px");
+        if (player.isDs) pad.style.setProperty("--ctl", Math.round(Math.max(110, Math.min(210, availH - gh2 - 112, availW * 0.46))) + "px");
       } else {
         gw = Math.min(availH * ar, availW * (player.isDs ? 0.7 : 0.62));
         gh2 = gw / ar;
@@ -2777,8 +2777,9 @@ void main() {
   ];
   var PERF_MODES = ["auto", "60", "30"];
   var PERF_LABEL = { auto: "Automático", 60: "60 fps", 30: "Vídeo a 30 fps" };
-  var LAYOUT_LABEL = { auto: "Automático", both: "As duas", side: "Lado a lado", focus: "Destaque (a de cima grande)", top: "Só a de cima", bottom: "Só a de baixo" };
-  var LOCAL_LAYOUTS = ["auto", "both", "side", "focus", "top", "bottom"];
+  var LAYOUT_LABEL = { auto: "Automático", small: "As duas (a de baixo menor)", both: "As duas", side: "Lado a lado", focus: "Destaque (a de cima grande)", top: "Só a de cima", bottom: "Só a de baixo" };
+  var LOCAL_LAYOUTS = ["auto", "small", "both", "side", "focus", "top", "bottom"];
+  var SMALL = 0.75;
   var CAST_LAYOUTS = ["top", "both", "side"];
   var MAX_SCALE = 6;
   var CORE_LABEL = { estavel: "Estável", teste: "Teste", jit: "Teste + JIT (mais rápido)", mt: "Teste + threads (3D em outros núcleos)" };
@@ -3204,10 +3205,10 @@ registerProcessor("ds-out", DSOut);
     function localLayout() {
       if (casting()) return ds.cast === "bottom" ? "top" : "bottom";
       if (ds.local !== "auto") return ds.local;
-      return innerWidth > innerHeight * 1.15 ? "focus" : "both";
+      return innerWidth > innerHeight * 1.15 ? "focus" : "small";
     }
     function sizeFor(layout) {
-      return layout === "both" ? [W * S, H * 2 * S] : layout === "side" ? [W * 2 * S, H * S] : layout === "focus" ? [W * S * 3 / 2, H * S] : [W * S, H * S];
+      return layout === "both" ? [W * S, H * 2 * S] : layout === "side" ? [W * 2 * S, H * S] : layout === "focus" ? [W * S * 3 / 2, H * S] : layout === "small" ? [W * S, Math.round(H * S * (1 + SMALL))] : [W * S, H * S];
     }
     function castScale() {
       if (!castGl) return 1;
@@ -3225,6 +3226,15 @@ registerProcessor("ds-out", DSOut);
       else if (layout === "side") {
         ctx.drawImage(fb, 0, 0, w, h, 0, 0, w, h);
         ctx.drawImage(fb, 0, h, w, h, w, 0, w, h);
+      } else if (layout === "small") {
+        const bw = Math.round(w * SMALL), bh = Math.round(h * SMALL), bx = w - bw >> 1;
+        ctx.drawImage(fb, 0, 0, w, h, 0, 0, w, h);
+        ctx.fillStyle = "#1b1e2b";
+        ctx.fillRect(0, h, bx, bh);
+        ctx.fillRect(bx + bw, h, w - bx - bw, bh);
+        ctx.imageSmoothingEnabled = true;
+        ctx.drawImage(fb, 0, h, w, h, bx, h, bw, bh);
+        ctx.imageSmoothingEnabled = false;
       } else if (layout === "focus") {
         ctx.drawImage(fb, 0, 0, w, h, 0, 0, w, h);
         ctx.fillStyle = "#1b1e2b";
@@ -3350,7 +3360,7 @@ registerProcessor("ds-out", DSOut);
         r.top += (b.height - r.height) / 2;
       }
       const lo = shownLocal;
-      const area = lo === "both" ? [0, 0.5, 1, 0.5] : lo === "side" ? [0.5, 0, 0.5, 1] : lo === "focus" ? [2 / 3, 0.5, 1 / 3, 0.5] : lo === "bottom" ? [0, 0, 1, 1] : null;
+      const area = lo === "both" ? [0, 0.5, 1, 0.5] : lo === "side" ? [0.5, 0, 0.5, 1] : lo === "focus" ? [2 / 3, 0.5, 1 / 3, 0.5] : lo === "small" ? [(1 - SMALL) / 2, 1 / (1 + SMALL), SMALL, SMALL / (1 + SMALL)] : lo === "bottom" ? [0, 0, 1, 1] : null;
       if (!area) return false;
       const fx = (e.clientX - r.left) / r.width, fy = (e.clientY - r.top) / r.height;
       const x = (fx - area[0]) / area[2], y = (fy - area[1]) / area[3];
@@ -5488,6 +5498,7 @@ Content-Type: ${type}\r
     if (lo === "both") sh /= 2;
     else if (lo === "side") sw /= 2;
     else if (lo === "focus") sw = sw * 2 / 3;
+    else if (lo === "small") sh = sh / 1.75;
     const c = document.createElement("canvas");
     c.width = 192;
     c.height = Math.round(192 * sh / sw);

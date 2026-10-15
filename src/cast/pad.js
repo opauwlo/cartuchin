@@ -147,7 +147,7 @@ function layoutPad() {
       // pelo menos 140 px + ~110 px das linhas de L/R e Start/Select)
       gh = Math.min(availW / ar, player.isDs ? Math.max(availH * 0.5, availH - 250) : availH * 0.55);
       gw = gh * ar;
-      if (player.isDs) pad.style.setProperty("--ctl", Math.round(Math.max(110, Math.min(210, availH - gh - 112, availW * 0.44))) + "px");
+      if (player.isDs) pad.style.setProperty("--ctl", Math.round(Math.max(110, Math.min(210, availH - gh - 112, availW * 0.46))) + "px");
     }
     else {
       gw = Math.min(availH * ar, availW * (player.isDs ? 0.7 : 0.62));

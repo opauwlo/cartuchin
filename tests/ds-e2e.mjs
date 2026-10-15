@@ -111,6 +111,20 @@ const localBright = await phone.evaluate(() => {
   return s / (64 * 96 * 3);
 });
 ok(localBright > 3, `tela do jogo não está preta (brilho ${localBright.toFixed(0)})`);
+// toque no meio da tela de baixo (qualquer arrumação) chega no jogo como (128, 96)
+{
+  const lo = await phone.evaluate(() => window.__cartucho.emu.localLayout());
+  const AREA = { both: [0, 0.5, 1, 0.5], side: [0.5, 0, 0.5, 1], focus: [2 / 3, 0.5, 1 / 3, 0.5], small: [0.125, 1 / 1.75, 0.75, 0.75 / 1.75], bottom: [0, 0, 1, 1] }[lo];
+  const box = await phone.locator("#game .ds-view").boundingBox();
+  const ar = await phone.evaluate(() => { const v = document.querySelector("#game .ds-view"); return v.width / v.height; });
+  let r = { ...box };
+  if (box.width / box.height > ar) { r.width = box.height * ar; r.x += (box.width - r.width) / 2; } else { r.height = box.width / ar; r.y += (box.height - r.height) / 2; }
+  await phone.mouse.move(r.x + (AREA[0] + AREA[2] / 2) * r.width, r.y + (AREA[1] + AREA[3] / 2) * r.height);
+  await phone.mouse.down();
+  const t = await phone.waitForFunction(() => { const e = window.__cartucho.emu; return e.touch ? { x: e.tx, y: e.ty } : false; }, null, { timeout: 3000 }).then((h) => h.jsonValue(), () => null);
+  await phone.mouse.up();
+  ok(!!t && Math.abs(t.x - 128) <= 3 && Math.abs(t.y - 96) <= 3, `toque na tela de baixo (${lo}) cai no lugar certo${t ? ` (${t.x}, ${t.y})` : ""}`);
+}
 if (CORE === "mt") {
   const core = await phone.evaluate(() => [...document.scripts].map((s) => s.src).find((u) => /ds\/nds/.test(u)) || "");
   ok(/nds-test-mt\.js/.test(core), `core com threads carregado (${core.split("/").pop()})`);
