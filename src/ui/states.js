@@ -7,10 +7,10 @@ import { $, ago, el, ls, toast } from "../util.js";
 
 /* ---------------- galeria de estados (save states) ----------------
    Cada estado é um retrato do console guardado só neste aparelho, com miniatura.
-   Manuais: até MAX_MANUAL por jogo. Automáticos: a cada AUTO_MIN minutos de jogo,
+   Manuais: até MAX_MANUAL por jogo (escolhe o espaço). Automáticos: ao sair do jogo,
    num rodízio de AUTO_SLOTS (o mais antigo é trocado).
    IndexedDB ("pend"): "stidx:<jogo>" = lista; "st:<jogo>:<id>" = estado (gzip, Blob). */
-const MAX_MANUAL = 12, AUTO_SLOTS = 3, AUTO_MIN = 5;
+const MAX_MANUAL = 12, AUTO_SLOTS = 3;
 const idxKey = (g) => "stidx:" + g, dataKey = (g, id) => "st:" + g + ":" + id;
 const autoOn = () => ls.get("cartucho.autostate") !== "off";
 
@@ -64,14 +64,16 @@ function saveState(opts = {}) {
   queue = queue.then(() => doSave(opts), () => doSave(opts));
   return queue;
 }
-async function doSave({ auto = false, quiet = false }) {
+async function doSave({ auto = false, quiet = false, replaceId = null }) {
   const emu = player.emu, game = player.key;
   if (!emu || !game) return false;
   try {
     const st = await emu.gameManager.getState();
     if (!st || !st.length) throw new Error("vazio");
-    const [blob, pic] = await Promise.all([gz(st), thumb()]);
+    // automático (ao sair): guarda sem comprimir, para terminar antes de o celular congelar a página
+    const [data, pic] = await Promise.all([auto ? new Blob([st]) : gz(st), thumb()]);
     const items = await list(game);
+    const old = replaceId ? items.find((i) => i.id === replaceId) : null;
     if (auto) {
       const autos = items.filter((i) => i.auto);
       while (autos.length >= AUTO_SLOTS) {
@@ -79,15 +81,16 @@ async function doSave({ auto = false, quiet = false }) {
         items.splice(items.indexOf(gone), 1);
         await idb.del("pend", dataKey(game, gone.id));
       }
-    } else if (items.filter((i) => !i.auto).length >= MAX_MANUAL) {
-      if (!quiet) toast(`Já há ${MAX_MANUAL} estados salvos. Apague algum em "Estados salvos".`, 4000);
+    } else if (!old && items.filter((i) => !i.auto).length >= MAX_MANUAL) {
+      if (!quiet) toast(`Os ${MAX_MANUAL} espaços estão ocupados. Escolha um para substituir.`, 4000);
       return false;
     }
-    const id = (auto ? "a" : "m") + Date.now().toString(36);
-    await idb.put("pend", dataKey(game, id), { blob });
-    items.unshift({ id, at: Date.now(), name: "", auto, thumb: pic, frames: emu.frames || 0 });
+    const id = old ? old.id : (auto ? "a" : "m") + Date.now().toString(36);
+    await idb.put("pend", dataKey(game, id), auto ? { raw: data } : { blob: data });
+    if (old) items.splice(items.indexOf(old), 1);
+    items.unshift({ id, at: Date.now(), name: old ? old.name : "", auto, thumb: pic, frames: emu.frames || 0 });
     await idb.put("pend", idxKey(game), items);
-    if (!quiet) toast("Estado salvo");
+    if (!quiet) toast(old ? `Estado "${old.name || "sem nome"}" substituído` : "Estado salvo");
     return true;
   } catch (e) {
     console.warn("[estados] salvar", e);
@@ -98,9 +101,9 @@ async function doSave({ auto = false, quiet = false }) {
 async function loadState(game, id) {
   const emu = player.emu;
   const rec = await idb.get("pend", dataKey(game, id));
-  if (!emu || !rec || !rec.blob) { toast("Esse estado não está mais aqui."); return false; }
+  if (!emu || !rec || !(rec.blob || rec.raw)) { toast("Esse estado não está mais aqui."); return false; }
   try {
-    await emu.gameManager.loadState(await ungz(rec.blob));
+    await emu.gameManager.loadState(rec.raw ? new Uint8Array(await rec.raw.arrayBuffer()) : await ungz(rec.blob));
     toast("Estado carregado");
     return true;
   } catch (e) {
@@ -130,15 +133,24 @@ async function lastState(game) {
 const sheet = el("section", { class: "sheet", id: "statesSheet", role: "dialog", "aria-modal": "true", "aria-label": "Estados salvos", hidden: true });
 $("#gameMenu").after(sheet);
 const urls = [];
-async function openGallery() {
+let mode = "load";   // "save": escolher onde salvar; "load": escolher qual carregar
+async function openGallery(m = "load") {
+  mode = m;
   await fillGallery();
   openSheet("statesSheet");
 }
 async function fillGallery() {
   const game = player.key;
   for (const u of urls.splice(0)) URL.revokeObjectURL(u);
-  const items = game ? await list(game) : [];
+  const all = game ? await list(game) : [];
+  const saving = mode === "save";
+  const items = saving ? all.filter((i) => !i.auto) : all;   // salvar: só nos espaços manuais
+  const manual = all.filter((i) => !i.auto).length;
   const grid = el("div", { class: "st-grid" });
+  if (saving && manual < MAX_MANUAL) {
+    grid.append(el("button", { class: "st-card st-new", type: "button", onclick: () => saveHere(null) },
+      el("span", { class: "st-plus" }, "+"), el("b", {}, "Novo espaço")));
+  }
   for (const it of items) {
     let img;
     if (it.thumb) {
@@ -147,29 +159,38 @@ async function fillGallery() {
       img = el("img", { src: u, alt: "" });
     } else img = el("div", { class: "st-noimg" }, "sem imagem");
     const title = it.name || (it.auto ? "Automático" : "Estado");
+    const main = saving ? () => saveHere(it) : () => pick(it);
     grid.append(el("div", { class: "st-card" + (it.auto ? " auto" : ""), "data-id": it.id },
-      el("button", { class: "st-pic", type: "button", "aria-label": `Carregar ${title}, ${ago(it.at)}`, onclick: () => pick(it) }, img,
+      el("button", { class: "st-pic", type: "button", "aria-label": `${saving ? "Salvar em" : "Carregar"} ${title}, ${ago(it.at)}`, onclick: main }, img,
         it.auto ? el("span", { class: "st-tag" }, "auto") : null),
       el("div", { class: "st-meta" },
         el("b", {}, title),
         el("span", {}, ago(it.at))),
       el("div", { class: "st-acts" },
-        el("button", { class: "btn small primary", type: "button", onclick: () => pick(it) }, "Carregar"),
+        el("button", { class: "btn small primary", type: "button", onclick: main }, saving ? "Salvar aqui" : "Carregar"),
         el("button", { class: "btn small", type: "button", "aria-label": "Renomear", onclick: () => rename(it) }, "✎"),
         el("button", { class: "btn small danger", type: "button", "aria-label": "Apagar", onclick: () => remove(it) }, "✕"))));
   }
-  const manual = items.filter((i) => !i.auto).length;
   sheet.replaceChildren(
     el("div", { class: "sheet-grip", "aria-hidden": "true" }),
     el("div", { class: "sheet-body" },
       el("div", { class: "st-head" },
-        el("h3", {}, "Estados salvos"),
-        el("button", { class: "btn small primary", type: "button", onclick: async () => { if (await saveState()) fillGallery(); } }, "+ Salvar agora")),
-      items.length ? grid : el("p", { class: "small-note" }, "Nenhum estado ainda. Um estado guarda o jogo exatamente como está agora, para voltar nele quando quiser."),
-      el("p", { class: "small-note" }, `${manual} de ${MAX_MANUAL} manuais · guardados só neste aparelho`),
-      el("button", { class: "gs-action", type: "button", onclick: () => { ls.set("cartucho.autostate", autoOn() ? "off" : "on"); fillGallery(); } },
-        el("span", {}, `Salvar sozinho a cada ${AUTO_MIN} min: ${autoOn() ? "Sim" : "Não"} (guarda os ${AUTO_SLOTS} últimos)`)),
+        el("h3", {}, saving ? "Salvar estado em…" : "Carregar estado"),
+        el("button", { class: "btn small", type: "button", onclick: () => { mode = saving ? "load" : "save"; fillGallery(); } }, saving ? "Ver para carregar" : "Salvar…")),
+      items.length || saving ? grid : el("p", { class: "small-note" }, "Nenhum estado ainda. Um estado guarda o jogo exatamente como está agora, para voltar nele quando quiser."),
+      el("p", { class: "small-note" }, `${manual} de ${MAX_MANUAL} espaços · guardados só neste aparelho`),
+      saving ? null : el("button", { class: "gs-action", type: "button", onclick: () => { ls.set("cartucho.autostate", autoOn() ? "off" : "on"); fillGallery(); } },
+        el("span", {}, `Salvar sozinho ao sair do jogo: ${autoOn() ? "Sim" : "Não"} (guarda os ${AUTO_SLOTS} últimos)`)),
       el("button", { class: "btn", type: "button", onclick: closeSheets }, "Voltar ao jogo")));
+}
+async function saveHere(it) {
+  if (it) {
+    const ok = await dialog("Substituir este estado?", `"${it.name || "Estado"}" de ${ago(it.at)} vira o jogo de agora.`,
+      [{ label: "Substituir", value: true, cls: "primary" }, { label: "Cancelar", value: false }]);
+    if (!ok) { openSheet("statesSheet"); return; }
+  }
+  closeSheets();
+  await saveState({ replaceId: it ? it.id : null });
 }
 async function pick(it) {
   closeSheets();
@@ -190,19 +211,18 @@ async function remove(it) {
   openSheet("statesSheet");
 }
 
-/* salvamento automático: só com o jogo rodando e a página à vista */
-let playedMs = 0, lastTick = 0;
-setInterval(() => {
-  const now = performance.now(), emu = player.emu;
-  const running = emu && emu.started !== false && !emu.paused && player.key && document.visibilityState === "visible";
-  if (running && lastTick) playedMs += now - lastTick;
-  lastTick = running ? now : 0;
-  if (playedMs >= AUTO_MIN * 60000 && autoOn()) {
-    playedMs = 0;
-    saveState({ auto: true, quiet: true });
-  }
-}, 5000);
-window.addEventListener("cartucho-game-start", () => { playedMs = 0; lastTick = 0; });
+/* salvamento automático: na hora de sair (trocar de app, apagar a tela, voltar à
+   biblioteca), nunca no meio do jogo — gerar o estado trava uns quadros */
+function autoSave(e) {
+  const emu = player.emu;
+  if (!autoOn() || !emu || !player.key || !emu.frames || Date.now() - lastAuto < 60000) return;
+  lastAuto = Date.now();
+  const p = saveState({ auto: true, quiet: true });
+  if (e && e.detail && e.detail.waits) e.detail.waits.push(p);   // quem sai espera terminar
+}
+let lastAuto = 0;
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") autoSave(); });
+window.addEventListener("cartucho-game-exit", autoSave);
 
 window.__states = { saveState, loadState, list, removeState, renameState, openGallery };   // usado pelo teste automático
 export { saveState, loadState, openGallery, lastState, list as listStates };

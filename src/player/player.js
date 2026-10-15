@@ -498,6 +498,10 @@ $("#backBtn").addEventListener("click", async () => {
       [{ label: "Voltar mesmo assim", value: true, cls: "primary" }, { label: "Continuar jogando", value: false }]);
     if (!ok) return;
   }
+  // estado automático antes de sair (até 4 s)
+  const exit = new CustomEvent("cartucho-game-exit", { detail: { waits: [] } });
+  window.dispatchEvent(exit);
+  if (exit.detail.waits.length) await Promise.race([Promise.all(exit.detail.waits), new Promise((r) => setTimeout(r, 4000))]);
   player.leaving = true;   // saída pedida: não perguntar no beforeunload
   if (dsPage) location.href = location.pathname;   // sai da página isolada do DS
   else location.reload();

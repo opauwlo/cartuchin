@@ -142,10 +142,13 @@ if (!ONLY || ONLY === "state") {
   // galeria: salvar pelo menu, ver o card com miniatura, carregar, renomear e apagar
   await phone.click("#menuBtn");
   await phone.click("#gmActions .gs-action:has-text('Salvar estado')");
+  await phone.waitForSelector("#statesSheet:not([hidden]) .st-new", { timeout: 10000 });
+  await phone.click("#statesSheet .st-new");
   await phone.waitForFunction(async () => (await window.__states.list(window.__cartucho.key)).length >= 1, null, { timeout: 15000, polling: 300 });
   const autoOk = await phone.evaluate(async () => { return window.__states.saveState({ auto: true }); });
   ok(autoOk, "salvamento automático grava");
-  await phone.click("#gmActions .gs-action:has-text('Estados salvos')");
+  await phone.click("#menuBtn");
+  await phone.click("#gmActions .gs-action:has-text('Carregar estado')");
   await phone.waitForSelector("#statesSheet:not([hidden]) .st-card", { timeout: 10000 });
   await phone.waitForFunction(() => [...document.querySelectorAll("#statesSheet img")].every((i) => i.complete), null, { timeout: 5000 }).catch(() => {});
   const thumbs = await phone.evaluate(async () => (await window.__states.list(window.__cartucho.key)).map((i) => i.thumb ? i.thumb.size : 0));
@@ -158,6 +161,19 @@ if (!ONLY || ONLY === "state") {
   await phone.click("#statesSheet .st-card:not(.auto) .st-acts .primary");
   const loaded = await phone.waitForFunction((f) => window.__cartucho.emu.frames > f + 30 && document.querySelector("#statesSheet").hidden, f0, { timeout: 15000 }).then(() => true, () => false);
   ok(loaded, "carregar pela galeria fecha a folha e o jogo segue");
+  // substituir um espaço: mesmo número de estados, o escolhido fica mais novo
+  const before = await phone.evaluate(async () => (await window.__states.list(window.__cartucho.key)).filter((i) => !i.auto).map((i) => ({ id: i.id, at: i.at })));
+  await phone.click("#menuBtn");
+  await phone.click("#gmActions .gs-action:has-text('Salvar estado')");
+  await phone.waitForSelector("#statesSheet:not([hidden]) .st-card[data-id] .st-acts .primary", { timeout: 10000 });
+  await phone.click("#statesSheet .st-card[data-id] .st-acts .primary");
+  await phone.click(".dialog .btn.primary");
+  const replaced = await phone.waitForFunction(async (b) => {
+    const now = (await window.__states.list(window.__cartucho.key)).filter((i) => !i.auto);
+    const it = now.find((i) => i.id === b[0].id);
+    return now.length === b.length && it && it.at > b[0].at;
+  }, before, { timeout: 15000, polling: 300 }).then(() => true, () => false);
+  ok(replaced, "salvar num espaço existente substitui (sem criar outro)");
   const left = await phone.evaluate(async () => {
     const k = window.__cartucho.key, items = await window.__states.list(k);
     await window.__states.renameState(k, items[0].id, "Antes do chefe");

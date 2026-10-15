@@ -290,10 +290,10 @@
       });
       return p;
     }
-    async function run(store, mode, fn) {
+    async function run(store, mode2, fn) {
       const d = await open();
       return new Promise((res, rej) => {
-        const t = d.transaction(store, mode);
+        const t = d.transaction(store, mode2);
         const req = fn(t.objectStore(store));
         t.oncomplete = () => res(req ? req.result : void 0);
         t.onerror = () => rej(t.error);
@@ -1513,7 +1513,7 @@ void main() {
     cast.code = code;
     cast.attempt = attempt;
     cast.tvStats = null;
-    const level = cast.order[attempt] || 0, mode = CAST_MODES[level];
+    const level = cast.order[attempt] || 0, mode2 = CAST_MODES[level];
     cast.mode = level;
     try {
       const sig = await signal(code);
@@ -1530,9 +1530,9 @@ void main() {
       } catch (e) {
       }
       const isDs = !!player.isDs;
-      const opt = { red: !!mode.red, kbps: isDs ? 4e3 : 2500, layers: "", ...window.__castOpts || {} };
+      const opt = { red: !!mode2.red, kbps: isDs ? 4e3 : 2500, layers: "", ...window.__castOpts || {} };
       let vt = null;
-      if (mode.frames) {
+      if (mode2.frames) {
         cast.frameChannel = pc.createDataChannel("quadros", { ordered: false, maxRetransmits: 0 });
         cast.frameChannel.binaryType = "arraybuffer";
       } else {
@@ -1561,13 +1561,13 @@ void main() {
         } catch (e) {
         }
       };
-      if (vt && mode.codecs) prefer(vt, "video", mode.codecs);
-      else if (vt && !mode.plain) prefer(vt, "video", [/vp8/i]);
-      if (vt && mode.plain) trimExt(vt);
+      if (vt && mode2.codecs) prefer(vt, "video", mode2.codecs);
+      else if (vt && !mode2.plain) prefer(vt, "video", [/vp8/i]);
+      if (vt && mode2.plain) trimExt(vt);
       const tap = (window.__audioTaps || [])[0];
       if (tap && tap.out) {
         const at = tap.out.stream.getAudioTracks()[0];
-        if (at && mode.plain) pc.addTrack(at, stream);
+        if (at && mode2.plain) pc.addTrack(at, stream);
         else if (at) prefer(pc.addTransceiver(at, { direction: "sendonly", streams: [stream] }), "audio", opt.red ? [/audio\/red/i, /opus/i] : [/opus/i]);
       }
       const dc = pc.createDataChannel("controle", { ordered: false, maxRetransmits: 0 });
@@ -3282,9 +3282,9 @@ registerProcessor("ds-out", DSOut);
     emu.setGpu3d = (on) => {
       if (!canScale) return false;
       let r = -1;
-      const mode = on ? ls.get("cartucho.ds.gpuforce") === "1" ? 3 : 2 : 1;
+      const mode2 = on ? ls.get("cartucho.ds.gpuforce") === "1" ? 3 : 2 : 1;
       try {
-        r = M._emuSetOpt(4, mode);
+        r = M._emuSetOpt(4, mode2);
       } catch (e) {
         r = -1;
       }
@@ -4273,6 +4273,9 @@ void main() {
       );
       if (!ok) return;
     }
+    const exit = new CustomEvent("cartucho-game-exit", { detail: { waits: [] } });
+    window.dispatchEvent(exit);
+    if (exit.detail.waits.length) await Promise.race([Promise.all(exit.detail.waits), new Promise((r) => setTimeout(r, 4e3))]);
     player.leaving = true;
     if (dsPage) location.href = location.pathname;
     else location.reload();
@@ -5447,7 +5450,6 @@ Content-Type: ${type}\r
   // src/ui/states.js
   var MAX_MANUAL = 12;
   var AUTO_SLOTS = 3;
-  var AUTO_MIN = 5;
   var idxKey = (g) => "stidx:" + g;
   var dataKey = (g, id) => "st:" + g + ":" + id;
   var autoOn = () => ls.get("cartucho.autostate") !== "off";
@@ -5503,14 +5505,15 @@ Content-Type: ${type}\r
     queue = queue.then(() => doSave(opts), () => doSave(opts));
     return queue;
   }
-  async function doSave({ auto = false, quiet = false }) {
+  async function doSave({ auto = false, quiet = false, replaceId = null }) {
     const emu = player.emu, game = player.key;
     if (!emu || !game) return false;
     try {
       const st = await emu.gameManager.getState();
       if (!st || !st.length) throw new Error("vazio");
-      const [blob, pic] = await Promise.all([gz(st), thumb()]);
+      const [data, pic] = await Promise.all([auto ? new Blob([st]) : gz(st), thumb()]);
       const items = await list(game);
+      const old = replaceId ? items.find((i) => i.id === replaceId) : null;
       if (auto) {
         const autos = items.filter((i) => i.auto);
         while (autos.length >= AUTO_SLOTS) {
@@ -5518,15 +5521,16 @@ Content-Type: ${type}\r
           items.splice(items.indexOf(gone), 1);
           await idb.del("pend", dataKey(game, gone.id));
         }
-      } else if (items.filter((i) => !i.auto).length >= MAX_MANUAL) {
-        if (!quiet) toast(`Já há ${MAX_MANUAL} estados salvos. Apague algum em "Estados salvos".`, 4e3);
+      } else if (!old && items.filter((i) => !i.auto).length >= MAX_MANUAL) {
+        if (!quiet) toast(`Os ${MAX_MANUAL} espaços estão ocupados. Escolha um para substituir.`, 4e3);
         return false;
       }
-      const id = (auto ? "a" : "m") + Date.now().toString(36);
-      await idb.put("pend", dataKey(game, id), { blob });
-      items.unshift({ id, at: Date.now(), name: "", auto, thumb: pic, frames: emu.frames || 0 });
+      const id = old ? old.id : (auto ? "a" : "m") + Date.now().toString(36);
+      await idb.put("pend", dataKey(game, id), auto ? { raw: data } : { blob: data });
+      if (old) items.splice(items.indexOf(old), 1);
+      items.unshift({ id, at: Date.now(), name: old ? old.name : "", auto, thumb: pic, frames: emu.frames || 0 });
       await idb.put("pend", idxKey(game), items);
-      if (!quiet) toast("Estado salvo");
+      if (!quiet) toast(old ? `Estado "${old.name || "sem nome"}" substituído` : "Estado salvo");
       return true;
     } catch (e) {
       console.warn("[estados] salvar", e);
@@ -5537,12 +5541,12 @@ Content-Type: ${type}\r
   async function loadState(game, id) {
     const emu = player.emu;
     const rec = await idb.get("pend", dataKey(game, id));
-    if (!emu || !rec || !rec.blob) {
+    if (!emu || !rec || !(rec.blob || rec.raw)) {
       toast("Esse estado não está mais aqui.");
       return false;
     }
     try {
-      await emu.gameManager.loadState(await ungz(rec.blob));
+      await emu.gameManager.loadState(rec.raw ? new Uint8Array(await rec.raw.arrayBuffer()) : await ungz(rec.blob));
       toast("Estado carregado");
       return true;
     } catch (e) {
@@ -5572,15 +5576,28 @@ Content-Type: ${type}\r
   var sheet = el("section", { class: "sheet", id: "statesSheet", role: "dialog", "aria-modal": "true", "aria-label": "Estados salvos", hidden: true });
   $("#gameMenu").after(sheet);
   var urls = [];
-  async function openGallery() {
+  var mode = "load";
+  async function openGallery(m = "load") {
+    mode = m;
     await fillGallery();
     openSheet("statesSheet");
   }
   async function fillGallery() {
     const game = player.key;
     for (const u of urls.splice(0)) URL.revokeObjectURL(u);
-    const items = game ? await list(game) : [];
+    const all = game ? await list(game) : [];
+    const saving = mode === "save";
+    const items = saving ? all.filter((i) => !i.auto) : all;
+    const manual = all.filter((i) => !i.auto).length;
     const grid = el("div", { class: "st-grid" });
+    if (saving && manual < MAX_MANUAL) {
+      grid.append(el(
+        "button",
+        { class: "st-card st-new", type: "button", onclick: () => saveHere(null) },
+        el("span", { class: "st-plus" }, "+"),
+        el("b", {}, "Novo espaço")
+      ));
+    }
     for (const it of items) {
       let img;
       if (it.thumb) {
@@ -5589,12 +5606,13 @@ Content-Type: ${type}\r
         img = el("img", { src: u, alt: "" });
       } else img = el("div", { class: "st-noimg" }, "sem imagem");
       const title = it.name || (it.auto ? "Automático" : "Estado");
+      const main = saving ? () => saveHere(it) : () => pick(it);
       grid.append(el(
         "div",
         { class: "st-card" + (it.auto ? " auto" : ""), "data-id": it.id },
         el(
           "button",
-          { class: "st-pic", type: "button", "aria-label": `Carregar ${title}, ${ago(it.at)}`, onclick: () => pick(it) },
+          { class: "st-pic", type: "button", "aria-label": `${saving ? "Salvar em" : "Carregar"} ${title}, ${ago(it.at)}`, onclick: main },
           img,
           it.auto ? el("span", { class: "st-tag" }, "auto") : null
         ),
@@ -5607,13 +5625,12 @@ Content-Type: ${type}\r
         el(
           "div",
           { class: "st-acts" },
-          el("button", { class: "btn small primary", type: "button", onclick: () => pick(it) }, "Carregar"),
+          el("button", { class: "btn small primary", type: "button", onclick: main }, saving ? "Salvar aqui" : "Carregar"),
           el("button", { class: "btn small", type: "button", "aria-label": "Renomear", onclick: () => rename(it) }, "✎"),
           el("button", { class: "btn small danger", type: "button", "aria-label": "Apagar", onclick: () => remove(it) }, "✕")
         )
       ));
     }
-    const manual = items.filter((i) => !i.auto).length;
     sheet.replaceChildren(
       el("div", { class: "sheet-grip", "aria-hidden": "true" }),
       el(
@@ -5622,24 +5639,40 @@ Content-Type: ${type}\r
         el(
           "div",
           { class: "st-head" },
-          el("h3", {}, "Estados salvos"),
-          el("button", { class: "btn small primary", type: "button", onclick: async () => {
-            if (await saveState()) fillGallery();
-          } }, "+ Salvar agora")
+          el("h3", {}, saving ? "Salvar estado em…" : "Carregar estado"),
+          el("button", { class: "btn small", type: "button", onclick: () => {
+            mode = saving ? "load" : "save";
+            fillGallery();
+          } }, saving ? "Ver para carregar" : "Salvar…")
         ),
-        items.length ? grid : el("p", { class: "small-note" }, "Nenhum estado ainda. Um estado guarda o jogo exatamente como está agora, para voltar nele quando quiser."),
-        el("p", { class: "small-note" }, `${manual} de ${MAX_MANUAL} manuais · guardados só neste aparelho`),
-        el(
+        items.length || saving ? grid : el("p", { class: "small-note" }, "Nenhum estado ainda. Um estado guarda o jogo exatamente como está agora, para voltar nele quando quiser."),
+        el("p", { class: "small-note" }, `${manual} de ${MAX_MANUAL} espaços · guardados só neste aparelho`),
+        saving ? null : el(
           "button",
           { class: "gs-action", type: "button", onclick: () => {
             ls.set("cartucho.autostate", autoOn() ? "off" : "on");
             fillGallery();
           } },
-          el("span", {}, `Salvar sozinho a cada ${AUTO_MIN} min: ${autoOn() ? "Sim" : "Não"} (guarda os ${AUTO_SLOTS} últimos)`)
+          el("span", {}, `Salvar sozinho ao sair do jogo: ${autoOn() ? "Sim" : "Não"} (guarda os ${AUTO_SLOTS} últimos)`)
         ),
         el("button", { class: "btn", type: "button", onclick: closeSheets }, "Voltar ao jogo")
       )
     );
+  }
+  async function saveHere(it) {
+    if (it) {
+      const ok = await dialog(
+        "Substituir este estado?",
+        `"${it.name || "Estado"}" de ${ago(it.at)} vira o jogo de agora.`,
+        [{ label: "Substituir", value: true, cls: "primary" }, { label: "Cancelar", value: false }]
+      );
+      if (!ok) {
+        openSheet("statesSheet");
+        return;
+      }
+    }
+    closeSheets();
+    await saveState({ replaceId: it ? it.id : null });
   }
   async function pick(it) {
     closeSheets();
@@ -5665,22 +5698,18 @@ Content-Type: ${type}\r
     await fillGallery();
     openSheet("statesSheet");
   }
-  var playedMs = 0;
-  var lastTick = 0;
-  setInterval(() => {
-    const now = performance.now(), emu = player.emu;
-    const running = emu && emu.started !== false && !emu.paused && player.key && document.visibilityState === "visible";
-    if (running && lastTick) playedMs += now - lastTick;
-    lastTick = running ? now : 0;
-    if (playedMs >= AUTO_MIN * 6e4 && autoOn()) {
-      playedMs = 0;
-      saveState({ auto: true, quiet: true });
-    }
-  }, 5e3);
-  window.addEventListener("cartucho-game-start", () => {
-    playedMs = 0;
-    lastTick = 0;
+  function autoSave(e) {
+    const emu = player.emu;
+    if (!autoOn() || !emu || !player.key || !emu.frames || Date.now() - lastAuto < 6e4) return;
+    lastAuto = Date.now();
+    const p = saveState({ auto: true, quiet: true });
+    if (e && e.detail && e.detail.waits) e.detail.waits.push(p);
+  }
+  var lastAuto = 0;
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") autoSave();
   });
+  window.addEventListener("cartucho-game-exit", autoSave);
   window.__states = { saveState, loadState, list, removeState, renameState, openGallery };
 
   // src/ui/game-menu.js
@@ -5713,6 +5742,7 @@ Content-Type: ${type}\r
     }
   });
   var lastInfo = { key: "", at: 0 };
+  var setOpen = false;
   function fillGameMenu() {
     const emu = player.emu, acts = $("#gmActions");
     lastState(player.key).then((it) => {
@@ -5723,6 +5753,10 @@ Content-Type: ${type}\r
       }
     }, () => {
     });
+    const sub = (b) => {
+      b.classList.add("sub");
+      return b;
+    };
     acts.replaceChildren(...[
       sheetAction(emu && emu.paused ? "play" : "pause", emu && emu.paused ? "Continuar o jogo" : "Pausar", () => {
         try {
@@ -5731,53 +5765,56 @@ Content-Type: ${type}\r
         }
         fillGameMenu();
       }),
-      sheetAction(emu && emu.muted ? "sound" : "mute", emu && emu.muted ? "Ligar o som" : "Tirar o som", () => {
-        try {
-          emu.muted ? (emu.muted = false, emu.setVolume(emu.volume || 0.5)) : (emu.muted = true, emu.setVolume(0));
-        } catch (e) {
-        }
-        fillGameMenu();
-      }),
-      sheetAction("save", "Salvar progresso na nuvem", () => {
+      sheetAction("save", "Salvar estado…", () => openGallery("save")),
+      sheetAction("download", "Carregar estado…" + (lastInfo.at ? ` (último ${ago(lastInfo.at)})` : ""), () => openGallery("load")),
+      sheetAction("cloud", "Salvar progresso na nuvem", () => {
         closeSheets();
         $("#saveNowBtn").click();
       }),
-      sheetAction("download", "Carregar o save da nuvem", () => {
+      sheetAction("back", "Carregar o save da nuvem", () => {
         closeSheets();
         $("#pullBtn").click();
       }),
-      sheetAction("sliders", "Jogar numa segunda tela", () => {
+      sheetAction("image", "Jogar numa segunda tela", () => {
         closeSheets();
         $("#castBtn").click();
       }),
-      sheetAction("save", "Salvar estado", async () => {
-        await saveState();
+      sheetAction("sliders", (setOpen ? "▾ " : "▸ ") + "Ajustes", () => {
+        setOpen = !setOpen;
         fillGameMenu();
       }),
-      sheetAction("image", "Estados salvos" + (lastInfo.at ? ` (último ${ago(lastInfo.at)})` : ""), () => openGallery()),
-      ...player.isDs ? dsMenuItems(emu, fillGameMenu).map((it) => {
-        const b = sheetAction(it.icon, it.label, it.fn);
-        if (it.sub) b.classList.add("sub");
-        return b;
-      }) : [],
-      player.isDs ? null : sheetAction("sliders", $("#player").classList.contains("show-ejs") ? "Esconder opções do emulador" : "Opções avançadas do emulador", () => {
-        const on = !$("#player").classList.contains("show-ejs");
-        $("#player").classList.toggle("show-ejs", on);
-        closeSheets();
-        if (on) toast("As opções do emulador aparecem na barra embaixo da imagem do jogo", 3500);
-      }),
-      sheetAction("restart", "Reiniciar o jogo", async () => {
-        closeSheets();
-        const ok = await dialog(
-          "Reiniciar o jogo?",
-          "O jogo volta para a tela de título. O que não foi salvo dentro do jogo se perde.",
-          [{ label: "Reiniciar", value: true, cls: "primary" }, { label: "Cancelar", value: false }]
-        );
-        if (ok) try {
-          emu.gameManager.restart();
-        } catch (e) {
-        }
-      }, true)
+      ...setOpen ? [
+        sub(sheetAction(emu && emu.muted ? "sound" : "mute", emu && emu.muted ? "Ligar o som" : "Tirar o som", () => {
+          try {
+            emu.muted ? (emu.muted = false, emu.setVolume(emu.volume || 0.5)) : (emu.muted = true, emu.setVolume(0));
+          } catch (e) {
+          }
+          fillGameMenu();
+        })),
+        ...player.isDs ? dsMenuItems(emu, fillGameMenu).map((it) => {
+          const b = sheetAction(it.icon, it.label, it.fn);
+          b.classList.add(it.sub ? "sub2" : "sub");
+          return b;
+        }) : [],
+        player.isDs ? null : sub(sheetAction("sliders", $("#player").classList.contains("show-ejs") ? "Esconder opções do emulador" : "Opções avançadas do emulador", () => {
+          const on = !$("#player").classList.contains("show-ejs");
+          $("#player").classList.toggle("show-ejs", on);
+          closeSheets();
+          if (on) toast("As opções do emulador aparecem na barra embaixo da imagem do jogo", 3500);
+        })),
+        sub(sheetAction("restart", "Reiniciar o jogo", async () => {
+          closeSheets();
+          const ok = await dialog(
+            "Reiniciar o jogo?",
+            "O jogo volta para a tela de título. O que não foi salvo dentro do jogo se perde.",
+            [{ label: "Reiniciar", value: true, cls: "primary" }, { label: "Cancelar", value: false }]
+          );
+          if (ok) try {
+            emu.gameManager.restart();
+          } catch (e) {
+          }
+        }, true))
+      ] : []
     ].filter(Boolean));
     setSpeed(ffState.ratio);
   }
