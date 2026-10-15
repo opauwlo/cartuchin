@@ -1,0 +1,38 @@
+Objetos: 97 (fontes: 97)
+cache:INFO: generating system asset: sysroot/lib/wasm32-emscripten/lto/crtbegin.o... (this will be cached in "/home/runner/work/_temp/be6331e8-2dd0-4965-b377-05844136df7a/emsdk-main/upstream/emscripten/cache/sysroot/lib/wasm32-emscripten/lto/crtbegin.o" for subsequent builds)
+system_libs:INFO: compiled 1 inputs in 0.16s
+cache:INFO:  - ok
+cache:INFO: generating system library: sysroot/lib/wasm32-emscripten/lto/libGL-mt-webgl2-getprocaddr.a... (this will be cached in "/home/runner/work/_temp/be6331e8-2dd0-4965-b377-05844136df7a/emsdk-main/upstream/emscripten/cache/sysroot/lib/wasm32-emscripten/lto/libGL-mt-webgl2-getprocaddr.a" for subsequent builds)
+system_libs:INFO: compiled 4 inputs in 0.27s
+cache:INFO:  - ok
+cache:INFO: generating system library: sysroot/lib/wasm32-emscripten/lto/libbulkmemory.a... (this will be cached in "/home/runner/work/_temp/be6331e8-2dd0-4965-b377-05844136df7a/emsdk-main/upstream/emscripten/cache/sysroot/lib/wasm32-emscripten/lto/libbulkmemory.a" for subsequent builds)
+system_libs:INFO: compiled 4 inputs in 0.20s
+cache:INFO:  - ok
+cache:INFO: generating system library: sysroot/lib/wasm32-emscripten/lto/libc-mt.a... (this will be cached in "/home/runner/work/_temp/be6331e8-2dd0-4965-b377-05844136df7a/emsdk-main/upstream/emscripten/cache/sysroot/lib/wasm32-emscripten/lto/libc-mt.a" for subsequent builds)
+system_libs:INFO: compiled 1127 inputs in 7.02s
+cache:INFO:  - ok
+cache:INFO: generating system library: sysroot/lib/wasm32-emscripten/lto/libdlmalloc-mt.a... (this will be cached in "/home/runner/work/_temp/be6331e8-2dd0-4965-b377-05844136df7a/emsdk-main/upstream/emscripten/cache/sysroot/lib/wasm32-emscripten/lto/libdlmalloc-mt.a" for subsequent builds)
+system_libs:INFO: compiled 2 inputs in 0.40s
+cache:INFO:  - ok
+cache:INFO: generating system library: sysroot/lib/wasm32-emscripten/lto/libcompiler_rt-mt.a... (this will be cached in "/home/runner/work/_temp/be6331e8-2dd0-4965-b377-05844136df7a/emsdk-main/upstream/emscripten/cache/sysroot/lib/wasm32-emscripten/lto/libcompiler_rt-mt.a" for subsequent builds)
+system_libs:INFO: compiled 162 inputs in 1.40s
+cache:INFO:  - ok
+cache:INFO: generating system library: sysroot/lib/wasm32-emscripten/lto/libc++-mt-noexcept.a... (this will be cached in "/home/runner/work/_temp/be6331e8-2dd0-4965-b377-05844136df7a/emsdk-main/upstream/emscripten/cache/sysroot/lib/wasm32-emscripten/lto/libc++-mt-noexcept.a" for subsequent builds)
+system_libs:INFO: compiled 55 inputs in 17.87s
+cache:INFO:  - ok
+cache:INFO: generating system library: sysroot/lib/wasm32-emscripten/lto/libc++abi-mt-noexcept.a... (this will be cached in "/home/runner/work/_temp/be6331e8-2dd0-4965-b377-05844136df7a/emsdk-main/upstream/emscripten/cache/sysroot/lib/wasm32-emscripten/lto/libc++abi-mt-noexcept.a" for subsequent builds)
+system_libs:INFO: compiled 16 inputs in 2.35s
+cache:INFO:  - ok
+cache:INFO: generating system library: sysroot/lib/wasm32-emscripten/lto/libsockets-mt.a... (this will be cached in "/home/runner/work/_temp/be6331e8-2dd0-4965-b377-05844136df7a/emsdk-main/upstream/emscripten/cache/sysroot/lib/wasm32-emscripten/lto/libsockets-mt.a" for subsequent builds)
+system_libs:INFO: compiled 27 inputs in 0.57s
+cache:INFO:  - ok
+cache:INFO: generating system asset: symbol_lists/72f4c2a938ceb33e03c65ddae361cfae903d1b5f.json... (this will be cached in "/home/runner/work/_temp/be6331e8-2dd0-4965-b377-05844136df7a/emsdk-main/upstream/emscripten/cache/symbol_lists/72f4c2a938ceb33e03c65ddae361cfae903d1b5f.json" for subsequent builds)
+cache:INFO:  - ok
+total 4756
+drwxr-xr-x 2 runner runner    4096 Oct 15 02:54 .
+drwxr-xr-x 9 runner runner    4096 Oct 15 02:52 ..
+-rw-r--r-- 1 runner runner  107026 Oct 15 02:54 nds-test-mt.js
+-rwxr-xr-x 1 runner runner 2336743 Oct 15 02:54 nds-test-mt.wasm
+-rw-r--r-- 1 runner runner   94234 Oct 15 02:52 nds-test.js
+-rwxr-xr-x 1 runner runner 2313314 Oct 15 02:52 nds-test.wasm
+OK: dist/nds-test-mt.{js,wasm}

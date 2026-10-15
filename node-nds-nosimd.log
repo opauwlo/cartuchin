@@ -1,0 +1,5 @@
+runtime init
+save ok 11146020
+load ok 0
+nds-nosimd: media=802.3 naoZero=962756 state=11146020/0 pixel=255,255,255,255 7.57ms/frame
+PASSOU

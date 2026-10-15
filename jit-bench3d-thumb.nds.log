@@ -1,0 +1,2 @@
+bench3d-thumb.nds: interpretador 24.46 ms/quadro, JIT 20.86 ms/quadro (1.17x) · blocos compilados: 286, lotes com erro: 0 · imagens iguais
+PASSOU

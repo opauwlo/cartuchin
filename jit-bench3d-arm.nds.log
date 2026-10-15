@@ -1,0 +1,2 @@
+bench3d-arm.nds: interpretador 23.37 ms/quadro, JIT 21.04 ms/quadro (1.11x) · blocos compilados: 196, lotes com erro: 0 · imagens iguais
+PASSOU

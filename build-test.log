@@ -1,0 +1,12 @@
+Objetos: 96 (fontes: 96)
+cache:INFO: generating system library: sysroot/lib/wasm32-emscripten/lto/libGL-webgl2-getprocaddr.a... (this will be cached in "/home/runner/work/_temp/be6331e8-2dd0-4965-b377-05844136df7a/emsdk-main/upstream/emscripten/cache/sysroot/lib/wasm32-emscripten/lto/libGL-webgl2-getprocaddr.a" for subsequent builds)
+system_libs:INFO: compiled 4 inputs in 0.27s
+cache:INFO:  - ok
+cache:INFO: generating system asset: symbol_lists/a9b09f749a92f714690ff42ad06a69f733840ca5.json... (this will be cached in "/home/runner/work/_temp/be6331e8-2dd0-4965-b377-05844136df7a/emsdk-main/upstream/emscripten/cache/symbol_lists/a9b09f749a92f714690ff42ad06a69f733840ca5.json" for subsequent builds)
+cache:INFO:  - ok
+total 2364
+drwxr-xr-x 2 runner runner    4096 Oct 15 02:52 .
+drwxr-xr-x 8 runner runner    4096 Oct 15 02:50 ..
+-rw-r--r-- 1 runner runner   94234 Oct 15 02:52 nds-test.js
+-rwxr-xr-x 1 runner runner 2313314 Oct 15 02:52 nds-test.wasm
+OK: dist/nds-test.{js,wasm}

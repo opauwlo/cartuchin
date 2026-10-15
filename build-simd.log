@@ -1,0 +1,9 @@
+Objetos: 95 (fontes: 95)
+total 4320
+drwxr-xr-x  2 runner runner    4096 Oct 15 02:50 .
+drwxr-xr-x 10 runner runner    4096 Oct 15 02:48 ..
+-rw-r--r--  1 runner runner   70209 Oct 15 02:48 nds-nosimd.js
+-rwxr-xr-x  1 runner runner 1974497 Oct 15 02:48 nds-nosimd.wasm
+-rw-r--r--  1 runner runner   70202 Oct 15 02:50 nds.js
+-rwxr-xr-x  1 runner runner 2286730 Oct 15 02:50 nds.wasm
+OK: dist/nds.{js,wasm}

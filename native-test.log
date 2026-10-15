@@ -1,0 +1,29 @@
+Microphone successfully inited.
+DeSmuME 0.9.12 git#0 x64 SSE2
+SoftRasterizer: Running directly on the emulation thread. (Multithreading disabled.)
+wasm ready.
+ROM stream from disk
+
+ROM game code: TONE
+ROM crc: FFB60BE4
+ROM serial: NTR-TONE-USA
+ROM chipID: FFFFFFC2
+ROM internal name: TONETEST
+ROM developer: Unknown
+Slot1 auto-selected device type: Retail MC+ROM
+BackupDevice: DeSmuME .dsv save file not found. Trying to load a .sav file.
+WIFI: MAC Address = 00:09:BF:12:34:56
+WIFI: Emulation level is OFF.
+Error open database
+loadROM=0
+frames=600 amostras=481392 media=802.3 min=799 max=803 naoZero=962756
+stateSave=11146092 bytes
+Slot1 auto-selected device type: Retail MC+ROM
+BackupDevice: DeSmuME .dsv save file not found. Trying to load a .sav file.
+WIFI: MAC Address = 00:09:BF:12:34:56
+WIFI: Emulation level is OFF.
+Savestate info:
+	DeSmuME version: 0.9.12 svn 0
+	Save created: 2026-OCT-15 Thu 02:46:24
+stateLoad=0
+PASSOU
