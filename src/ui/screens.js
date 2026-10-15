@@ -27,6 +27,20 @@ function showAvatar() {
   $("#avatarLetter").textContent = letter || "?";
 }
 
+/* antes de qualquer espera (banco local, nuvem): quem já usa o app vê a home com lugares
+   marcados, não uma página em branco embaixo do cabeçalho */
+function prepaint() {
+  let known = localOnly();
+  try { known = known || !!localStorage.getItem("cartucho.github"); } catch (e) {}
+  if (!known) return;
+  $("#home").hidden = false;
+  $("#connect").hidden = true;
+  $("#empty").hidden = true;
+  const box = $("#games");
+  box.hidden = false;
+  box.replaceChildren(...[0, 1, 2].map(() => el("div", { class: "tile skel", "aria-hidden": "true" }, el("div", { class: "cover" }), el("span", { class: "skel-line" }), el("span", { class: "skel-line short" }))));
+}
+
 function render() {
   if (!cloud.ready) return;
   const welcome = !cloud.auth && !localOnly();
@@ -59,9 +73,12 @@ function render() {
   else $("#continue").hidden = true;
   const box = $("#games");
   box.replaceChildren();
-  $("#empty").hidden = games.length > 0;
-  box.hidden = games.length === 0;
+  // biblioteca ainda vindo da nuvem: lugares marcados em vez de "nenhum jogo"
+  const waiting = !games.length && cloud.syncing;
+  $("#empty").hidden = games.length > 0 || waiting;
+  box.hidden = games.length === 0 && !waiting;
   for (const g of games) box.append(tile(g));
+  if (waiting) for (let i = 0; i < 3; i++) box.append(el("div", { class: "tile skel", "aria-hidden": "true" }, el("div", { class: "cover" }), el("span", { class: "skel-line" }), el("span", { class: "skel-line short" })));
   // destaque do DS: some quando já há um jogo de DS ou quando a pessoa dispensa
   $("#dsPromo").hidden = !games.length || games.some((g) => g.system === "nds") || ls.get("cartucho.dsPromo") === "off";
   if (games.some((g) => g.system === "nds" && g.playable)) prefetchDsCore();   // "Jogar" sem esperar o download
@@ -69,4 +86,4 @@ function render() {
   if (sheetKey) fillGameSheet(sheetKey);
 }
 
-export { showWelcome, render, showAvatar };
+export { showWelcome, render, showAvatar, prepaint };

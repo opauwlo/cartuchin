@@ -416,13 +416,13 @@ async function connect() {
     showConnect();
     return;
   }
-  // a home aparece já com a última biblioteca conhecida; a nuvem atualiza por trás
-  if (await showCachedLibrary()) {
-    cloud.ready = true;
-    setSyncing(true);
-    render();
-  }
-  try { await connectCloud(); } finally { setSyncing(false); }
+  // a home aparece na hora (jogos deste aparelho + última biblioteca conhecida da nuvem);
+  // a nuvem atualiza por trás, com um anel no avatar. Nunca só o cabeçalho e o resto em branco.
+  await showCachedLibrary();
+  cloud.ready = true;
+  setSyncing(true);
+  render();
+  try { await connectCloud(); } finally { setSyncing(false); render(); }   // tira os lugares marcados
 }
 async function connectCloud() {
   if (isGoogle()) {

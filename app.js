@@ -3128,6 +3128,20 @@ void main() {
     else if (a) letter = ls.get("cartucho.avatar") || (a.kind === "google" ? "G" : "?");
     $("#avatarLetter").textContent = letter || "?";
   }
+  function prepaint() {
+    let known = localOnly();
+    try {
+      known = known || !!localStorage.getItem("cartucho.github");
+    } catch (e) {
+    }
+    if (!known) return;
+    $("#home").hidden = false;
+    $("#connect").hidden = true;
+    $("#empty").hidden = true;
+    const box = $("#games");
+    box.hidden = false;
+    box.replaceChildren(...[0, 1, 2].map(() => el("div", { class: "tile skel", "aria-hidden": "true" }, el("div", { class: "cover" }), el("span", { class: "skel-line" }), el("span", { class: "skel-line short" }))));
+  }
   function render() {
     if (!cloud.ready) return;
     const welcome = !cloud.auth && !localOnly();
@@ -3155,9 +3169,11 @@ void main() {
     else $("#continue").hidden = true;
     const box = $("#games");
     box.replaceChildren();
-    $("#empty").hidden = games.length > 0;
-    box.hidden = games.length === 0;
+    const waiting = !games.length && cloud.syncing;
+    $("#empty").hidden = games.length > 0 || waiting;
+    box.hidden = games.length === 0 && !waiting;
     for (const g of games) box.append(tile(g));
+    if (waiting) for (let i = 0; i < 3; i++) box.append(el("div", { class: "tile skel", "aria-hidden": "true" }, el("div", { class: "cover" }), el("span", { class: "skel-line" }), el("span", { class: "skel-line short" })));
     $("#dsPromo").hidden = !games.length || games.some((g) => g.system === "nds") || ls.get("cartucho.dsPromo") === "off";
     if (games.some((g) => g.system === "nds" && g.playable)) prefetchDsCore();
     if (games.length) box.append(addTile());
@@ -5238,15 +5254,15 @@ Content-Type: ${type}\r
       showConnect();
       return;
     }
-    if (await showCachedLibrary()) {
-      cloud.ready = true;
-      setSyncing(true);
-      render();
-    }
+    await showCachedLibrary();
+    cloud.ready = true;
+    setSyncing(true);
+    render();
     try {
       await connectCloud();
     } finally {
       setSyncing(false);
+      render();
     }
   }
   async function connectCloud() {
@@ -6058,6 +6074,7 @@ Content-Type: ${type}\r
       }
       $("#library").hidden = true;
     }
+    if (!dsPage) prepaint();
     await loadRoms();
     await connect();
     if (dsPage) {

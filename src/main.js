@@ -27,7 +27,7 @@ import { connect } from "./cloud.js";
 import { diag, runDiagnostic } from "./diag.js";
 import { APP_V, identifyOldRoms, loadRoms } from "./library.js";
 import { dsPage, play } from "./player/player.js";
-import { showWelcome } from "./ui/screens.js";
+import { prepaint, showWelcome } from "./ui/screens.js";
 import { $ } from "./util.js";
 
 /* ---------------- boot ---------------- */
@@ -80,6 +80,7 @@ handleScreenLink();
     }
     $("#library").hidden = true;
   }
+  if (!dsPage) prepaint();
   await loadRoms();
   await connect();
   if (dsPage) { play(dsPage); return; }
