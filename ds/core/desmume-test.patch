@@ -1275,6 +1275,56 @@ index 00000000..a0578e65
 +};
 +
 +#endif
+diff --git a/desmume/src/MMU.h b/desmume/src/MMU.h
+index 42febf5b..1cae7716 100644
+--- a/desmume/src/MMU.h
++++ b/desmume/src/MMU.h
+@@ -683,6 +683,17 @@ FORCEINLINE void CheckMemoryDebugEvent(EDEBUG_EVENT event, const MMU_ACCESS_TYPE
+ //the following inline functions dont do the 0x0FFFFFFF mask.
+ //this may result in some unexpected behavior
+ 
++// ARM7: WRAM (0x03xxxxxx) direto, sem passar por _MMU_ARM7_read* (o ARM7 roda dela o tempo
++// todo). Mesmo mapeamento de MMU_LCDmap: região alta = WRAM exclusiva; baixa = conforme WRAMCNT.
++FORCEINLINE u8 *MMU_ARM7_wram(u32 addr)
++{
++	const u32 off = addr & 0x3FFF, block = (addr >> 14) & 3;
++	if (addr & 0x00800000) return MMU.ARM7_ERAM + (block << 14) + off;
++	static const u8 map[4][4] = { {0,1,2,3}, {4,4,4,4}, {5,5,5,5}, {4,5,4,5} };
++	const u32 b = map[MMU.WRAMCNT & 3][block];
++	return b < 4 ? MMU.ARM7_ERAM + (b << 14) + off : MMU.SWIRAM + ((b & 3) << 14) + off;
++}
++
+ FORCEINLINE u8 _MMU_read08(const int PROCNUM, const MMU_ACCESS_TYPE AT, const u32 addr)
+ {
+ 	CheckMemoryDebugEvent(DEBUG_EVENT_READ,AT,PROCNUM,addr,8,0);
+@@ -786,6 +797,13 @@ FORCEINLINE u16 _MMU_read16(const int PROCNUM, const MMU_ACCESS_TYPE AT, const u
+ 			return T1ReadWord_guaranteedAligned(MMU.ARM9_DTCM, addr & 0x3FFE);
+ 		}
+ 
++	if(PROCNUM==ARMCPU_ARM7 && (addr & 0x0F000000) == 0x03000000)
++	{
++#ifdef WRAM_CHECK
++		if (T1ReadWord_guaranteedAligned( MMU_ARM7_wram(addr & ~1u), 0) != _MMU_ARM7_read16(addr)) { printf("WRAM16 %08X\n", addr); abort(); }
++#endif
++		return T1ReadWord_guaranteedAligned( MMU_ARM7_wram(addr & ~1u), 0);
++	}
+ 	if ( (addr & 0x0F000000) == 0x02000000)
+ 		return T1ReadWord_guaranteedAligned( MMU.MAIN_MEM, addr & _MMU_MAIN_MEM_MASK16);
+ 
+@@ -851,6 +869,13 @@ FORCEINLINE u32 _MMU_read32(const int PROCNUM, const MMU_ACCESS_TYPE AT, const u
+ 	{
+ 		if ( (addr & 0x0F000000) == 0x02000000)
+ 			return T1ReadLong_guaranteedAligned( MMU.MAIN_MEM, addr & _MMU_MAIN_MEM_MASK32);
++		if ( (addr & 0x0F000000) == 0x03000000)
++		{
++#ifdef WRAM_CHECK
++			if (T1ReadLong_guaranteedAligned( MMU_ARM7_wram(addr & ~3u), 0) != _MMU_ARM7_read32(addr)) { printf("WRAM32 %08X\n", addr); abort(); }
++#endif
++			return T1ReadLong_guaranteedAligned( MMU_ARM7_wram(addr & ~3u), 0);
++		}
+ 	}
+ 
+ 
 diff --git a/desmume/src/NDSSystem.h b/desmume/src/NDSSystem.h
 index 073ed642..c6e6acfd 100644
 --- a/desmume/src/NDSSystem.h
@@ -1288,6 +1338,21 @@ index 073ed642..c6e6acfd 100644
  	bool single_core() { return num_cores==1; }
  	bool rigorous_timing;
  
+diff --git a/desmume/src/ROMReader.cpp b/desmume/src/ROMReader.cpp
+index 0a51daca..7212a132 100644
+--- a/desmume/src/ROMReader.cpp
++++ b/desmume/src/ROMReader.cpp
+@@ -122,7 +122,9 @@ int STDROMReaderRead(void * file, void * buffer, u32 size)
+ 	if (pos + read > romLen)  {
+ 		read = romLen - pos;
+ 	}
+-	memcpy(buffer,romBuffer + pos, read);
++	// ROM "trimada": o jogo pode ler depois do fim do arquivo (vira 0xFF em quem chama)
++	if (pos < 0 || read < 0) read = 0;
++	if (read > 0) memcpy(buffer,romBuffer + pos, read);
+ 	((STDROMReaderData*)file)->pos += read;
+ 	return read;
+ }
 diff --git a/desmume/src/arm_jit.h b/desmume/src/arm_jit.h
 index 60f07adb..b1907c6f 100644
 --- a/desmume/src/arm_jit.h

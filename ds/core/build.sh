@@ -110,6 +110,8 @@ else
 fi
 
 if [[ "${JIT:-0}" == "1" && "$NATIVE_CHECK" != "1" ]]; then OBJ="$OBJ-jit"; COMMON_FLAGS+=(-DHAVE_JIT); fi
+# EXTRA_FLAGS="-D..." (testes): flags a mais em todos os arquivos
+[[ -n "${EXTRA_FLAGS:-}" ]] && { read -r -a _xf <<< "$EXTRA_FLAGS"; COMMON_FLAGS+=("${_xf[@]}"); }
 mkdir -p "$OBJ" "$OUT"
 SOURCES+=("$PORT/main.cpp" "$PORT/stubs.cpp")
 
