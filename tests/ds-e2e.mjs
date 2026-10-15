@@ -101,6 +101,16 @@ const started = await phone.waitForFunction(() => {
   return false;
 }, null, { timeout: 60000, polling: 250 }).then(() => true, () => false);
 ok(started, "DS abre a ROM e roda 120 quadros");
+// a tela do jogo no celular não pode estar preta (foi o defeito das threads: a imagem não era copiada)
+const localBright = await phone.evaluate(() => {
+  const v = document.querySelector("#game .ds-view"), t = document.createElement("canvas");
+  t.width = 64; t.height = 96;
+  const g = t.getContext("2d"); g.drawImage(v, 0, 0, 64, 96);
+  const d = g.getImageData(0, 0, 64, 96).data; let s = 0;
+  for (let i = 0; i < d.length; i += 4) s += d[i] + d[i + 1] + d[i + 2];
+  return s / (64 * 96 * 3);
+});
+ok(localBright > 3, `tela do jogo não está preta (brilho ${localBright.toFixed(0)})`);
 if (CORE === "mt") {
   const core = await phone.evaluate(() => [...document.scripts].map((s) => s.src).find((u) => /ds\/nds/.test(u)) || "");
   ok(/nds-test-mt\.js/.test(core), `core com threads carregado (${core.split("/").pop()})`);

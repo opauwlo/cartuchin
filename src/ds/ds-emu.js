@@ -350,6 +350,18 @@ async function createDsEmulator(romBytes, gameName, startSav) {
   }
 
   // ---- vídeo ----
+  /* ImageData não aceita memória compartilhada (core com threads): aí a imagem tem o
+     próprio buffer e recebe uma cópia a cada quadro. */
+  const sharedHeap = () => typeof SharedArrayBuffer === "function" && M.HEAPU8.buffer instanceof SharedArrayBuffer;
+  function heapImage(buf, ptr, w, h, old) {
+    if (!sharedHeap()) return new ImageData(new Uint8ClampedArray(buf, ptr, w * h * 4), w, h);
+    const im = old && old.width === w && old.height === h && old.__own ? old : new ImageData(w, h);
+    im.__own = true;
+    return im;
+  }
+  function refreshImage(im, buf, ptr) {
+    if (im.__own) im.data.set(new Uint8Array(buf, ptr, im.data.length));
+  }
   function frameImage() {
     const buf = M.HEAPU8.buffer;
     if (buf !== heapBuf) {
@@ -359,9 +371,10 @@ async function createDsEmulator(romBytes, gameName, startSav) {
     const ptr = S > 1 ? M._getSymbol(8) : fbPtr;
     if (!img || img.width !== W * S || img.__ptr !== ptr) {
       if (!ptr) return null;
-      img = new ImageData(new Uint8ClampedArray(buf, ptr, W * S * H * 2 * S * 4), W * S, H * 2 * S);
+      img = heapImage(buf, ptr, W * S, H * 2 * S, img);
       img.__ptr = ptr;
     }
+    refreshImage(img, buf, ptr);
     return img;
   }
   /* o que cada canvas mostra: retângulos de origem (no fb 256x384) → destino */
@@ -464,12 +477,13 @@ async function createDsEmulator(romBytes, gameName, startSav) {
     fctx.imageSmoothingEnabled = false;
     for (let i = 0; i < 2; i++) {
       const sw = M._screenWidth(i), sh = (sw * H / W) | 0, o = scr[i], ptr = base + i * slot;
-      if (!o.img || o.img.width !== sw || o.img.__ptr !== ptr || o.img.data.buffer !== buf) {
-        o.img = new ImageData(new Uint8ClampedArray(buf, ptr, sw * sh * 4), sw, sh);
+      if (!o.img || o.img.width !== sw || o.img.__ptr !== ptr || (!o.img.__own && o.img.data.buffer !== buf)) {
+        o.img = heapImage(buf, ptr, sw, sh, o.img);
         o.img.__ptr = ptr;
         o.c.width = sw;
         o.c.height = sh;
       }
+      refreshImage(o.img, buf, ptr);
       o.ctx.putImageData(o.img, 0, 0);
       fctx.drawImage(o.c, 0, 0, sw, sh, 0, i * H * S, W * S, H * S);
     }
