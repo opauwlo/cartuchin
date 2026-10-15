@@ -123,11 +123,29 @@ function padMsg(text) {
   clearTimeout(padMsgTimer);
   padMsgTimer = setTimeout(() => n.classList.remove("show"), 2600);
 }
+/* ajustes do controle na tela, um por sistema (GBA e DS têm layouts diferentes) */
+const padPrefKey = () => "cartucho.pad." + (player.isDs ? "nds" : "gba");
+function padPrefs() {
+  let p = {};
+  try { p = JSON.parse(ls.get(padPrefKey()) || "{}") || {}; } catch (e) {}
+  return { zoom: Number(p.zoom) || 1, alpha: Number(p.alpha) || 1, swap: !!p.swap };
+}
+function setPadPrefs(change) {
+  ls.set(padPrefKey(), JSON.stringify({ ...padPrefs(), ...change }));
+  layoutPad();
+}
+function applyPadPrefs(pad) {
+  const p = padPrefs();
+  pad.style.setProperty("--pad-zoom", String(p.zoom));
+  pad.style.setProperty("--pad-alpha", String(p.alpha));
+  pad.classList.toggle("swap", p.swap);
+}
 function layoutPad() {
   const pad = $("#pad");
   if (pad.hidden) return;
   padState.geo = null;
   if (padState.mode === "local") {
+    applyPadPrefs(pad);
     /* Nothing may cover the game. A layer on top of the picture, even a transparent
        one, makes the phone blend the two on every frame instead of sending the
        picture straight to the screen, and that alone can halve the speed. So the
@@ -297,4 +315,4 @@ function handleScreenLink() {
   notice("Segunda tela pronta! Escolha o jogo: ele roda aqui e aparece lá. Este celular vira o controle.");
 }
 
-export { padState, padGeometry, padMsg, showPad, handleScreenLink };
+export { padState, padGeometry, padMsg, showPad, handleScreenLink, padPrefs, setPadPrefs };

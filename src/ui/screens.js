@@ -1,7 +1,8 @@
 import { cloud, googleAvailable, isGoogle } from "../cloud.js";
 import { showConnect } from "../connect.js";
 import { addTile, continueHero, gameInfo, roms, tile } from "../library.js";
-import { closeSheets, fillGameSheet, sheetKey } from "./sheets.js";
+import { closeSheets, fillGameSheet, openSheet, sheetKey } from "./sheets.js";
+import { idb } from "../idb.js";
 import { $, el, ls } from "../util.js";
 import { prefetchDsCore } from "../ds/ds-emu.js";
 
@@ -84,6 +85,19 @@ function render() {
   if (games.some((g) => g.system === "nds" && g.playable)) prefetchDsCore();   // "Jogar" sem esperar o download
   if (games.length) box.append(addTile());
   if (sheetKey) fillGameSheet(sheetKey);
+  updateSyncBadge();
 }
+/* "Tudo salvo" / "N para enviar" / "Sem conexão" ao lado do avatar */
+async function updateSyncBadge() {
+  const b = $("#syncBadge");
+  if (!cloud.auth) { b.hidden = true; return; }
+  const pend = (await idb.all("pend")).filter((r) => r && r.sav).length;
+  const [cls, text] = cloud.syncing ? ["", "Sincronizando…"] : pend ? ["pend", `↑ ${pend} para enviar`] : cloud.db ? ["ok", "✓ Tudo salvo"] : ["off", "Sem conexão"];
+  b.className = "sync-badge " + cls;
+  b.textContent = text;
+  b.title = pend ? "Saves guardados neste aparelho, esperando a nuvem" : "";
+  b.hidden = false;
+}
+$("#syncBadge").addEventListener("click", () => openSheet("settingsSheet"));
 
 export { showWelcome, render, showAvatar, prepaint };

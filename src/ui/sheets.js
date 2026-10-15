@@ -5,6 +5,7 @@ import { confirmDeleteGame, confirmRemoveRom, confirmRestore, downloadSave } fro
 import { pickRom, pickSav } from "./pickers.js";
 import { pickCover, renameGame } from "./rename-cover.js";
 import { $, $$, ago, el } from "../util.js";
+import { listStates } from "./states.js";
 
 /* ---------------- sheets ---------------- */
 let sheetKey = null;
@@ -60,6 +61,12 @@ function fillGameSheet(key) {
       : cloud.db ? [el("span", { class: "dot" }), "Ainda sem save na nuvem"] : [el("span", { class: "dot warn" }), "Save só neste aparelho"]),
     el("div", { class: "sync-line" }, g.crom ? [el("span", { class: "dot ok" }), "ROM na nuvem, abre em qualquer aparelho"]
       : g.rom ? [el("span", { class: "dot" }), cloud.db ? "ROM só neste aparelho" : "ROM neste aparelho"] : [el("span", { class: "dot warn" }), "A ROM não está neste aparelho"]));
+  // estados salvos deste jogo (ficam neste aparelho)
+  listStates(key).then((items) => {
+    if (!items.length || sheetKey !== key) return;
+    status.append(el("div", { class: "sync-line" }, el("span", { class: "dot ok" }),
+      `${items.length} ${items.length === 1 ? "estado salvo" : "estados salvos"} neste aparelho, o último ${ago(items[0].at)}`));
+  }, () => {});
   const working = busy.get(key);
   const playBtn = working ? el("button", { class: "btn primary", type: "button", disabled: true }, working)
     : g.playable ? el("button", { class: "btn primary", type: "button", onclick: () => {

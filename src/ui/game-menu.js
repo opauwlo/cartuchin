@@ -2,6 +2,7 @@ import { player } from "../player/player.js";
 import { dsMenuItems } from "../ds/ds-emu.js";
 import { dialog } from "./dialogs.js";
 import { lastState, openGallery } from "./states.js";
+import { padPrefs, padState, setPadPrefs } from "../cast/pad.js";
 import { closeSheets, openSheet, sheetAction } from "./sheets.js";
 import { $, $$, ago, ls, toast } from "../util.js";
 
@@ -74,6 +75,7 @@ function fillGameMenu() {
         try { emu.muted ? (emu.muted = false, emu.setVolume(emu.volume || 0.5)) : (emu.muted = true, emu.setVolume(0)); } catch (e) {}
         fillGameMenu();
       })),
+      ...padItems().map(sub),
       ...(player.isDs ? dsMenuItems(emu, fillGameMenu).map((it) => { const b = sheetAction(it.icon, it.label, it.fn); b.classList.add(it.sub ? "sub2" : "sub"); return b; }) : []),
       player.isDs ? null : sub(sheetAction("sliders", $("#player").classList.contains("show-ejs") ? "Esconder opções do emulador" : "Opções avançadas do emulador", () => {
         const on = !$("#player").classList.contains("show-ejs");
@@ -90,6 +92,18 @@ function fillGameMenu() {
     ] : []),
   ].filter(Boolean));
   setSpeed(ffState.ratio);
+}
+/* controle na tela: tamanho, transparência, lado (por sistema) */
+const ZOOMS = [0.85, 1, 1.15, 1.3], ALPHAS = [1, 0.75, 0.5];
+const nextIn = (list, v) => list[(list.indexOf(v) + 1) % list.length] ?? list[0];
+function padItems() {
+  if (padState.mode !== "local") return [];
+  const p = padPrefs();
+  return [
+    sheetAction("sliders", `Controles: tamanho ${Math.round(p.zoom * 100)}%`, () => { setPadPrefs({ zoom: nextIn(ZOOMS, p.zoom) }); fillGameMenu(); }),
+    sheetAction("sliders", `Controles: ${p.alpha === 1 ? "sem transparência" : `transparência ${Math.round((1 - p.alpha) * 100)}%`}`, () => { setPadPrefs({ alpha: nextIn(ALPHAS, p.alpha) }); fillGameMenu(); }),
+    sheetAction("sliders", `Direcional à ${p.swap ? "direita" : "esquerda"}`, () => { setPadPrefs({ swap: !p.swap }); fillGameMenu(); }),
+  ];
 }
 function openGameMenu() {
   if (!player.emu) return;

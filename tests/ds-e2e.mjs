@@ -125,6 +125,17 @@ ok(localBright > 3, `tela do jogo não está preta (brilho ${localBright.toFixed
   await phone.mouse.up();
   ok(!!t && Math.abs(t.x - 128) <= 3 && Math.abs(t.y - 96) <= 3, `toque na tela de baixo (${lo}) cai no lugar certo${t ? ` (${t.x}, ${t.y})` : ""}`);
 }
+// controle na tela: trocar o lado do direcional pelo Menu → Ajustes
+{
+  await phone.click("#menuBtn");
+  await phone.click("#gmActions .gs-action:has-text('Ajustes')");
+  await phone.click("#gmActions .gs-action:has-text('Direcional à')");
+  await phone.click("#gmClose");
+  const side = await phone.evaluate(() => { const d = document.querySelector("#pad .pad-dpad").getBoundingClientRect(), a = document.querySelector("#pad .pad-ab").getBoundingClientRect(); return d.left > a.left; });
+  ok(side, "direcional vai para a direita pelo menu");
+  await phone.evaluate(() => localStorage.removeItem("cartucho.pad.nds"));
+  await phone.evaluate(() => window.dispatchEvent(new Event("resize")));
+}
 if (CORE === "mt") {
   const core = await phone.evaluate(() => [...document.scripts].map((s) => s.src).find((u) => /ds\/nds/.test(u)) || "");
   ok(/nds-test-mt\.js/.test(core), `core com threads carregado (${core.split("/").pop()})`);
