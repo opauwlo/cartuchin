@@ -38,7 +38,8 @@ const LAYOUT_LABEL = { auto: "Automático", both: "As duas", side: "Lado a lado"
 const LOCAL_LAYOUTS = ["auto", "both", "top", "bottom"];
 const CAST_LAYOUTS = ["top", "both", "side"];
 const MAX_SCALE = 6;
-const CORE_LABEL = { estavel: "Estável", teste: "Teste", jit: "Teste + JIT (mais rápido)" };
+const CORE_LABEL = { estavel: "Estável", teste: "Teste", jit: "Teste + JIT (mais rápido)", mt: "Teste + threads (3D em outros núcleos)" };
+const CORES = ["estavel", "teste", "jit", "mt"];
 const GPU_LABEL = { auto: "Automático", on: "GPU sempre", off: "Software" };
 let expOpen = false;   // seção "Experimental" do menu aberta
 const ds = {
@@ -48,7 +49,8 @@ const ds = {
   tvq: ls.get("cartucho.ds.tvq") || "suave",
   // canal do core: "estavel" (padrão) ou "teste" (ds/nds-test: resolução interna 2x-3x etc.)
   // "jit": core de teste + JIT de ARM para WebAssembly (ds/nds-jit)
-  core: ["teste", "jit"].includes(ls.get("cartucho.ds.core")) ? ls.get("cartucho.ds.core") : "estavel",
+  // "mt": core de teste com threads (ds/nds-test-mt); só na página isolada do DS (?ds=)
+  core: ["teste", "jit", "mt"].includes(ls.get("cartucho.ds.core")) ? ls.get("cartucho.ds.core") : "estavel",
   scale: Math.min(MAX_SCALE, Math.max(1, Number(ls.get("cartucho.ds.scale")) || 1)),
   // 3D na GPU (WebGL2), só no core de teste: "auto" = GPU só em 2x ou mais (em 1x o software
   // é mais leve: sem leitura de volta da GPU), "on" = sempre GPU, "off" = sempre software
@@ -119,12 +121,14 @@ function loadCore() {
   if (corePromise) return corePromise;
   const simd = WebAssembly.validate(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 123, 3,
     2, 1, 0, 10, 10, 1, 8, 0, 65, 0, 253, 15, 253, 98, 11]));
-  const name = ds.core === "teste" && simd ? "nds-test" : ds.core === "jit" && simd ? "nds-jit" : simd ? "nds" : "nds-nosimd";
+  // threads precisam da página isolada (SharedArrayBuffer); fora dela, o core de teste comum
+  const mt = ds.core === "mt" && simd && window.crossOriginIsolated && typeof SharedArrayBuffer === "function";
+  const name = mt ? "nds-test-mt" : (ds.core === "teste" || ds.core === "mt") && simd ? "nds-test" : ds.core === "jit" && simd ? "nds-jit" : simd ? "nds" : "nds-nosimd";
   corePromise = new Promise((resolve, reject) => {
     /** @type {any} */ const w = window;
     w.wasmReady = () => resolve(w.Module);
     w.Module = {
-      locateFile: (p) => "ds/" + p.replace(/^nds(-nosimd|-test|-jit)?\.wasm$/, name + ".wasm"),
+      locateFile: (p) => "ds/" + p.replace(/^nds(-nosimd|-test-mt|-test|-jit)?\.wasm$/, name + ".wasm"),
       print: () => {}, printErr: (t) => console.warn("[ds]", t),
       onAbort: (r) => reject(new Error("core: " + r)),
     };
@@ -758,7 +762,7 @@ function expItems(emu, refresh) {
     {
       sub: true, icon: "sliders", label: "Core: " + CORE_LABEL[ds.core],
       fn: () => {
-        ds.core = nextOf(["estavel", "teste", "jit"], ds.core);
+        ds.core = nextOf(CORES, ds.core);
         ls.set("cartucho.ds.core", ds.core);
         toast(ds.core === "estavel" ? "Core estável: vale quando abrir o jogo de novo." : `Core ${CORE_LABEL[ds.core]}: vale quando abrir o jogo de novo. Se algo der errado, volte para o estável aqui.`, 5000);
         refresh();

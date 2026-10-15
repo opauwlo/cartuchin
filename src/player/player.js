@@ -8,7 +8,7 @@ import { idb } from "../idb.js";
 import { roms } from "../library.js";
 import { PROFILES, coreOptions, perfProfile, startSpeedMeter } from "./perf.js";
 import { fixSaveChip } from "../rom.js";
-import { createDsEmulator, dsLastError, dsStatesOk } from "../ds/ds-emu.js";
+import { createDsEmulator, ds, dsLastError, dsStatesOk } from "../ds/ds-emu.js";
 import { dialog } from "../ui/dialogs.js";
 import { render } from "../ui/screens.js";
 import { $, actionToast, ago, el, sleep, toast } from "../util.js";
@@ -336,9 +336,10 @@ async function createEmulator(file, gameName, options) {
 /* jogo de DS: abre em ?ds=<jogo>, que o service worker serve com isolamento
    cross-origin (o core usa threads). O login do Google fica na biblioteca. */
 const dsPage = new URLSearchParams(location.search).get("ds");
-const DS_ISOLATED_PAGE = false;   // desligado: voltou ao modo que rodava o jogo (ver src/ds/ds-emu-worker.js)
+// só o core com threads usa a página isolada (?ds=, COOP/COEP); os outros rodam aqui mesmo
+const DS_ISOLATED_PAGE = () => ds.core === "mt";
 async function play(key) {
-  if (!dsPage && DS_ISOLATED_PAGE) {
+  if (!dsPage && DS_ISOLATED_PAGE()) {
     const r = roms.get(key) || cloud.roms.get(key) || cloud.docs.get(key);
     if (r && r.system === "nds") {
       location.href = location.pathname + "?ds=" + encodeURIComponent(key) + (cast.pending ? "#tela-" + cast.pending : "");

@@ -37,3 +37,9 @@ jobs:
           SCALE: "6"
           CAST_MODES: "0"
           CAST_LAYOUTS: top
+      - name: Core de teste com threads (página isolada)
+        run: node tests/ds-e2e.mjs
+        env:
+          CORE: mt
+          CAST_MODES: "0"
+          CAST_LAYOUTS: top

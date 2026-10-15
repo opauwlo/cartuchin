@@ -2770,7 +2770,8 @@ void main() {
   var LOCAL_LAYOUTS = ["auto", "both", "top", "bottom"];
   var CAST_LAYOUTS = ["top", "both", "side"];
   var MAX_SCALE = 6;
-  var CORE_LABEL = { estavel: "Estável", teste: "Teste", jit: "Teste + JIT (mais rápido)" };
+  var CORE_LABEL = { estavel: "Estável", teste: "Teste", jit: "Teste + JIT (mais rápido)", mt: "Teste + threads (3D em outros núcleos)" };
+  var CORES = ["estavel", "teste", "jit", "mt"];
   var GPU_LABEL = { auto: "Automático", on: "GPU sempre", off: "Software" };
   var expOpen = false;
   var ds = {
@@ -2780,7 +2781,8 @@ void main() {
     tvq: ls.get("cartucho.ds.tvq") || "suave",
     // canal do core: "estavel" (padrão) ou "teste" (ds/nds-test: resolução interna 2x-3x etc.)
     // "jit": core de teste + JIT de ARM para WebAssembly (ds/nds-jit)
-    core: ["teste", "jit"].includes(ls.get("cartucho.ds.core")) ? ls.get("cartucho.ds.core") : "estavel",
+    // "mt": core de teste com threads (ds/nds-test-mt); só na página isolada do DS (?ds=)
+    core: ["teste", "jit", "mt"].includes(ls.get("cartucho.ds.core")) ? ls.get("cartucho.ds.core") : "estavel",
     scale: Math.min(MAX_SCALE, Math.max(1, Number(ls.get("cartucho.ds.scale")) || 1)),
     // 3D na GPU (WebGL2), só no core de teste: "auto" = GPU só em 2x ou mais (em 1x o software
     // é mais leve: sem leitura de volta da GPU), "on" = sempre GPU, "off" = sempre software
@@ -2878,12 +2880,13 @@ registerProcessor("ds-out", DSOut);
       98,
       11
     ]));
-    const name = ds.core === "teste" && simd ? "nds-test" : ds.core === "jit" && simd ? "nds-jit" : simd ? "nds" : "nds-nosimd";
+    const mt = ds.core === "mt" && simd && window.crossOriginIsolated && typeof SharedArrayBuffer === "function";
+    const name = mt ? "nds-test-mt" : (ds.core === "teste" || ds.core === "mt") && simd ? "nds-test" : ds.core === "jit" && simd ? "nds-jit" : simd ? "nds" : "nds-nosimd";
     corePromise = new Promise((resolve, reject) => {
       const w = window;
       w.wasmReady = () => resolve(w.Module);
       w.Module = {
-        locateFile: (p) => "ds/" + p.replace(/^nds(-nosimd|-test|-jit)?\.wasm$/, name + ".wasm"),
+        locateFile: (p) => "ds/" + p.replace(/^nds(-nosimd|-test-mt|-test|-jit)?\.wasm$/, name + ".wasm"),
         print: () => {
         },
         printErr: (t) => console.warn("[ds]", t),
@@ -3634,7 +3637,7 @@ void main() {
         icon: "sliders",
         label: "Core: " + CORE_LABEL[ds.core],
         fn: () => {
-          ds.core = nextOf(["estavel", "teste", "jit"], ds.core);
+          ds.core = nextOf(CORES, ds.core);
           ls.set("cartucho.ds.core", ds.core);
           toast(ds.core === "estavel" ? "Core estável: vale quando abrir o jogo de novo." : `Core ${CORE_LABEL[ds.core]}: vale quando abrir o jogo de novo. Se algo der errado, volte para o estável aqui.`, 5e3);
           refresh();
@@ -4054,9 +4057,9 @@ void main() {
     });
   }
   var dsPage = new URLSearchParams(location.search).get("ds");
-  var DS_ISOLATED_PAGE = false;
+  var DS_ISOLATED_PAGE = () => ds.core === "mt";
   async function play(key) {
-    if (!dsPage && DS_ISOLATED_PAGE) {
+    if (!dsPage && DS_ISOLATED_PAGE()) {
       const r = roms.get(key) || cloud.roms.get(key) || cloud.docs.get(key);
       if (r && r.system === "nds") {
         location.href = location.pathname + "?ds=" + encodeURIComponent(key) + (cast.pending ? "#tela-" + cast.pending : "");

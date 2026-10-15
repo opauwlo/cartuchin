@@ -26,7 +26,11 @@ const server = http.createServer((req, res) => {
   if (!file.startsWith(root)) { res.writeHead(403); res.end(); return; }
   fs.readFile(file, (err, data) => {
     if (err) { res.writeHead(404); res.end(); return; }
-    res.writeHead(200, { "content-type": types[path.extname(file)] || "application/octet-stream" });
+    // como a Vercel: a página do DS (?ds=) é isolada (threads); os arquivos de ds/ também
+    const h = { "content-type": types[path.extname(file)] || "application/octet-stream" };
+    if (/[?&]ds=/.test(req.url)) Object.assign(h, { "cross-origin-opener-policy": "same-origin", "cross-origin-embedder-policy": "credentialless" });
+    if (p.startsWith("/ds/")) Object.assign(h, { "cross-origin-embedder-policy": "credentialless", "cross-origin-resource-policy": "same-origin" });
+    res.writeHead(200, h);
     res.end(data);
   });
 });
@@ -82,6 +86,12 @@ await phone.setInputFiles("#romInput", ROM);
 await phone.waitForSelector("#games .tile:not(.add-tile)", { timeout: 20000 });
 await phone.click("#games .tile:not(.add-tile)");
 await phone.click("#gameSheet .btn.primary");
+// core com threads: o jogo abre na página isolada (?ds=)
+if (CORE === "mt") {
+  await phone.waitForURL(/[?&]ds=/, { timeout: 20000 });
+  await phone.waitForLoadState("load");
+  ok(await phone.evaluate(() => window.crossOriginIsolated), "página do DS isolada (threads disponíveis)");
+}
 // pode aparecer uma escolha de save: segue com a primeira opção
 const started = await phone.waitForFunction(() => {
   const e = window.__cartucho && window.__cartucho.emu;
@@ -91,6 +101,10 @@ const started = await phone.waitForFunction(() => {
   return false;
 }, null, { timeout: 60000, polling: 250 }).then(() => true, () => false);
 ok(started, "DS abre a ROM e roda 120 quadros");
+if (CORE === "mt") {
+  const core = await phone.evaluate(() => [...document.scripts].map((s) => s.src).find((u) => /ds\/nds/.test(u)) || "");
+  ok(/nds-test-mt\.js/.test(core), `core com threads carregado (${core.split("/").pop()})`);
+}
 if (!started) {
   console.log(errors.join("\n"));
   await browser.close(); server.close(); process.exit(1);
