@@ -1,6 +1,6 @@
 diff --git a/desmume/src/GLES3Render.cpp b/desmume/src/GLES3Render.cpp
 new file mode 100644
-index 0000000..2a31eea
+index 00000000..2a31eeac
 --- /dev/null
 +++ b/desmume/src/GLES3Render.cpp
 @@ -0,0 +1,1200 @@
@@ -1206,7 +1206,7 @@ index 0000000..2a31eea
 +};
 diff --git a/desmume/src/GLES3Render.h b/desmume/src/GLES3Render.h
 new file mode 100644
-index 0000000..a0578e6
+index 00000000..a0578e65
 --- /dev/null
 +++ b/desmume/src/GLES3Render.h
 @@ -0,0 +1,65 @@
@@ -1276,7 +1276,7 @@ index 0000000..a0578e6
 +
 +#endif
 diff --git a/desmume/src/NDSSystem.h b/desmume/src/NDSSystem.h
-index 073ed64..c6e6acf 100644
+index 073ed642..c6e6acfd 100644
 --- a/desmume/src/NDSSystem.h
 +++ b/desmume/src/NDSSystem.h
 @@ -600,7 +600,7 @@ extern struct TCommonSettings
@@ -1289,7 +1289,7 @@ index 073ed64..c6e6acf 100644
  	bool rigorous_timing;
  
 diff --git a/desmume/src/arm_jit.h b/desmume/src/arm_jit.h
-index 60f07ad..b1907c6 100644
+index 60f07adb..b1907c6f 100644
 --- a/desmume/src/arm_jit.h
 +++ b/desmume/src/arm_jit.h
 @@ -30,6 +30,10 @@ void arm_jit_reset(bool enable, bool suppress_msg = false);
@@ -1305,10 +1305,10 @@ index 60f07ad..b1907c6 100644
  //* x86 windows seems faster with NON-DEFINED
 diff --git a/desmume/src/arm_jit_wasm.cpp b/desmume/src/arm_jit_wasm.cpp
 new file mode 100644
-index 0000000..a956c3a
+index 00000000..8d1e3c0f
 --- /dev/null
 +++ b/desmume/src/arm_jit_wasm.cpp
-@@ -0,0 +1,827 @@
+@@ -0,0 +1,1065 @@
 +/*
 +	JIT de ARM para WebAssembly (Cartuchin), no lugar do arm_jit.cpp (x86/AsmJit).
 +
@@ -1340,6 +1340,7 @@ index 0000000..a956c3a
 +#include "instructions.h"
 +#include "instruction_attributes.h"
 +#include "MMU.h"
++#include "MMU_timing.h"
 +#include "arm_jit.h"
 +#include "NDSSystem.h"
 +
@@ -1595,7 +1596,128 @@ index 0000000..a956c3a
 +	void carryOld() { cpsr(); k(29); op(W_SHRU); k(1); op(W_AND); set(L_C); }
 +};
 +
-+static bool emit_inline_thumb(WasmOut &out, const JitInstr &in)
++/* ---- Fase B2: leitura e escrita de memória direto em wasm ----
++   Caminho rápido para a RAM principal (0x02xxxxxx) e, no ARM9, a DTCM — o mesmo que
++   _MMU_read/_MMU_write fazem antes de tudo. Qualquer outro endereço chama a função do
++   interpretador (registradores de I/O, VRAM etc. têm efeitos). Ciclos: os mesmos de
++   MMU_aluMemAccessCycles (sem ADVANCED_TIMING só dependem da região do endereço), por
++   tabela tirada das próprias funções de timing. Escrita na RAM principal apaga a entrada
++   do mapa de blocos, como o MMU faz (código que se reescreve). */
++enum { L_ADR = 6, L_V = 7, L_M = 8, N_LOCALS = 9 };
++#define W_EQ 0x46
++#define W_NE 0x47
++#define W_GTU 0x4B
++#define W_ROTR 0x78
++#define W_SELECT 0x1B
++struct JitMem { u32 dtcmRegion, dtcm, main, mask8, mask16, mask32, jitMain, cyc; };
++static JitMem s_mem;
++u8 jit_cycTab[2][3][16];   // [processador][8/16/32 bits][região = endereço >> 24]
++template<int P> static void fill_cyc()
++{
++	for (u32 r = 0; r < 16; r++)
++	{
++		jit_cycTab[P][0][r] = (u8)MMU_memAccessCycles<P, 8, MMU_AD_READ>(r << 24);
++		jit_cycTab[P][1][r] = (u8)MMU_memAccessCycles<P, 16, MMU_AD_READ>(r << 24);
++		jit_cycTab[P][2][r] = (u8)MMU_memAccessCycles<P, 32, MMU_AD_READ>(r << 24);
++	}
++}
++static void jit_mem_real()
++{
++	fill_cyc<0>(); fill_cyc<1>();
++	s_mem.dtcmRegion = (u32)(uintptr_t)&MMU.DTCMRegion;
++	s_mem.dtcm = (u32)(uintptr_t)MMU.ARM9_DTCM;
++	s_mem.main = (u32)(uintptr_t)MMU.MAIN_MEM;
++	s_mem.mask8 = (u32)(uintptr_t)&_MMU_MAIN_MEM_MASK;
++	s_mem.mask16 = (u32)(uintptr_t)&_MMU_MAIN_MEM_MASK16;
++	s_mem.mask32 = (u32)(uintptr_t)&_MMU_MAIN_MEM_MASK32;
++	s_mem.jitMain = (u32)(uintptr_t)JIT.MAIN_MEM;
++	s_mem.cyc = (u32)(uintptr_t)jit_cycTab;
++}
++
++// chamada da função do interpretador para uma instrução (ciclos somados no local 1)
++static void emit_call(WasmOut &body, const JitInstr &in, u32 size)
++{
++	body.lget(0); body.i32c(in.adr); body.store32(offsetof(armcpu_t, instruct_adr));
++	body.lget(0); body.i32c(in.adr + size); body.store32(offsetof(armcpu_t, next_instruction));
++	body.lget(0); body.i32c(in.adr + size * 2); body.store32(offsetof(armcpu_t, R) + 15 * 4);
++	body.lget(1);
++	body.i32c(in.opcode);
++	body.i32c((u32)(uintptr_t)in.fn);
++	body.u8_(0x11); body.uleb(1); body.uleb(0);
++	body.u8_(0x6A); body.lset(1);
++}
++
++/* Acesso com o endereço já em L_ADR. sz: 0 = 8, 1 = 16, 2 = 32 bits. rot: LDR de palavra
++   gira pelo desalinhamento. cycConst: o interpretador calcula os ciclos com o endereço já
++   trocado por (adr&3)*8 (região 0) — repetido aqui do jeito que ele faz. */
++static void emit_mem(WasmOut &o, const JitInstr &in, int sz, bool load, u32 rd, bool sgn, bool rot, u32 alu, bool cycConst, u32 isize)
++{
++	Emit e(o);
++	const int P = PROCNUM;
++	const u32 dmask = sz == 2 ? 0x3FFC : sz == 1 ? 0x3FFE : 0x3FFF;
++	const u32 maskAdr = sz == 2 ? s_mem.mask32 : sz == 1 ? s_mem.mask16 : s_mem.mask8;
++	auto access = [&]() {   // ponteiro já na pilha
++		if (load)
++		{
++			if (sz == 2) o.load32(0);
++			else if (sz == 1) { o.u8_(sgn ? 0x2E : 0x2F); o.uleb(1); o.uleb(0); }
++			else { o.u8_(sgn ? 0x2C : 0x2D); o.uleb(0); o.uleb(0); }
++			e.set(L_V);
++		}
++		else
++		{
++			e.ld(rd);
++			if (sz == 2) o.store32(0);
++			else if (sz == 1) { o.u8_(0x3B); o.uleb(1); o.uleb(0); }
++			else { o.u8_(0x3A); o.uleb(0); o.uleb(0); }
++		}
++	};
++	auto tail = [&]() {
++		if (load)
++		{
++			if (rot) { e.get(L_V); e.get(L_ADR); e.k(3); e.op(W_AND); e.k(3); e.op(W_SHL); e.op(W_ROTR); e.set(L_V); }
++			e.st(rd, L_V);
++		}
++		if (cycConst) e.k(P == 0 ? (alu > 1 ? alu : 1) : alu + 1);
++		else
++		{
++			e.get(L_ADR); e.k(24); e.op(W_SHRU); e.k(15); e.op(W_AND);
++			o.load8u(s_mem.cyc + (u32)(P * 3 + sz) * 16); e.set(L_M);
++			if (P == 0) { e.get(L_M); e.k(alu); e.get(L_M); e.k(alu); e.op(W_GTU); e.op(W_SELECT); }
++			else { e.get(L_M); e.k(alu); e.op(W_ADD); }
++		}
++		e.get(L_CYC); e.op(W_ADD); e.set(L_CYC);
++	};
++	o.u8_(0x02); o.u8_(0x40);          // block: fim
++	o.u8_(0x02); o.u8_(0x40);          // block: caminho lento
++	if (P == 0)
++	{
++		e.get(L_ADR); e.k(~0x3FFFu); e.op(W_AND); e.k(s_mem.dtcmRegion); o.load32(0); e.op(W_EQ);
++		o.u8_(0x04); o.u8_(0x40);
++		e.get(L_ADR); e.k(dmask); e.op(W_AND); e.k(s_mem.dtcm); e.op(W_ADD);
++		access(); tail();
++		o.u8_(0x0C); o.uleb(2);
++		o.u8_(0x0B);
++	}
++	e.get(L_ADR); e.k(0x0F000000); e.op(W_AND); e.k(0x02000000); e.op(W_NE);
++	o.u8_(0x0D); o.uleb(0);
++	e.get(L_ADR); e.k(maskAdr); o.load32(0); e.op(W_AND); e.k(s_mem.main); e.op(W_ADD);
++	access();
++	if (!load)
++	{
++		// mapa de blocos: entrada (endereço & máscara) >> 1, como JIT_COMPILED_FUNC_KNOWNBANK
++		e.get(L_ADR); e.k(maskAdr); o.load32(0); e.op(W_AND); e.k(1); e.op(W_SHRU); e.k(2); e.op(W_SHL); e.k(s_mem.jitMain); e.op(W_ADD);
++		if (sz == 2) { o.u8_(0x42); o.u8_(0x00); o.u8_(0x37); o.uleb(2); o.uleb(0); }   // i64.store 0: as duas entradas da palavra
++		else { e.k(0); o.store32(0); }
++	}
++	tail();
++	o.u8_(0x0C); o.uleb(1);
++	o.u8_(0x0B);
++	emit_call(o, in, isize);
++	o.u8_(0x0B);
++}
++
++static int emit_inline_thumb(WasmOut &out, const JitInstr &in)
 +{
 +	Emit e(out);
 +	const u32 op = in.opcode;
@@ -1604,18 +1726,18 @@ index 0000000..a956c3a
 +	{
 +		case 0x00: {   // LSL Rd, Rs, #n
 +			const u32 n = (op >> 6) & 31;
-+			if (n == 0) { e.ldTo(rs, L_R); e.st(rd, L_R); e.nz(); return true; }
++			if (n == 0) { e.ldTo(rs, L_R); e.st(rd, L_R); e.nz(); return 1; }
 +			e.ldTo(rs, L_A);
 +			e.get(L_A); e.k(32 - n); e.op(W_SHRU); e.k(1); e.op(W_AND); e.set(L_C);
 +			e.get(L_A); e.k(n); e.op(W_SHL); e.set(L_R);
-+			e.st(rd, L_R); e.nzc(); return true;
++			e.st(rd, L_R); e.nzc(); return 1;
 +		}
 +		case 0x01: {   // LSR Rd, Rs, #n (0 = 32)
 +			const u32 n = (op >> 6) & 31;
 +			e.ldTo(rs, L_A);
 +			if (n == 0) { e.get(L_A); e.k(31); e.op(W_SHRU); e.set(L_C); e.k(0); e.set(L_R); }
 +			else { e.get(L_A); e.k(n - 1); e.op(W_SHRU); e.k(1); e.op(W_AND); e.set(L_C); e.get(L_A); e.k(n); e.op(W_SHRU); e.set(L_R); }
-+			e.st(rd, L_R); e.nzc(); return true;
++			e.st(rd, L_R); e.nzc(); return 1;
 +		}
 +		case 0x03: {   // ADD/SUB registrador ou imediato de 3 bits
 +			const u32 kind = (op >> 9) & 3, x = (op >> 6) & 7;
@@ -1625,70 +1747,96 @@ index 0000000..a956c3a
 +				// "ADD Rd, Rs, #0" = MOV: N, Z, e C = V = 0
 +				e.get(L_A); e.set(L_R); e.st(rd, L_R);
 +				e.flagsBegin(0x0FFFFFFF); e.flagsEnd();
-+				return true;
++				return 1;
 +			}
 +			if (kind < 2) e.ldTo(x, L_B); else { e.k(x); e.set(L_B); }
 +			if (kind == 0 || kind == 2) { e.add(); e.st(rd, L_R); e.nzcvAdd(); }
 +			else { e.sub(); e.st(rd, L_R); e.nzcvSub(); }
-+			return true;
++			return 1;
 +		}
-+		case 0x04: { const u32 r = (op >> 8) & 7; e.k(op & 0xFF); e.set(L_R); e.st(r, L_R); e.nz(); return true; }   // MOV imm8
-+		case 0x05: { const u32 r = (op >> 8) & 7; e.ldTo(r, L_A); e.k(op & 0xFF); e.set(L_B); e.sub(); e.nzcvSub(); return true; }   // CMP imm8
-+		case 0x06: { const u32 r = (op >> 8) & 7; e.ldTo(r, L_A); e.k(op & 0xFF); e.set(L_B); e.add(); e.st(r, L_R); e.nzcvAdd(); return true; }   // ADD imm8
-+		case 0x07: { const u32 r = (op >> 8) & 7; e.ldTo(r, L_A); e.k(op & 0xFF); e.set(L_B); e.sub(); e.st(r, L_R); e.nzcvSub(); return true; }   // SUB imm8
++		case 0x04: { const u32 r = (op >> 8) & 7; e.k(op & 0xFF); e.set(L_R); e.st(r, L_R); e.nz(); return 1; }   // MOV imm8
++		case 0x05: { const u32 r = (op >> 8) & 7; e.ldTo(r, L_A); e.k(op & 0xFF); e.set(L_B); e.sub(); e.nzcvSub(); return 1; }   // CMP imm8
++		case 0x06: { const u32 r = (op >> 8) & 7; e.ldTo(r, L_A); e.k(op & 0xFF); e.set(L_B); e.add(); e.st(r, L_R); e.nzcvAdd(); return 1; }   // ADD imm8
++		case 0x07: { const u32 r = (op >> 8) & 7; e.ldTo(r, L_A); e.k(op & 0xFF); e.set(L_B); e.sub(); e.st(r, L_R); e.nzcvSub(); return 1; }   // SUB imm8
 +		case 0x08: {
 +			if (!(op & 0x400))
 +			{
 +				// operações de ALU entre registradores baixos
 +				switch ((op >> 6) & 15)
 +				{
-+					case 0x0: e.ldTo(rd, L_A); e.ldTo(rs, L_B); e.get(L_A); e.get(L_B); e.op(W_AND); e.set(L_R); e.st(rd, L_R); e.nz(); return true;
-+					case 0x1: e.ldTo(rd, L_A); e.ldTo(rs, L_B); e.get(L_A); e.get(L_B); e.op(W_XOR); e.set(L_R); e.st(rd, L_R); e.nz(); return true;
-+					case 0x8: e.ldTo(rd, L_A); e.ldTo(rs, L_B); e.get(L_A); e.get(L_B); e.op(W_AND); e.set(L_R); e.nz(); return true;   // TST
-+					case 0x9: e.k(0); e.set(L_A); e.ldTo(rs, L_B); e.sub(); e.st(rd, L_R); e.nzcvSub(); return true;                     // NEG
-+					case 0xA: e.ldTo(rd, L_A); e.ldTo(rs, L_B); e.sub(); e.nzcvSub(); return true;                                        // CMP
-+					case 0xB: e.ldTo(rd, L_A); e.ldTo(rs, L_B); e.add(); e.nzcvAdd(); return true;                                        // CMN
-+					case 0xC: e.ldTo(rd, L_A); e.ldTo(rs, L_B); e.get(L_A); e.get(L_B); e.op(W_OR); e.set(L_R); e.st(rd, L_R); e.nz(); return true;
-+					case 0xE: e.ldTo(rd, L_A); e.ldTo(rs, L_B); e.get(L_A); e.get(L_B); e.k(0xFFFFFFFF); e.op(W_XOR); e.op(W_AND); e.set(L_R); e.st(rd, L_R); e.nz(); return true;   // BIC
-+					case 0xF: e.ldTo(rs, L_B); e.get(L_B); e.k(0xFFFFFFFF); e.op(W_XOR); e.set(L_R); e.st(rd, L_R); e.nz(); return true; // MVN
-+					default: return false;
++					case 0x0: e.ldTo(rd, L_A); e.ldTo(rs, L_B); e.get(L_A); e.get(L_B); e.op(W_AND); e.set(L_R); e.st(rd, L_R); e.nz(); return 1;
++					case 0x1: e.ldTo(rd, L_A); e.ldTo(rs, L_B); e.get(L_A); e.get(L_B); e.op(W_XOR); e.set(L_R); e.st(rd, L_R); e.nz(); return 1;
++					case 0x8: e.ldTo(rd, L_A); e.ldTo(rs, L_B); e.get(L_A); e.get(L_B); e.op(W_AND); e.set(L_R); e.nz(); return 1;   // TST
++					case 0x9: e.k(0); e.set(L_A); e.ldTo(rs, L_B); e.sub(); e.st(rd, L_R); e.nzcvSub(); return 1;                     // NEG
++					case 0xA: e.ldTo(rd, L_A); e.ldTo(rs, L_B); e.sub(); e.nzcvSub(); return 1;                                        // CMP
++					case 0xB: e.ldTo(rd, L_A); e.ldTo(rs, L_B); e.add(); e.nzcvAdd(); return 1;                                        // CMN
++					case 0xC: e.ldTo(rd, L_A); e.ldTo(rs, L_B); e.get(L_A); e.get(L_B); e.op(W_OR); e.set(L_R); e.st(rd, L_R); e.nz(); return 1;
++					case 0xE: e.ldTo(rd, L_A); e.ldTo(rs, L_B); e.get(L_A); e.get(L_B); e.k(0xFFFFFFFF); e.op(W_XOR); e.op(W_AND); e.set(L_R); e.st(rd, L_R); e.nz(); return 1;   // BIC
++					case 0xF: e.ldTo(rs, L_B); e.get(L_B); e.k(0xFFFFFFFF); e.op(W_XOR); e.set(L_R); e.st(rd, L_R); e.nz(); return 1; // MVN
++					default: return 0;
 +				}
 +			}
 +			// registradores altos (sem R15: aí é desvio ou leitura de PC → interpretador)
 +			const u32 hop = (op >> 8) & 3, hd = (op & 7) | ((op >> 4) & 8), hm = (op >> 3) & 15;
-+			if (hd == 15 || hm == 15) return false;
-+			if (hop == 0) { e.ldTo(hd, L_A); e.ldTo(hm, L_B); e.add(); e.st(hd, L_R); return true; }   // ADD (sem flags)
-+			if (hop == 1) { e.ldTo(hd, L_A); e.ldTo(hm, L_B); e.sub(); e.nzcvSub(); return true; }    // CMP
-+			if (hop == 2) { e.ldTo(hm, L_R); e.st(hd, L_R); return true; }                            // MOV
-+			return false;
++			if (hd == 15 || hm == 15) return 0;
++			if (hop == 0) { e.ldTo(hd, L_A); e.ldTo(hm, L_B); e.add(); e.st(hd, L_R); return 1; }   // ADD (sem flags)
++			if (hop == 1) { e.ldTo(hd, L_A); e.ldTo(hm, L_B); e.sub(); e.nzcvSub(); return 1; }    // CMP
++			if (hop == 2) { e.ldTo(hm, L_R); e.st(hd, L_R); return 1; }                            // MOV
++			return 0;
 +		}
-+		case 0x14: { const u32 r = (op >> 8) & 7; e.k(((in.adr + 4) & 0xFFFFFFFC) + ((op & 0xFF) << 2)); e.set(L_R); e.st(r, L_R); return true; }   // ADD Rd, PC, #imm
-+		case 0x15: { const u32 r = (op >> 8) & 7; e.ld(13); e.k((op & 0xFF) << 2); e.op(W_ADD); e.set(L_R); e.st(r, L_R); return true; }           // ADD Rd, SP, #imm
++		// fase B2: memória
++		case 0x09: { const u32 r = (op >> 8) & 7; e.k(((in.adr + 4) & 0xFFFFFFFC) + ((op & 0xFF) << 2)); e.set(L_ADR); emit_mem(out, in, 2, true, r, false, false, 3, false, 2); return 2; }   // LDR Rd, [PC, #imm]
++		case 0x0A: case 0x0B: {   // registrador + registrador
++			const u32 sub = (op >> 9) & 7, rb = (op >> 3) & 7, ro = (op >> 6) & 7;
++			e.ld(rb); e.ld(ro); e.op(W_ADD); e.set(L_ADR);
++			static const int SZ[8] = { 2, 1, 0, 0, 2, 1, 0, 1 };
++			const bool load = sub >= 3;
++			emit_mem(out, in, SZ[sub], load, rd, sub == 3 || sub == 7, sub == 4, load ? 3 : 2, sub == 4, 2);
++			return 2;
++		}
++		case 0x0C: case 0x0D: { e.ld(rs); e.k((op >> 4) & 0x7C); e.op(W_ADD); e.set(L_ADR); const bool l = (op >> 11) & 1; emit_mem(out, in, 2, l, rd, false, l, l ? 3 : 2, l, 2); return 2; }   // STR/LDR imm
++		case 0x0E: case 0x0F: { e.ld(rs); e.k((op >> 6) & 0x1F); e.op(W_ADD); e.set(L_ADR); const bool l = (op >> 11) & 1; emit_mem(out, in, 0, l, rd, false, false, l ? 3 : 2, false, 2); return 2; }   // STRB/LDRB imm
++		case 0x10: case 0x11: { e.ld(rs); e.k((op >> 5) & 0x3E); e.op(W_ADD); e.set(L_ADR); const bool l = (op >> 11) & 1; emit_mem(out, in, 1, l, rd, false, false, l ? 3 : 2, false, 2); return 2; }   // STRH/LDRH imm
++		case 0x12: case 0x13: { const u32 r = (op >> 8) & 7; e.ld(13); e.k((op & 0xFF) << 2); e.op(W_ADD); e.set(L_ADR); const bool l = (op >> 11) & 1; emit_mem(out, in, 2, l, r, false, false, l ? 3 : 2, false, 2); return 2; }   // STR/LDR [SP, #imm]
++		case 0x14: { const u32 r = (op >> 8) & 7; e.k(((in.adr + 4) & 0xFFFFFFFC) + ((op & 0xFF) << 2)); e.set(L_R); e.st(r, L_R); return 1; }   // ADD Rd, PC, #imm
++		case 0x15: { const u32 r = (op >> 8) & 7; e.ld(13); e.k((op & 0xFF) << 2); e.op(W_ADD); e.set(L_R); e.st(r, L_R); return 1; }           // ADD Rd, SP, #imm
 +		case 0x16:
 +			if ((op & 0x0F00) == 0)   // ADD/SUB SP, #imm7
 +			{
 +				e.ld(13); e.k((op & 0x7F) << 2); e.op((op & 0x80) ? W_SUB : W_ADD); e.set(L_R); e.st(13, L_R);
-+				return true;
++				return 1;
 +			}
-+			return false;
++			return 0;
 +		default:
-+			return false;
++			return 0;
 +	}
 +}
 +
-+static bool emit_inline_arm(WasmOut &out, const JitInstr &in)
++static int emit_inline_arm(WasmOut &out, const JitInstr &in)
 +{
 +	Emit e(out);
 +	const u32 op = in.opcode;
-+	if (((op >> 26) & 3) != 0) return false;
++	if ((op & 0x0F200000) == 0x05000000)
++	{
++		// fase B2: LDR/STR/LDRB/STRB [Rn, #±imm], sem writeback
++		const u32 rn = (op >> 16) & 15, rd = (op >> 12) & 15, imm = op & 0xFFF;
++		const bool L = (op >> 20) & 1, B = (op >> 22) & 1, U = (op >> 23) & 1;
++		if (rd == 15) return 0;
++		if (rn == 15) e.k(U ? in.adr + 8 + imm : in.adr + 8 - imm);
++		else { e.ld(rn); e.k(imm); e.op(U ? W_ADD : W_SUB); }
++		e.set(L_ADR);
++		emit_mem(out, in, B ? 0 : 2, L, rd, false, L && !B, L ? 3 : 2, false, 4);
++		return 2;
++	}
++	if (((op >> 26) & 3) != 0) return 0;
 +	const bool I = (op >> 25) & 1, S = (op >> 20) & 1;
-+	if (!I && (op & 0x10)) return false;               // deslocamento por registrador / multiplicação / LDRH...
++	if (!I && (op & 0x10)) return 0;               // deslocamento por registrador / multiplicação / LDRH...
 +	const u32 opc = (op >> 21) & 15, rn = (op >> 16) & 15, rd = (op >> 12) & 15, rm = op & 15;
 +	const bool isCmp = opc >= 8 && opc <= 11;
-+	if (isCmp && !S) return false;                     // MRS/MSR/BX etc.
-+	if (opc == 5 || opc == 6 || opc == 7) return false; // ADC/SBC/RSC
++	if (isCmp && !S) return 0;                     // MRS/MSR/BX etc.
++	if (opc == 5 || opc == 6 || opc == 7) return 0; // ADC/SBC/RSC
 +	const bool usesRn = opc != 13 && opc != 15;
-+	if ((!isCmp && rd == 15) || (usesRn && rn == 15) || (!I && rm == 15)) return false;
++	if ((!isCmp && rd == 15) || (usesRn && rn == 15) || (!I && rm == 15)) return 0;
 +	const bool logical = (opc == 0 || opc == 1 || opc == 8 || opc == 9 || opc == 12 || opc == 13 || opc == 14 || opc == 15);
 +	
 +	// operando 2 em L_B; carry do deslocador em L_C (só para lógicas com S)
@@ -1718,7 +1866,7 @@ index 0000000..a956c3a
 +			if (n == 0) { if (needC) { e.get(L_A); e.k(31); e.op(W_SHRU); e.set(L_C); } e.get(L_A); e.k(31); e.op(W_SHRS); e.set(L_B); }
 +			else { if (needC) { e.get(L_A); e.k(n - 1); e.op(W_SHRU); e.k(1); e.op(W_AND); e.set(L_C); } e.get(L_A); e.k(n); e.op(W_SHRS); e.set(L_B); }
 +		}
-+		else return false;   // ROR/RRX: interpretador
++		else return 0;   // ROR/RRX: interpretador
 +	}
 +	if (usesRn) e.ldTo(rn, L_A);
 +	
@@ -1741,7 +1889,7 @@ index 0000000..a956c3a
 +		case 0xD: e.get(L_B); e.set(L_R); break;
 +		case 0xE: e.get(L_A); e.get(L_B); e.k(0xFFFFFFFF); e.op(W_XOR); e.op(W_AND); e.set(L_R); break;
 +		case 0xF: e.get(L_B); e.k(0xFFFFFFFF); e.op(W_XOR); e.set(L_R); break;
-+		default: return false;
++		default: return 0;
 +	}
 +	if (!isCmp) e.st(rd, L_R);
 +	if (S)
@@ -1750,7 +1898,7 @@ index 0000000..a956c3a
 +		else if (opc == 0x4 || opc == 0xB) e.nzcvAdd();
 +		else e.nzcvSub();
 +	}
-+	return true;
++	return 1;
 +}
 +
 +// corpo da função de um bloco (local 0 = base da CPU, local 1 = ciclos)
@@ -1762,7 +1910,7 @@ index 0000000..a956c3a
 +	const u32 oFlags = offsetof(armcpu_t, CPSR) + 3;
 +	const u32 size = thumb ? 2 : 4;
 +	
-+	body.uleb(1); body.uleb(6); body.u8_(0x7F);
++	body.uleb(1); body.uleb(N_LOCALS); body.u8_(0x7F);
 +	body.i32c(base); body.lset(0);
 +	body.i32c(0); body.lset(1);
 +	bool lastInline = false;
@@ -1772,8 +1920,8 @@ index 0000000..a956c3a
 +		// fase B: instrução comum direto em wasm (incondicional ou dentro do teste de condição)
 +		{
 +			WasmOut tmp;
-+			const bool ok = s_inlineOn && (thumb ? emit_inline_thumb(tmp, in) : emit_inline_arm(tmp, in));
-+			if (ok)
++			const int kind = s_inlineOn ? (thumb ? emit_inline_thumb(tmp, in) : emit_inline_arm(tmp, in)) : 0;
++			if (kind)
 +			{
 +				if (in.condMask)
 +				{
@@ -1784,7 +1932,7 @@ index 0000000..a956c3a
 +					body.i32c(in.condMask); body.u8_(0x71);
 +					body.u8_(0x04); body.u8_(0x40);
 +					body.append(tmp);
-+					body.lget(1); body.i32c(1); body.u8_(0x6A); body.lset(1);
++					if (kind == 1) { body.lget(1); body.i32c(1); body.u8_(0x6A); body.lset(1); }   // memória (2) soma os próprios ciclos
 +					body.u8_(0x05);
 +					body.lget(1); body.i32c(1); body.u8_(0x6A); body.lset(1);
 +					body.u8_(0x0B);
@@ -1792,7 +1940,7 @@ index 0000000..a956c3a
 +				else
 +				{
 +					body.append(tmp);
-+					body.lget(1); body.i32c(1); body.u8_(0x6A); body.lset(1);
++					if (kind == 1) { body.lget(1); body.i32c(1); body.u8_(0x6A); body.lset(1); }
 +				}
 +				lastInline = (i + 1 == blk.size());
 +				continue;
@@ -2025,6 +2173,7 @@ index 0000000..a956c3a
 +	if (enable)
 +	{
 +		init_jit_mem();
++		jit_mem_real();
 +		// os blocos antigos ficam na tabela de funções (não dá para liberar), mas saem do mapa
 +		memset(JIT.MAIN_MEM, 0, sizeof(JIT.MAIN_MEM));
 +		memset(JIT.SWIRAM, 0, sizeof(JIT.SWIRAM));
@@ -2072,72 +2221,161 @@ index 0000000..a956c3a
 +	s.b.clear(); s.uleb(1); s.uleb((u32)body.b.size()); s.append(body); m.section(10, s);
 +}
 +
++/* endereço efetivo das instruções de memória que a fase B2 emite (para o fuzz mirar nas
++   janelas de memória que o teste reproduz no Node) */
++static bool fuzz_ea(const JitInstr &in, const u32 *R, bool thumb, u32 &ea, int &sz, bool &store)
++{
++	const u32 op = in.opcode;
++	if (thumb)
++	{
++		const u32 rs = (op >> 3) & 7;
++		switch (op >> 11)
++		{
++			case 0x09: ea = ((in.adr + 4) & ~3u) + ((op & 0xFF) << 2); sz = 2; store = false; return true;
++			case 0x0A: case 0x0B: { static const int SZ[8] = { 2, 1, 0, 0, 2, 1, 0, 1 }; const u32 sub = (op >> 9) & 7; ea = R[rs] + R[(op >> 6) & 7]; sz = SZ[sub]; store = sub < 3; return true; }
++			case 0x0C: case 0x0D: ea = R[rs] + ((op >> 4) & 0x7C); sz = 2; store = !((op >> 11) & 1); return true;
++			case 0x0E: case 0x0F: ea = R[rs] + ((op >> 6) & 0x1F); sz = 0; store = !((op >> 11) & 1); return true;
++			case 0x10: case 0x11: ea = R[rs] + ((op >> 5) & 0x3E); sz = 1; store = !((op >> 11) & 1); return true;
++			case 0x12: case 0x13: ea = R[13] + ((op & 0xFF) << 2); sz = 2; store = !((op >> 11) & 1); return true;
++			default: return false;
++		}
++	}
++	if ((op & 0x0F200000) != 0x05000000) return false;
++	const u32 rn = (op >> 16) & 15, imm = op & 0xFFF;
++	const u32 b = rn == 15 ? in.adr + 8 : R[rn];
++	ea = ((op >> 23) & 1) ? b + imm : b - imm;
++	sz = ((op >> 22) & 1) ? 0 : 2;
++	store = !((op >> 20) & 1);
++	return true;
++}
++
 +int jit_fuzz_dump(const char *path, int count)
 +{
 +	FILE *f = fopen(path, "w");
 +	if (!f) return -1;
 +	std::mt19937 rng(1234);
 +	const u32 BASE = 4096, CONDTAB = 1024;
-+	armcpu_t *const c = &NDS_ARM9;
-+	PROCNUM = 0;
-+	fprintf(f, "{\"oR\":%u,\"oC\":%u,\"base\":%u,\"condTab\":%u,\"cond\":[", (u32)offsetof(armcpu_t, R), (u32)offsetof(armcpu_t, CPSR), BASE, CONDTAB);
++	// memória falsa no Node: janela de 128 KB da RAM principal e a DTCM
++	const u32 WIN = 0x20000, DTCM_REG = 0x027C0000;
++	fill_cyc<0>(); fill_cyc<1>();
++	s_mem.cyc = 2048; s_mem.dtcmRegion = 2200; s_mem.mask8 = 2204; s_mem.mask16 = 2208; s_mem.mask32 = 2212;
++	s_mem.dtcm = 0x10000; s_mem.main = 0x20000; s_mem.jitMain = 0x40000;
++	MMU.DTCMRegion = DTCM_REG;
++	for (u32 i = 0; i < WIN; i++) MMU.MAIN_MEM[i] = (u8)rng();
++	for (u32 i = 0; i < 0x4000; i++) MMU.ARM9_DTCM[i] = (u8)rng();
++	std::vector<u8> snapMain(MMU.MAIN_MEM, MMU.MAIN_MEM + WIN), snapDtcm(MMU.ARM9_DTCM, MMU.ARM9_DTCM + 0x4000);
++	fprintf(f, "{\"oR\":%u,\"oC\":%u,\"base\":%u,\"condTab\":%u,", (u32)offsetof(armcpu_t, R), (u32)offsetof(armcpu_t, CPSR), BASE, CONDTAB);
++	fprintf(f, "\"lay\":{\"cyc\":%u,\"dtcmRegion\":%u,\"mask8\":%u,\"mask16\":%u,\"mask32\":%u,\"dtcm\":%u,\"main\":%u,\"jitMain\":%u},", s_mem.cyc, s_mem.dtcmRegion, s_mem.mask8, s_mem.mask16, s_mem.mask32, s_mem.dtcm, s_mem.main, s_mem.jitMain);
++	fprintf(f, "\"dtcmReg\":%u,\"masks\":[%u,%u,%u],\"cycTab\":[", DTCM_REG, WIN - 1, (WIN - 1) & ~1u, (WIN - 1) & ~3u);
++	for (int i = 0; i < 96; i++) fprintf(f, "%s%u", i ? "," : "", ((u8 *)jit_cycTab)[i]);
++	fprintf(f, "],\"mainHex\":\"");
++	for (u32 i = 0; i < WIN; i++) fprintf(f, "%02x", snapMain[i]);
++	fprintf(f, "\",\"dtcmHex\":\"");
++	for (u32 i = 0; i < 0x4000; i++) fprintf(f, "%02x", snapDtcm[i]);
++	fprintf(f, "\",\"cond\":[");
 +	for (int i = 0; i < 256; i++) fprintf(f, "%s%u", i ? "," : "", arm_cond_table[i]);
 +	fprintf(f, "],\"t\":[\n");
-+	int made = 0;
++	int made = 0, mems = 0;
 +	for (long tries = 0; made < count && tries < (long)count * 400; tries++)
 +	{
++		const int P = (rng() % 3 == 0) ? 1 : 0;
++		PROCNUM = P;
++		armcpu_t *const c = P ? &NDS_ARM7 : &NDS_ARM9;
 +		const bool thumb = rng() & 1;
 +		JitInstr in;
 +		in.adr = 0x02000000 + (rng() & 0xFFFC);
 +		u32 op = rng();
 +		if (thumb) op &= 0xFFFF;
 +		else if ((rng() & 3) != 0) op = (op & 0x0FFFFFFF) | 0xE0000000;
++		// metade das tentativas mira em instruções de memória
++		if (rng() & 1)
++		{
++			if (thumb) { static const u32 HI[] = { 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13 }; op = (op & 0x7FF) | (HI[rng() % 11] << 11); }
++			else op = (op & 0xF0DFFFFF) | 0x05000000;
++		}
 +		in.opcode = op;
 +		bb_thumb = thumb;
-+		if (thumb) { in.fn = thumb_instructions_set[0][op >> 6]; in.condMask = 0; in.cond = 0; }
-+		else { in.fn = arm_instructions_set[0][INSTRUCTION_INDEX(op)]; in.cond = (u8)CONDITION(op); in.condMask = (in.cond == 0xE) ? 0 : (u8)(1 << CODE(op)); }
++		if (thumb) { in.fn = thumb_instructions_set[P][op >> 6]; in.condMask = 0; in.cond = 0; }
++		else { in.fn = arm_instructions_set[P][INSTRUCTION_INDEX(op)]; in.cond = (u8)CONDITION(op); in.condMask = (in.cond == 0xE) ? 0 : (u8)(1 << CODE(op)); }
 +		WasmOut probe;
-+		if (!(thumb ? emit_inline_thumb(probe, in) : emit_inline_arm(probe, in))) continue;
++		const int kind = thumb ? emit_inline_thumb(probe, in) : emit_inline_arm(probe, in);
++		if (!kind) continue;
 +		
 +		u32 regs[16];
 +		for (int r = 0; r < 16; r++)
 +		{
 +			u32 v = rng();
-+			switch (rng() % 5) { case 0: v &= 0xFF; break; case 1: v |= 0x80000000; break; case 2: v = 0; break; default: break; }
++			if (kind == 2)
++			{
++				const u32 k = rng() % 20;
++				if (k < 8) v = 0x02000000 + (v & (WIN - 1));
++				else if (k < 13 && P == 0) v = DTCM_REG + (v & 0x3FFF);
++				else v &= 0x3FF;
++			}
++			else switch (rng() % 5) { case 0: v &= 0xFF; break; case 1: v |= 0x80000000; break; case 2: v = 0; break; default: break; }
 +			regs[r] = v;
++		}
++		regs[15] = in.adr + (thumb ? 4 : 8);
++		u32 ea = 0; int sz = 0; bool store = false, inDtcm = false;
++		u32 off = 0;
++		if (kind == 2)
++		{
++			if (!fuzz_ea(in, regs, thumb, ea, sz, store)) continue;
++			inDtcm = P == 0 && (ea & ~0x3FFFu) == DTCM_REG;
++			const bool inMain = !inDtcm && (ea & 0x0F000000) == 0x02000000 && (ea & 0x00FFFFFF) < WIN;
++			if (!inDtcm && !inMain) continue;   // caminho lento (chama o interpretador): não roda no Node
++			off = inDtcm ? (ea & 0x3FFF) : (ea & (WIN - 1));
++			const u32 lim = inDtcm ? 0x4000 : WIN;
++			if (off < 8 || off + 12 > lim) continue;
 +		}
 +		const u32 cpsr = (rng() & 0xF0000000) | 0x1F | (thumb ? 0x20 : 0);
 +		for (int r = 0; r < 16; r++) c->R[r] = regs[r];
-+		c->R[15] = regs[15] = in.adr + (thumb ? 4 : 8);
 +		c->CPSR.val = cpsr;
 +		c->instruct_adr = in.adr;
 +		c->next_instruction = in.adr + (thumb ? 2 : 4);
 +		u32 cyc;
-+		if (in.condMask && !(arm_cond_table[((cpsr >> 24) & 0xF0) | in.cond] & in.condMask)) cyc = 1;
++		const bool skipped = in.condMask && !(arm_cond_table[((cpsr >> 24) & 0xF0) | in.cond] & in.condMask);
++		if (skipped) cyc = 1;
 +		else cyc = in.fn(op);
++		if (skipped) store = false;   // condição falsa: não escreveu nada
 +		
 +		std::vector<JitInstr> blk(1, in);
 +		WasmOut body, m;
 +		emit_block_body(body, BASE, CONDTAB, blk, thumb);
 +		wrap_module(m, body);
-+		fprintf(f, "%s{\"op\":%u,\"thumb\":%d,\"m\":\"", made ? ",\n" : "", op, thumb ? 1 : 0);
++		fprintf(f, "%s{\"op\":%u,\"p\":%d,\"thumb\":%d,\"m\":\"", made ? ",\n" : "", op, P, thumb ? 1 : 0);
 +		for (size_t i = 0; i < m.b.size(); i++) fprintf(f, "%02x", m.b[i]);
 +		fprintf(f, "\",\"in\":[");
 +		for (int r = 0; r < 16; r++) fprintf(f, "%s%u", r ? "," : "", regs[r]);
 +		fprintf(f, "],\"cpsr\":%u,\"out\":[", cpsr);
 +		for (int r = 0; r < 16; r++) fprintf(f, "%s%u", r ? "," : "", c->R[r]);
-+		fprintf(f, "],\"ocpsr\":%u,\"cyc\":%u}", c->CPSR.val, cyc);
++		fprintf(f, "],\"ocpsr\":%u,\"cyc\":%u", c->CPSR.val, cyc);
++		if (kind == 2)
++		{
++			// 20 bytes em volta do acesso, depois do interpretador; e restaura a memória
++			u8 *mem = inDtcm ? MMU.ARM9_DTCM : MMU.MAIN_MEM;
++			const std::vector<u8> &snap = inDtcm ? snapDtcm : snapMain;
++			const u32 from = (off & ~3u) - 8;
++			fprintf(f, ",\"ea\":%u,\"sz\":%d,\"st\":%d,\"dt\":%d,\"from\":%u,\"bytes\":\"", ea, sz, store ? 1 : 0, inDtcm ? 1 : 0, from);
++			for (u32 i = 0; i < 20; i++) fprintf(f, "%02x", mem[from + i]);
++			fprintf(f, "\"");
++			for (u32 i = 0; i < 20; i++) mem[from + i] = snap[from + i];
++			mems++;
++		}
++		fprintf(f, "}");
 +		made++;
 +	}
 +	fprintf(f, "\n]}\n");
 +	fclose(f);
++	fprintf(stderr, "casos de memória: %d\n", mems);
 +	return made;
 +}
++
 +#endif
 +
 +#endif // HAVE_JIT
 diff --git a/desmume/src/armcpu.cpp b/desmume/src/armcpu.cpp
-index b318204..566e161 100644
+index b3182045..566e1617 100644
 --- a/desmume/src/armcpu.cpp
 +++ b/desmume/src/armcpu.cpp
 @@ -740,8 +740,13 @@ u32 armcpu_exec()
@@ -2155,7 +2393,7 @@ index b318204..566e161 100644
  
  	return armcpu_exec<PROCNUM>();
 diff --git a/desmume/src/emufile.h b/desmume/src/emufile.h
-index c2f781f..7addf7f 100644
+index c2f781f2..7addf7fd 100644
 --- a/desmume/src/emufile.h
 +++ b/desmume/src/emufile.h
 @@ -269,6 +269,7 @@ public:
@@ -2167,7 +2405,7 @@ index c2f781f..7addf7f 100644
  		return 0;
  	}
 diff --git a/desmume/src/libretro-common/rthreads/rthreads.c b/desmume/src/libretro-common/rthreads/rthreads.c
-index 45d84f5..6365ebb 100644
+index 45d84f5d..6365ebb3 100644
 --- a/desmume/src/libretro-common/rthreads/rthreads.c
 +++ b/desmume/src/libretro-common/rthreads/rthreads.c
 @@ -315,7 +315,7 @@ void sthread_setname(sthread_t *thread, const char *name)
@@ -2180,7 +2418,7 @@ index 45d84f5..6365ebb 100644
  #endif
  }
 diff --git a/desmume/src/mc.cpp b/desmume/src/mc.cpp
-index 2cd4273..f5dc36e 100644
+index 2cd42737..f5dc36e3 100644
 --- a/desmume/src/mc.cpp
 +++ b/desmume/src/mc.cpp
 @@ -410,9 +410,12 @@ BackupDevice::BackupDevice()
@@ -2218,7 +2456,7 @@ index 2cd4273..f5dc36e 100644
  }
  
 diff --git a/desmume/src/rasterize.cpp b/desmume/src/rasterize.cpp
-index 6bf210f..b287cf5 100644
+index 6bf210f4..b287cf59 100644
 --- a/desmume/src/rasterize.cpp
 +++ b/desmume/src/rasterize.cpp
 @@ -1740,16 +1740,16 @@ SoftRasterizerRenderer::SoftRasterizerRenderer()
@@ -2254,7 +2492,7 @@ index 6bf210f..b287cf5 100644
  		}
  	}
 diff --git a/desmume/src/rasterize.h b/desmume/src/rasterize.h
-index 929cdc2..5d5ee5f 100644
+index 929cdc29..5d5ee5fb 100644
 --- a/desmume/src/rasterize.h
 +++ b/desmume/src/rasterize.h
 @@ -25,7 +25,11 @@
@@ -2287,7 +2525,7 @@ index 929cdc2..5d5ee5f 100644
  	size_t _nativePixelsPerThread;
  	size_t _customLinesPerThread;
 diff --git a/desmume/src/render3D.h b/desmume/src/render3D.h
-index 587affc..abef1f2 100644
+index 587affc2..abef1f2a 100644
 --- a/desmume/src/render3D.h
 +++ b/desmume/src/render3D.h
 @@ -63,6 +63,7 @@ enum RendererID
@@ -2299,7 +2537,7 @@ index 587affc..abef1f2 100644
  };
  
 diff --git a/desmume/src/slot1.cpp b/desmume/src/slot1.cpp
-index 50e8bd1..2fb6b76 100644
+index 50e8bd1c..2fb6b76c 100644
 --- a/desmume/src/slot1.cpp
 +++ b/desmume/src/slot1.cpp
 @@ -176,7 +176,8 @@ bool slot1_getTypeByID(u8 ID, NDS_SLOT1_TYPE &type)
@@ -2313,7 +2551,7 @@ index 50e8bd1..2fb6b76 100644
  			type = (NDS_SLOT1_TYPE)i;
  			return true;
 diff --git a/desmume/src/slot2.cpp b/desmume/src/slot2.cpp
-index 9118aaf..7874d29 100644
+index 9118aaf6..7874d299 100644
 --- a/desmume/src/slot2.cpp
 +++ b/desmume/src/slot2.cpp
 @@ -179,7 +179,8 @@ bool slot2_getTypeByID(u8 ID, NDS_SLOT2_TYPE &type)
@@ -2327,7 +2565,7 @@ index 9118aaf..7874d29 100644
  			type = (NDS_SLOT2_TYPE)i;
  			return true;
 diff --git a/desmume/src/utils/task.cpp b/desmume/src/utils/task.cpp
-index 0e59186..9ca06c3 100644
+index 0e591863..9ca06c33 100644
 --- a/desmume/src/utils/task.cpp
 +++ b/desmume/src/utils/task.cpp
 @@ -15,6 +15,8 @@
@@ -2404,7 +2642,7 @@ index 0e59186..9ca06c3 100644
  
  
 diff --git a/desmume/src/utils/task.h b/desmume/src/utils/task.h
-index 1f8f3b5..423a904 100644
+index 1f8f3b5b..423a9044 100644
 --- a/desmume/src/utils/task.h
 +++ b/desmume/src/utils/task.h
 @@ -18,6 +18,23 @@
@@ -2439,7 +2677,7 @@ index 1f8f3b5..423a904 100644
  
  #endif
 diff --git a/desmume/wasm-port/main.cpp b/desmume/wasm-port/main.cpp
-index 44f22c8..dae0e7c 100644
+index 44f22c80..dae0e7c1 100644
 --- a/desmume/wasm-port/main.cpp
 +++ b/desmume/wasm-port/main.cpp
 @@ -14,22 +14,22 @@
@@ -2737,7 +2975,7 @@ index 44f22c8..dae0e7c 100644
  }
 diff --git a/desmume/wasm-port/stubs.cpp b/desmume/wasm-port/stubs.cpp
 new file mode 100644
-index 0000000..be6ff52
+index 00000000..be6ff525
 --- /dev/null
 +++ b/desmume/wasm-port/stubs.cpp
 @@ -0,0 +1,21 @@
