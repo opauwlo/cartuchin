@@ -1305,10 +1305,10 @@ index 60f07adb..b1907c6f 100644
  //* x86 windows seems faster with NON-DEFINED
 diff --git a/desmume/src/arm_jit_wasm.cpp b/desmume/src/arm_jit_wasm.cpp
 new file mode 100644
-index 00000000..8d1e3c0f
+index 00000000..7846ae1a
 --- /dev/null
 +++ b/desmume/src/arm_jit_wasm.cpp
-@@ -0,0 +1,1065 @@
+@@ -0,0 +1,1129 @@
 +/*
 +	JIT de ARM para WebAssembly (Cartuchin), no lugar do arm_jit.cpp (x86/AsmJit).
 +
@@ -1567,14 +1567,37 @@ index 00000000..8d1e3c0f
 +#define W_LTU 0x49
 +#define W_GEU 0x4F
 +
++/* Fase C: dentro do bloco, os registradores ficam em locais do wasm (L_REG0 + r). Só vão
++   para a memória (cpu->R) antes de chamar o interpretador, antes de uma instrução
++   condicional e no fim do bloco; depois de uma chamada ao interpretador são relidos. R15
++   nunca fica em local. */
++struct RegCache { bool on; bool loaded[16]; bool dirty[16]; };
++static RegCache s_rc;
++int jitRegCache = 1;
++#define L_REG0 9
++static void rc_reset() { for (int r = 0; r < 16; r++) s_rc.loaded[r] = s_rc.dirty[r] = false; }
++// grava na memória os registradores alterados (estado do cache continua igual)
++static void rc_store_dirty(WasmOut &o, const RegCache &rc)
++{
++	if (!rc.on) return;
++	for (u32 r = 0; r < 15; r++) if (rc.dirty[r]) { o.lget(0); o.lget(L_REG0 + r); o.store32(offsetof(armcpu_t, R) + 4 * r); }
++}
++static void rc_flush(WasmOut &o) { rc_store_dirty(o, s_rc); for (int r = 0; r < 16; r++) s_rc.dirty[r] = false; }
++
 +struct Emit
 +{
 +	WasmOut &o;
 +	u32 oR, oCPSR;
 +	Emit(WasmOut &out) : o(out), oR(offsetof(armcpu_t, R)), oCPSR(offsetof(armcpu_t, CPSR)) {}
-+	void ld(u32 r) { o.lget(L_BASE); o.load32(oR + 4 * r); }                 // empilha R[r]
++	// garante R[r] no local (lido da memória uma vez por bloco)
++	void ensure(u32 r) { if (s_rc.on && r != 15 && !s_rc.loaded[r]) { o.lget(L_BASE); o.load32(oR + 4 * r); o.lset(L_REG0 + r); s_rc.loaded[r] = true; } }
++	void ld(u32 r) { if (s_rc.on && r != 15) { ensure(r); o.lget(L_REG0 + r); } else { o.lget(L_BASE); o.load32(oR + 4 * r); } }   // empilha R[r]
 +	void ldTo(u32 r, u32 l) { ld(r); o.lset(l); }
-+	void st(u32 r, u32 l) { o.lget(L_BASE); o.lget(l); o.store32(oR + 4 * r); } // R[r] = local
++	void st(u32 r, u32 l)   // R[r] = local
++	{
++		if (s_rc.on && r != 15) { o.lget(l); o.lset(L_REG0 + r); s_rc.loaded[r] = s_rc.dirty[r] = true; }
++		else { o.lget(L_BASE); o.lget(l); o.store32(oR + 4 * r); }
++	}
 +	void op(u8 x) { o.u8_(x); }
 +	void k(u32 v) { o.i32c(v); }
 +	void get(u32 l) { o.lget(l); }
@@ -1603,7 +1626,7 @@ index 00000000..8d1e3c0f
 +   MMU_aluMemAccessCycles (sem ADVANCED_TIMING só dependem da região do endereço), por
 +   tabela tirada das próprias funções de timing. Escrita na RAM principal apaga a entrada
 +   do mapa de blocos, como o MMU faz (código que se reescreve). */
-+enum { L_ADR = 6, L_V = 7, L_M = 8, N_LOCALS = 9 };
++enum { L_ADR = 6, L_V = 7, L_M = 8, N_LOCALS = 9 + 16 };
 +#define W_EQ 0x46
 +#define W_NE 0x47
 +#define W_GTU 0x4B
@@ -1688,6 +1711,8 @@ index 00000000..8d1e3c0f
 +		}
 +		e.get(L_CYC); e.op(W_ADD); e.set(L_CYC);
 +	};
++	if (!load) e.ensure(rd);            // valor a gravar já no local antes dos caminhos
++	const RegCache before = s_rc;       // o caminho lento grava o que estava alterado antes
 +	o.u8_(0x02); o.u8_(0x40);          // block: fim
 +	o.u8_(0x02); o.u8_(0x40);          // block: caminho lento
 +	if (P == 0)
@@ -1713,8 +1738,11 @@ index 00000000..8d1e3c0f
 +	tail();
 +	o.u8_(0x0C); o.uleb(1);
 +	o.u8_(0x0B);
++	rc_store_dirty(o, before);
 +	emit_call(o, in, isize);
++	if (load && s_rc.on) { o.lget(L_BASE); o.load32(offsetof(armcpu_t, R) + 4 * rd); o.lset(L_REG0 + rd); }   // o interpretador gravou Rd na memória
 +	o.u8_(0x0B);
++	if (load && s_rc.on) s_rc.loaded[rd] = s_rc.dirty[rd] = true;
 +}
 +
 +static int emit_inline_thumb(WasmOut &out, const JitInstr &in)
@@ -1913,6 +1941,8 @@ index 00000000..8d1e3c0f
 +	body.uleb(1); body.uleb(N_LOCALS); body.u8_(0x7F);
 +	body.i32c(base); body.lset(0);
 +	body.i32c(0); body.lset(1);
++	s_rc.on = jitRegCache != 0;
++	rc_reset();
 +	bool lastInline = false;
 +	for (size_t i = 0; i < blk.size(); i++)
 +	{
@@ -1920,7 +1950,12 @@ index 00000000..8d1e3c0f
 +		// fase B: instrução comum direto em wasm (incondicional ou dentro do teste de condição)
 +		{
 +			WasmOut tmp;
++			const RegCache saved = s_rc;
++			const bool cacheOn = s_rc.on;
++			if (in.condMask) { rc_flush(body); rc_reset(); s_rc.on = false; }   // condicional: direto na memória
 +			const int kind = s_inlineOn ? (thumb ? emit_inline_thumb(tmp, in) : emit_inline_arm(tmp, in)) : 0;
++			s_rc.on = cacheOn;
++			if (!kind && !in.condMask) s_rc = saved;   // tentativa descartada não muda o cache
 +			if (kind)
 +			{
 +				if (in.condMask)
@@ -1946,6 +1981,9 @@ index 00000000..8d1e3c0f
 +				continue;
 +			}
 +		}
++		// interpretador: lê e grava cpu->R direto
++		rc_flush(body);
++		rc_reset();
 +		body.lget(0); body.i32c(in.adr); body.store32(oInstr);
 +		body.lget(0); body.i32c(in.adr + size); body.store32(oNext);
 +		body.lget(0); body.i32c(in.adr + size * 2); body.store32(oR15);
@@ -1970,6 +2008,7 @@ index 00000000..8d1e3c0f
 +			body.u8_(0x0B);
 +		}
 +	}
++	rc_flush(body);
 +	if (lastInline)
 +	{
 +		// a última instrução não passou pelo interpretador: o próximo endereço é sequencial
@@ -2276,36 +2315,50 @@ index 00000000..8d1e3c0f
 +	for (int i = 0; i < 256; i++) fprintf(f, "%s%u", i ? "," : "", arm_cond_table[i]);
 +	fprintf(f, "],\"t\":[\n");
 +	int made = 0, mems = 0;
++	// casos de 1 a 4 instruções no mesmo bloco (o cache de registradores atravessa instruções)
 +	for (long tries = 0; made < count && tries < (long)count * 400; tries++)
 +	{
 +		const int P = (rng() % 3 == 0) ? 1 : 0;
 +		PROCNUM = P;
 +		armcpu_t *const c = P ? &NDS_ARM7 : &NDS_ARM9;
 +		const bool thumb = rng() & 1;
-+		JitInstr in;
-+		in.adr = 0x02000000 + (rng() & 0xFFFC);
-+		u32 op = rng();
-+		if (thumb) op &= 0xFFFF;
-+		else if ((rng() & 3) != 0) op = (op & 0x0FFFFFFF) | 0xE0000000;
-+		// metade das tentativas mira em instruções de memória
-+		if (rng() & 1)
++		const int n = 1 + (made % 4 == 0 ? 0 : (int)(rng() % 4));
++		const u32 adr0 = 0x02000000 + (rng() & 0xFFF0);
++		std::vector<JitInstr> blk;
++		bool anyMem = false;
++		for (int k = 0; k < n; k++)
 +		{
-+			if (thumb) { static const u32 HI[] = { 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13 }; op = (op & 0x7FF) | (HI[rng() % 11] << 11); }
-+			else op = (op & 0xF0DFFFFF) | 0x05000000;
++			JitInstr in;
++			int kind = 0;
++			for (int t = 0; t < 200 && !kind; t++)
++			{
++				in.adr = adr0 + k * (thumb ? 2 : 4);
++				u32 op = rng();
++				if (thumb) op &= 0xFFFF;
++				else if ((rng() & 3) != 0) op = (op & 0x0FFFFFFF) | 0xE0000000;
++				if (rng() & 1)
++				{
++					if (thumb) { static const u32 HI[] = { 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13 }; op = (op & 0x7FF) | (HI[rng() % 11] << 11); }
++					else op = (op & 0xF0DFFFFF) | 0x05000000;
++				}
++				in.opcode = op;
++				if (thumb) { in.fn = thumb_instructions_set[P][op >> 6]; in.condMask = 0; in.cond = 0; }
++				else { in.fn = arm_instructions_set[P][INSTRUCTION_INDEX(op)]; in.cond = (u8)CONDITION(op); in.condMask = (in.cond == 0xE) ? 0 : (u8)(1 << CODE(op)); }
++				WasmOut probe;
++				s_rc.on = false; rc_reset();
++				kind = thumb ? emit_inline_thumb(probe, in) : emit_inline_arm(probe, in);
++			}
++			if (!kind) break;
++			anyMem |= kind == 2;
++			blk.push_back(in);
 +		}
-+		in.opcode = op;
-+		bb_thumb = thumb;
-+		if (thumb) { in.fn = thumb_instructions_set[P][op >> 6]; in.condMask = 0; in.cond = 0; }
-+		else { in.fn = arm_instructions_set[P][INSTRUCTION_INDEX(op)]; in.cond = (u8)CONDITION(op); in.condMask = (in.cond == 0xE) ? 0 : (u8)(1 << CODE(op)); }
-+		WasmOut probe;
-+		const int kind = thumb ? emit_inline_thumb(probe, in) : emit_inline_arm(probe, in);
-+		if (!kind) continue;
++		if ((int)blk.size() != n) continue;
 +		
 +		u32 regs[16];
 +		for (int r = 0; r < 16; r++)
 +		{
 +			u32 v = rng();
-+			if (kind == 2)
++			if (anyMem)
 +			{
 +				const u32 k = rng() % 20;
 +				if (k < 8) v = 0x02000000 + (v & (WIN - 1));
@@ -2315,54 +2368,65 @@ index 00000000..8d1e3c0f
 +			else switch (rng() % 5) { case 0: v &= 0xFF; break; case 1: v |= 0x80000000; break; case 2: v = 0; break; default: break; }
 +			regs[r] = v;
 +		}
-+		regs[15] = in.adr + (thumb ? 4 : 8);
-+		u32 ea = 0; int sz = 0; bool store = false, inDtcm = false;
-+		u32 off = 0;
-+		if (kind == 2)
-+		{
-+			if (!fuzz_ea(in, regs, thumb, ea, sz, store)) continue;
-+			inDtcm = P == 0 && (ea & ~0x3FFFu) == DTCM_REG;
-+			const bool inMain = !inDtcm && (ea & 0x0F000000) == 0x02000000 && (ea & 0x00FFFFFF) < WIN;
-+			if (!inDtcm && !inMain) continue;   // caminho lento (chama o interpretador): não roda no Node
-+			off = inDtcm ? (ea & 0x3FFF) : (ea & (WIN - 1));
-+			const u32 lim = inDtcm ? 0x4000 : WIN;
-+			if (off < 8 || off + 12 > lim) continue;
-+		}
 +		const u32 cpsr = (rng() & 0xF0000000) | 0x1F | (thumb ? 0x20 : 0);
 +		for (int r = 0; r < 16; r++) c->R[r] = regs[r];
 +		c->CPSR.val = cpsr;
-+		c->instruct_adr = in.adr;
-+		c->next_instruction = in.adr + (thumb ? 2 : 4);
-+		u32 cyc;
-+		const bool skipped = in.condMask && !(arm_cond_table[((cpsr >> 24) & 0xF0) | in.cond] & in.condMask);
-+		if (skipped) cyc = 1;
-+		else cyc = in.fn(op);
-+		if (skipped) store = false;   // condição falsa: não escreveu nada
++		// executa no interpretador, instrução por instrução; registra os acessos à memória
++		struct Touch { bool dt; u32 from; int sz; u32 ea; bool st; };
++		std::vector<Touch> touches;
++		bool ok = true;
++		u32 cyc = 0;
++		for (size_t k = 0; k < blk.size() && ok; k++)
++		{
++			const JitInstr &in = blk[k];
++			c->R[15] = in.adr + (thumb ? 4 : 8);
++			c->instruct_adr = in.adr;
++			c->next_instruction = in.adr + (thumb ? 2 : 4);
++			const bool skipped = in.condMask && !(arm_cond_table[((c->CPSR.val >> 24) & 0xF0) | in.cond] & in.condMask);
++			u32 ea = 0; int sz = 0; bool store = false;
++			if (fuzz_ea(in, c->R, thumb, ea, sz, store) && !skipped)
++			{
++				const bool inDtcm = P == 0 && (ea & ~0x3FFFu) == DTCM_REG;
++				const bool inMain = !inDtcm && (ea & 0x0F000000) == 0x02000000 && (ea & 0x00FFFFFF) < WIN;
++				const u32 off = inDtcm ? (ea & 0x3FFF) : (ea & (WIN - 1)), lim = inDtcm ? 0x4000 : WIN;
++				if ((!inDtcm && !inMain) || off < 8 || off + 12 > lim) { ok = false; break; }
++				touches.push_back({ inDtcm, (off & ~3u) - 8, sz, ea, store });
++			}
++			cyc += skipped ? 1 : in.fn(in.opcode);
++		}
++		c->instruct_adr = c->next_instruction;
++		auto restore = [&]() {
++			for (const Touch &t : touches)
++			{
++				u8 *mem = t.dt ? MMU.ARM9_DTCM : MMU.MAIN_MEM;
++				const std::vector<u8> &snap = t.dt ? snapDtcm : snapMain;
++				for (u32 i = 0; i < 20; i++) mem[t.from + i] = snap[t.from + i];
++			}
++		};
++		if (!ok) { restore(); continue; }
++		regs[15] = blk[0].adr + (thumb ? 4 : 8);
 +		
-+		std::vector<JitInstr> blk(1, in);
 +		WasmOut body, m;
 +		emit_block_body(body, BASE, CONDTAB, blk, thumb);
 +		wrap_module(m, body);
-+		fprintf(f, "%s{\"op\":%u,\"p\":%d,\"thumb\":%d,\"m\":\"", made ? ",\n" : "", op, P, thumb ? 1 : 0);
++		fprintf(f, "%s{\"op\":%u,\"n\":%d,\"p\":%d,\"thumb\":%d,\"m\":\"", made ? ",\n" : "", blk[0].opcode, (int)blk.size(), P, thumb ? 1 : 0);
 +		for (size_t i = 0; i < m.b.size(); i++) fprintf(f, "%02x", m.b[i]);
 +		fprintf(f, "\",\"in\":[");
 +		for (int r = 0; r < 16; r++) fprintf(f, "%s%u", r ? "," : "", regs[r]);
 +		fprintf(f, "],\"cpsr\":%u,\"out\":[", cpsr);
 +		for (int r = 0; r < 16; r++) fprintf(f, "%s%u", r ? "," : "", c->R[r]);
-+		fprintf(f, "],\"ocpsr\":%u,\"cyc\":%u", c->CPSR.val, cyc);
-+		if (kind == 2)
++		fprintf(f, "],\"ocpsr\":%u,\"cyc\":%u,\"next\":%u,\"mem\":[", c->CPSR.val, cyc, c->next_instruction);
++		for (size_t k = 0; k < touches.size(); k++)
 +		{
-+			// 20 bytes em volta do acesso, depois do interpretador; e restaura a memória
-+			u8 *mem = inDtcm ? MMU.ARM9_DTCM : MMU.MAIN_MEM;
-+			const std::vector<u8> &snap = inDtcm ? snapDtcm : snapMain;
-+			const u32 from = (off & ~3u) - 8;
-+			fprintf(f, ",\"ea\":%u,\"sz\":%d,\"st\":%d,\"dt\":%d,\"from\":%u,\"bytes\":\"", ea, sz, store ? 1 : 0, inDtcm ? 1 : 0, from);
-+			for (u32 i = 0; i < 20; i++) fprintf(f, "%02x", mem[from + i]);
-+			fprintf(f, "\"");
-+			for (u32 i = 0; i < 20; i++) mem[from + i] = snap[from + i];
-+			mems++;
++			const Touch &t = touches[k];
++			u8 *mem = t.dt ? MMU.ARM9_DTCM : MMU.MAIN_MEM;
++			fprintf(f, "%s{\"ea\":%u,\"sz\":%d,\"st\":%d,\"dt\":%d,\"from\":%u,\"bytes\":\"", k ? "," : "", t.ea, t.sz, t.st ? 1 : 0, t.dt ? 1 : 0, t.from);
++			for (u32 i = 0; i < 20; i++) fprintf(f, "%02x", mem[t.from + i]);
++			fprintf(f, "\"}");
 +		}
-+		fprintf(f, "}");
++		fprintf(f, "]}");
++		restore();
++		mems += touches.empty() ? 0 : 1;
 +		made++;
 +	}
 +	fprintf(f, "\n]}\n");
