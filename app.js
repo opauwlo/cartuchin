@@ -305,7 +305,8 @@
       put: (s, k, v) => run(s, "readwrite", (st) => st.put(v, k)),
       del: (s, k) => run(s, "readwrite", (st) => st.delete(k)).catch(() => {
       }),
-      all: (s) => run(s, "readonly", (st) => st.getAll()).catch(() => [])
+      all: (s) => run(s, "readonly", (st) => st.getAll()).catch(() => []),
+      keys: (s) => run(s, "readonly", (st) => st.getAllKeys()).catch(() => [])
     };
   })();
 
@@ -3456,20 +3457,67 @@ void main() {
     if (sheetKey) fillGameSheet(sheetKey);
     updateSyncBadge();
   }
+  async function pendingSaves() {
+    const keys = await idb.keys("pend"), out = [];
+    for (const k of keys) {
+      if (typeof k !== "string" || k.includes(":")) continue;
+      const r = await idb.get("pend", k);
+      if (r && r.sav) out.push({ key: k, ...r });
+    }
+    return out;
+  }
   async function updateSyncBadge() {
     const b = $("#syncBadge");
     if (!cloud.auth) {
       b.hidden = true;
       return;
     }
-    const pend = (await idb.all("pend")).filter((r) => r && r.sav).length;
-    const [cls, text] = cloud.syncing ? ["", "Sincronizando…"] : pend ? ["pend", `↑ ${pend} para enviar`] : cloud.db ? ["ok", "✓ Tudo salvo"] : ["off", "Sem conexão"];
+    const pend = (await pendingSaves()).length;
+    const [cls, text, short, tip] = cloud.syncing ? ["", "Sincronizando…", "Sincronizando", "Buscando seus jogos na nuvem"] : pend ? ["pend", pend === 1 ? "1 save não enviado" : `${pend} saves não enviados`, `${pend} não enviado${pend > 1 ? "s" : ""}`, "Toque para enviar para a nuvem"] : cloud.db ? ["ok", "✓ Tudo na nuvem", "✓ Salvo", "Todos os saves estão na nuvem"] : ["off", "Sem conexão", "Offline", "Os saves ficam aqui e vão quando a rede voltar"];
     b.className = "sync-badge " + cls;
-    b.textContent = text;
-    b.title = pend ? "Saves guardados neste aparelho, esperando a nuvem" : "";
+    b.replaceChildren(el("span", { class: "long" }, text), el("span", { class: "short" }, short));
+    b.title = tip;
     b.hidden = false;
   }
-  $("#syncBadge").addEventListener("click", () => openSheet("settingsSheet"));
+  async function syncBadgeClick() {
+    const pend = await pendingSaves();
+    if (!pend.length) {
+      toast(cloud.syncing ? "Buscando seus jogos na nuvem…" : cloud.db ? "Todos os saves estão na nuvem." : "Sem conexão com a nuvem agora. Os saves ficam aqui e vão quando a rede voltar.", 3500);
+      return;
+    }
+    const names = pend.map((p) => gameInfo(p.key).title).join(", ");
+    const ok = await dialog(
+      pend.length === 1 ? "1 save ainda não foi para a nuvem" : `${pend.length} saves ainda não foram para a nuvem`,
+      `${names}. Eles estão guardados neste aparelho e não se perdem, mas outro aparelho ainda não vê esse progresso.`,
+      [{ label: "Enviar agora", value: true, cls: "primary" }, { label: "Depois", value: false }]
+    );
+    if (!ok) return;
+    if (!cloud.db) {
+      toast("Sem conexão com a nuvem agora. Tente de novo quando a rede voltar.", 4e3);
+      return;
+    }
+    let sent = 0, conflict = 0, failed = 0;
+    for (const p of pend) {
+      try {
+        const remote = await getSaveDoc(p.key);
+        if (remote && remote.sha !== p.sha && p.baseRev !== remote.rev) {
+          conflict++;
+          continue;
+        }
+        const g = gameInfo(p.key);
+        const doc = remote && remote.sha === p.sha ? remote : await writeCloud(p.key, { title: g.title, system: g.system, code: g.code }, p.sav, p.sha);
+        await idb.del("pend", p.key);
+        await idb.put("sync", p.key, { lastSha: doc.sha, baseRev: doc.rev }).catch(() => {
+        });
+        sent++;
+      } catch (e) {
+        failed++;
+      }
+    }
+    toast([sent && `${sent} enviado${sent > 1 ? "s" : ""}`, conflict && `${conflict} com save diferente na nuvem: abra o jogo para escolher qual fica`, failed && `${failed} não foi agora, tente de novo`].filter(Boolean).join(" · "), 5e3);
+    updateSyncBadge();
+  }
+  $("#syncBadge").addEventListener("click", syncBadgeClick);
 
   // src/ui/dialogs.js
   function dialog(title, text, buttons) {

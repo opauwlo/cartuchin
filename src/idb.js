@@ -32,6 +32,7 @@ const idb = (() => {
     put: (s, k, v) => run(s, "readwrite", (st) => st.put(v, k)),
     del: (s, k) => run(s, "readwrite", (st) => st.delete(k)).catch(() => {}),
     all: (s) => run(s, "readonly", (st) => st.getAll()).catch(() => []),
+    keys: (s) => run(s, "readonly", (st) => st.getAllKeys()).catch(() => []),
   };
 })();
 
