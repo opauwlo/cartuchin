@@ -1,0 +1,53 @@
+name: RetroAchievements (rcheevos para WebAssembly)
+
+# Compila o rcheevos (versão fixa) + ra/ra.c para vendor/rcheevos.{js,wasm} e grava no repositório.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "ra/**"
+      - ".github/workflows/ra-core.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ra-core
+  cancel-in-progress: true
+
+env:
+  EMSDK_VERSION: 3.1.74
+  RCHEEVOS_COMMIT: dfdc64ea035c34aa168cf13bbda72b71ca4eba1e
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: rcheevos
+        run: |
+          set -euo pipefail
+          git init -q rcheevos && cd rcheevos
+          git remote add origin https://github.com/RetroAchievements/rcheevos
+          git fetch -q --depth 1 origin "$RCHEEVOS_COMMIT" && git checkout -q FETCH_HEAD
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: ${{ env.EMSDK_VERSION }}
+          actions-cache-folder: emsdk-cache-ra
+      - name: Compilar
+        run: ra/build.sh "$PWD/rcheevos"
+      - name: Gravar no repositório
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add vendor/rcheevos.js vendor/rcheevos.wasm
+          git diff --cached --quiet && { echo "sem mudança"; exit 0; }
+          git commit -m "ra: rcheevos compilado (${GITHUB_SHA::7}) [skip ci]"
+          for i in 1 2 3; do
+            git pull --rebase --quiet origin main && git push origin HEAD:main && exit 0
+            sleep 5
+          done
+          exit 1
