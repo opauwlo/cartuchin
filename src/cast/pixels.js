@@ -32,12 +32,14 @@ const pixWorkerSource = () => {
     for (let i = 0, j = 0; i < n; i++, j += 4) out[i] = ((d[j] >> 3) << 10) | ((d[j + 1] >> 3) << 5) | (d[j + 2] >> 3);
     return out;
   }
-  let frames = 0, empty = 0;
+  let frames = 0, empty = 0, lastLayout = -1;
   async function process(f) {
     const t0 = performance.now();
     frames++;
     const n = f.w * f.h, cur = to555(f.data, n);
-    if (!prev || f.w !== w || f.h !== h || ++sinceKey > 240) wantKey = true;
+    // arrumação trocada (o que a TV mostra): quadro inteiro na hora, mesmo com a tela parada
+    if (!prev || f.w !== w || f.h !== h || f.layout !== lastLayout || ++sinceKey > 240) wantKey = true;
+    lastLayout = f.layout;
     w = f.w; h = f.h;
     let type, body;
     if (wantKey) {

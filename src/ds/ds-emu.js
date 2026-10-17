@@ -842,7 +842,7 @@ function dsMenuItems(emu, refresh) {
     },
     {
       icon: "sliders", label: "Na 2ª tela: " + LAYOUT_LABEL[ds.cast],
-      fn: () => { ds.cast = nextOf(CAST_LAYOUTS, ds.cast); ls.set("cartucho.ds.cast", ds.cast); emu.relayout(); refresh(); },
+      fn: () => { ds.cast = nextOf(CAST_LAYOUTS, ds.cast); ls.set("cartucho.ds.cast", ds.cast); emu.relayout(); refresh(); window.dispatchEvent(new Event("ds-cast-layout")); },
     },
     {
       icon: "sliders", label: "Imagem na 2ª tela: " + TVQ_LABEL[ds.tvq],

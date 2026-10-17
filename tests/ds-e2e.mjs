@@ -289,6 +289,13 @@ async function castOnce(mode, layout) {
     const n = got.length;
     for (let i = 0; i < n; i++) if (Math.abs(ref[i] - got[i]) > 8) bad++;
     ok(n > 0 && bad === 0, `${tag} imagem igual à do celular (${n - bad}/${n} amostras)`);
+    // trocar a arrumação com a tela parada muda na TV na hora
+    const other = layout === "side" ? "top" : "side";
+    await phone.evaluate((lo) => { window.__ds.cast = lo; window.__cartucho.emu.relayout(); }, other);
+    const want = other === "side" ? 512 : 256;
+    const changed = await tv.waitForFunction((w) => document.querySelector("#scrCanvas").width === w, want, { timeout: 5000 }).then(() => true, () => false);
+    await phone.evaluate((lo) => { window.__ds.cast = lo; window.__cartucho.emu.relayout(); }, layout);
+    ok(changed, `${tag} trocar a arrumação aparece na TV (${other})`);
   } else ok(Math.abs(ratio - want) < 0.01 && sent.w <= 1536 && sent.h <= 1536, `${tag} vídeo enviado ${sent.w}x${sent.h}`);
   ok(sent.layout === "bottom", `${tag} celular mostra a tela de toque (${sent.layout})`);
   // controle: seta na TV chega no jogo do celular
@@ -349,6 +356,13 @@ async function consoleOnce() {
   ok(touched, "[console] toque no celular chega na outra tela");
   const pics = await phone.waitForFunction(() => (window.__cast.consolePics || 0) > 5, null, { timeout: 10000 }).then(() => true, () => false);
   ok(pics, "[console] a tela de baixo aparece no celular");
+  // o que a outra tela mostra: só a de cima por padrão; troca pelo menu do celular
+  const lay0 = await tv.evaluate(() => window.__cartucho.emu.localLayout());
+  const mine = await phone.evaluate(() => window.__ds.cast);
+  await phone.evaluate(() => { window.__ds.cast = "both"; window.dispatchEvent(new Event("ds-cast-layout")); });
+  const lay1 = await tv.waitForFunction(() => window.__cartucho.emu.localLayout() === "both", null, { timeout: 5000 }).then(() => "both", () => "?");
+  await phone.evaluate(() => { window.__ds.cast = "top"; window.dispatchEvent(new Event("ds-cast-layout")); });
+  ok(lay0 === mine && lay1 === "both", `[console] arrumação na outra tela segue o celular (${lay0} → ${lay1})`);
   const f0 = await tv.evaluate(() => window.__cartucho.emu.frames);
   await phone.evaluate(() => document.querySelector("#padStop").click());
   const back = await phone.waitForFunction(() => !window.__cast.console && !window.__cartucho.emu.paused, null, { timeout: 20000 }).then(() => true, () => false);

@@ -621,7 +621,22 @@
       touch.stop();
     };
     cast.consoleSend = (mask) => keys(String(mask));
-    if (emu.isDs) emu.onTouch = () => touch(JSON.stringify({ t: [emu.touch ? 1 : 0, emu.tx, emu.ty] }));
+    if (emu.isDs) {
+      emu.onTouch = () => touch(JSON.stringify({ t: [emu.touch ? 1 : 0, emu.tx, emu.ty] }));
+      const sendLayout = () => {
+        try {
+          files.send(JSON.stringify({ layout: window.__ds && window.__ds.cast || "top" }));
+        } catch (e) {
+        }
+      };
+      sendLayout();
+      window.addEventListener("ds-cast-layout", sendLayout);
+      const prevStop = c.stop;
+      c.stop = () => {
+        prevStop();
+        window.removeEventListener("ds-cast-layout", sendLayout);
+      };
+    }
     window.__castCap = 1;
     window.dispatchEvent(new Event("resize"));
     if (emu.relayout) emu.relayout();
@@ -690,7 +705,12 @@
     };
     status(`Conectando com ${msg.from || "o celular"}…`);
     const ch = {};
-    let info = null, rom = null, sav = null, state = null, live = false;
+    let info = null, rom = null, sav = null, state = null, live = false, wantLayout = null;
+    const applyLayout = () => {
+      if (!wantLayout || !window.__ds || !player.emu || !player.emu.relayout) return;
+      window.__ds.local = wantLayout;
+      player.emu.relayout();
+    };
     const reply = (j) => {
       try {
         ch.arquivo.send(JSON.stringify(j));
@@ -711,6 +731,9 @@
         if (cached && cached.id === info.romId) rom = cached.blob;
         reply({ need: !rom });
         status(rom ? `Abrindo ${info.rom.title}…` : `Recebendo ${info.rom.title}…`);
+      } else if (j.layout) {
+        wantLayout = j.layout;
+        applyLayout();
       } else if (j.go) start();
       else if (j.end) finish();
     }, async (name, u8) => {
@@ -773,6 +796,7 @@
         return;
       }
       live = true;
+      applyLayout();
       reply({ started: 1 });
       keepAwake();
       const emu = player.emu, gm = emu.gameManager;
@@ -882,12 +906,13 @@
       for (let i = 0, j = 0; i < n; i++, j += 4) out[i] = d[j] >> 3 << 10 | d[j + 1] >> 3 << 5 | d[j + 2] >> 3;
       return out;
     }
-    let frames = 0, empty = 0;
+    let frames = 0, empty = 0, lastLayout = -1;
     async function process(f) {
       const t0 = performance.now();
       frames++;
       const n = f.w * f.h, cur = to555(f.data, n);
-      if (!prev || f.w !== w || f.h !== h || ++sinceKey > 240) wantKey = true;
+      if (!prev || f.w !== w || f.h !== h || f.layout !== lastLayout || ++sinceKey > 240) wantKey = true;
+      lastLayout = f.layout;
       w = f.w;
       h = f.h;
       let type, body;
@@ -4327,6 +4352,7 @@ void main() {
           ls.set("cartucho.ds.cast", ds.cast);
           emu.relayout();
           refresh();
+          window.dispatchEvent(new Event("ds-cast-layout"));
         }
       },
       {

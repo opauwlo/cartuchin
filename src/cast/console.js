@@ -231,7 +231,15 @@ async function consoleTo(code) {
   const keys = repeater(ctl), touch = repeater(ctl);
   c.stop = () => { keys.stop(); touch.stop(); };
   cast.consoleSend = (mask) => keys(String(mask));
-  if (emu.isDs) emu.onTouch = () => touch(JSON.stringify({ t: [emu.touch ? 1 : 0, emu.tx, emu.ty] }));
+  if (emu.isDs) {
+    emu.onTouch = () => touch(JSON.stringify({ t: [emu.touch ? 1 : 0, emu.tx, emu.ty] }));
+    // o que a outra tela mostra segue o "Na 2ª tela" do menu (a tela de baixo está aqui)
+    const sendLayout = () => { try { files.send(JSON.stringify({ layout: (window.__ds && window.__ds.cast) || "top" })); } catch (e) {} };
+    sendLayout();
+    window.addEventListener("ds-cast-layout", sendLayout);
+    const prevStop = c.stop;
+    c.stop = () => { prevStop(); window.removeEventListener("ds-cast-layout", sendLayout); };
+  }
   window.__castCap = 1;
   window.dispatchEvent(new Event("resize"));
   if (emu.relayout) emu.relayout();   // DS: este celular passa a mostrar só a tela de baixo
@@ -287,7 +295,13 @@ async function tvConsole(msg, sig) {
   const status = (t) => { $("#scrStatus").textContent = t; };
   status(`Conectando com ${msg.from || "o celular"}…`);
   const ch = {};
-  let info = null, rom = null, sav = null, state = null, live = false;
+  let info = null, rom = null, sav = null, state = null, live = false, wantLayout = null;
+  // DS: mostra aqui o que o celular escolheu (por padrão só a de cima: a de baixo está no celular)
+  const applyLayout = () => {
+    if (!wantLayout || !window.__ds || !player.emu || !player.emu.relayout) return;
+    window.__ds.local = wantLayout;   // só nesta sessão (não grava)
+    player.emu.relayout();
+  };
   const reply = (j) => { try { ch.arquivo.send(JSON.stringify(j)); } catch (e) {} };
   const onFiles = receiver(async (j) => {
     if (j.hello) {
@@ -301,6 +315,9 @@ async function tvConsole(msg, sig) {
       if (cached && cached.id === info.romId) rom = cached.blob;
       reply({ need: !rom });
       status(rom ? `Abrindo ${info.rom.title}…` : `Recebendo ${info.rom.title}…`);
+    } else if (j.layout) {
+      wantLayout = j.layout;
+      applyLayout();
     } else if (j.go) start();
     else if (j.end) finish();
   }, async (name, u8) => {
@@ -341,6 +358,7 @@ async function tvConsole(msg, sig) {
     for (let i = 0; i < 1200 && !ready && player.emu; i++) await sleep(100);
     if (!ready || !player.emu) { reply({ failed: 1 }); again("Não deu para abrir o jogo aqui."); return; }
     live = true;
+    applyLayout();
     reply({ started: 1 });
     keepAwake();
     const emu = player.emu, gm = emu.gameManager;

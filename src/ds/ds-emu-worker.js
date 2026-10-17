@@ -658,7 +658,7 @@ function dsMenuItems(emu, refresh) {
     },
     {
       icon: "sliders", label: "Telas na TV: " + LAYOUT_LABEL[ds.cast],
-      fn: () => { ds.cast = nextOf(CAST_LAYOUTS, ds.cast); ls.set("cartucho.ds.cast", ds.cast); emu.relayout(); refresh(); },
+      fn: () => { ds.cast = nextOf(CAST_LAYOUTS, ds.cast); ls.set("cartucho.ds.cast", ds.cast); emu.relayout(); refresh(); window.dispatchEvent(new Event("ds-cast-layout")); },
     },
     {
       icon: "sliders", label: "Desempenho: " + PERF_LABEL[ds.perf] + (ds.perf === "auto" ? ` (${LEVELS[ds.level].name})` : ""),
