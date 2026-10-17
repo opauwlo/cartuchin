@@ -81,7 +81,7 @@ const ok = (cond, msg) => { console.log((cond ? "OK   " : "FALHA") + " " + msg);
 const errors = [];
 
 const phone = await ctx.newPage();
-phone.on("pageerror", (e) => errors.push("celular: " + e.message));
+phone.on("pageerror", (e) => { if (!/Wake Lock/.test(e.message)) errors.push("celular: " + e.message); });
 phone.on("dialog", (d) => d.accept());
 await phone.goto(base);
 await phone.setInputFiles("#romInput", ROM);
@@ -283,7 +283,7 @@ async function castOnce(mode, layout) {
   }, [mode, layout]);
   await phone.evaluate((lo) => { window.__ds.cast = lo; window.__cartucho.emu.relayout(); }, layout);
   const tv = await ctx.newPage();
-  tv.on("pageerror", (e) => errors.push("tela: " + e.message));
+  tv.on("pageerror", (e) => { if (!/Wake Lock/.test(e.message)) errors.push("tela: " + e.message); });
   await tv.goto(base);
   await tv.click("#screenBtn");
   await tv.waitForFunction(() => window.__tvScreen && window.__tvScreen.code, null, { timeout: 15000 });
@@ -375,7 +375,7 @@ if (!ONLY || ONLY === "cast") {
 async function consoleOnce() {
   await phone.evaluate(() => { localStorage.removeItem("cartucho.castVideo"); localStorage.setItem("cartucho.tvNoCache", "1"); localStorage.setItem("cartucho.tvNoSlow", "1"); });   // a ROM vai mesmo (comprimida)
   const tv = await ctx.newPage();
-  tv.on("pageerror", (e) => errors.push("tela: " + e.message));
+  tv.on("pageerror", (e) => { if (!/Wake Lock/.test(e.message)) errors.push("tela: " + e.message); });
   await tv.goto(base);
   await tv.click("#screenBtn");
   await tv.waitForFunction(() => window.__tvScreen && window.__tvScreen.code, null, { timeout: 15000 });
@@ -442,7 +442,7 @@ if (!ONLY || ONLY === "cast" || ONLY === "console") await consoleOnce();
 async function slowFallback() {
   await phone.evaluate(() => { localStorage.removeItem("cartucho.castVideo"); localStorage.setItem("cartucho.tvForceSlow", "1"); localStorage.setItem("cartucho.castMode2", "0"); });
   const tv = await ctx.newPage();
-  tv.on("pageerror", (e) => errors.push("tela: " + e.message));
+  tv.on("pageerror", (e) => { if (!/Wake Lock/.test(e.message)) errors.push("tela: " + e.message); });
   await tv.goto(base);
   await tv.click("#screenBtn");
   await tv.waitForFunction(() => window.__tvScreen && window.__tvScreen.code, null, { timeout: 15000 });

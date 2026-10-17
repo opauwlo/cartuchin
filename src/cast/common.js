@@ -64,10 +64,16 @@ function iceDone(pc, ms = 2500) {
   });
 }
 let wakeLock = null;
-async function keepAwake() { try { if (navigator.wakeLock && !wakeLock) {
-  wakeLock = await navigator.wakeLock.request("screen");
-  wakeLock.addEventListener("release", () => { wakeLock = null; });
-} } catch (e) {} }
+let wakeAsking = false;
+function keepAwake() {
+  if (!navigator.wakeLock || wakeLock || wakeAsking) return Promise.resolve();
+  wakeAsking = true;
+  // sem permissão (ex.: aba sem foco) o pedido é recusado: a tela só pode apagar sozinha, segue o jogo
+  return navigator.wakeLock.request("screen").then((l) => {
+    wakeLock = l;
+    l.addEventListener("release", () => { wakeLock = null; });
+  }, () => {}).finally(() => { wakeAsking = false; });
+}
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && (cast.pc || tvScreen.active)) keepAwake(); });
 
 /* Every sound that would reach the speakers also goes through a tap the stream can carry. */

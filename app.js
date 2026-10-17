@@ -2222,16 +2222,19 @@ void main() {
     });
   }
   var wakeLock = null;
-  async function keepAwake() {
-    try {
-      if (navigator.wakeLock && !wakeLock) {
-        wakeLock = await navigator.wakeLock.request("screen");
-        wakeLock.addEventListener("release", () => {
-          wakeLock = null;
-        });
-      }
-    } catch (e) {
-    }
+  var wakeAsking = false;
+  function keepAwake() {
+    if (!navigator.wakeLock || wakeLock || wakeAsking) return Promise.resolve();
+    wakeAsking = true;
+    return navigator.wakeLock.request("screen").then((l) => {
+      wakeLock = l;
+      l.addEventListener("release", () => {
+        wakeLock = null;
+      });
+    }, () => {
+    }).finally(() => {
+      wakeAsking = false;
+    });
   }
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible" && (cast.pc || tvScreen.active)) keepAwake();

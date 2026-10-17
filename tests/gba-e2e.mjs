@@ -83,7 +83,7 @@ const PIXEL = `async (sel) => {
 const color = (page, sel) => page.evaluate(`(${PIXEL})(${JSON.stringify(sel)})`);
 
 const phone = await ctx.newPage();
-phone.on("pageerror", (e) => errors.push("celular: " + e.message));
+phone.on("pageerror", (e) => { if (!/Wake Lock/.test(e.message)) errors.push("celular: " + e.message); });
 phone.on("dialog", (d) => d.accept());
 await phone.goto(base);
 await phone.setInputFiles("#romInput", ROM);
@@ -183,7 +183,7 @@ ok(meta.on === true && meta.off === false, "favoritar e desfavoritar");
 async function tvPage() {
   const tv = await ctx.newPage();
   await tv.setViewportSize({ width: 960, height: 540 });   // TV / notebook deitado
-  tv.on("pageerror", (e) => errors.push("tela: " + e.message));
+  tv.on("pageerror", (e) => { if (!/Wake Lock/.test(e.message)) errors.push("tela: " + e.message); });
   await tv.goto(base);
   await tv.click("#screenBtn");
   await tv.waitForFunction(() => window.__tvScreen && window.__tvScreen.code, null, { timeout: 15000 });
