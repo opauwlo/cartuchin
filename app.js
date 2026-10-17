@@ -7709,8 +7709,8 @@ Content-Type: ${type}\r
   }
   function askLogin() {
     const root = $("#dialogRoot");
-    const u = el("input", { type: "text", autocomplete: "username", placeholder: "Usuário", class: "code-input" });
-    const p = el("input", { type: "password", autocomplete: "current-password", placeholder: "Senha", class: "code-input" });
+    const u = el("input", { type: "text", autocomplete: "username", placeholder: "Usuário", class: "text-input", autocapitalize: "none" });
+    const p = el("input", { type: "password", autocomplete: "current-password", placeholder: "Senha", class: "text-input" });
     const msg = el("p", { class: "small-note" }, "A senha vai uma vez para o RetroAchievements e não fica guardada aqui.");
     const close = () => root.replaceChildren();
     const form = el(

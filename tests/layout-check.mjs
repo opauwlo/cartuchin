@@ -24,18 +24,24 @@ const AUDIT = () => {
     if (cs.display === "none" || cs.visibility === "hidden" || cs.position === "fixed" && e.id === "pad") continue;
     const r = e.getBoundingClientRect();
     if (!r.width || !r.height) continue;
-    // o recipiente que recorta: se rola (auto/scroll) tudo bem; se esconde (hidden/clip), o que passa dele some
-    let p = e.parentElement, box = null, scroll = false;
+    // de lado: nada pode passar do recipiente que recorta ou rola (rolar de lado dentro de uma
+    // folha também é defeito), só da barra do jogo, que rola de lado de propósito
+    let p = e.parentElement, box = null;
     while (p && p !== document.documentElement) {
       const s = getComputedStyle(p);
-      if (/(auto|scroll)/.test(s.overflowX + s.overflowY)) { scroll = true; break; }
-      if (/(hidden|clip)/.test(s.overflowX + s.overflowY)) { box = p.getBoundingClientRect(); break; }
+      if (s.overflowX !== "visible") { box = p; break; }
       p = p.parentElement;
     }
-    if (scroll) continue;
-    const lim = box || { left: 0, right: W, top: -1e9, bottom: e.closest("#pad, #player, .sheet, .scrim, #screen") ? H : 1e9 };
-    if (r.right > lim.right + 3 || r.left < lim.left - 3 || r.bottom > lim.bottom + 3 || r.top < lim.top - 3)
-      out.push(`${e.tagName.toLowerCase()}${e.id ? "#" + e.id : ""}${e.className && typeof e.className === "string" ? "." + e.className.trim().split(/\s+/).slice(0, 3).join(".") : ""} [${Math.round(r.left)},${Math.round(r.top)} ${Math.round(r.right)},${Math.round(r.bottom)}] passa de ${box ? (p.id ? "#" + p.id : p.className) : "a janela"}`);
+    if (box && box.matches(".pbar")) continue;
+    const br = box ? box.getBoundingClientRect() : null;
+    const left = br ? Math.max(0, br.left) : 0, right = br ? Math.min(W, br.right) : W;
+    // de cima a baixo: só nas telas fixas (jogo, controle, folhas, avisos), que não rolam a página
+    const fixedUi = e.closest("#pad, #player, .scrim, #screen");
+    let rolls = false;   // dentro de algo que rola de cima a baixo: dá para chegar lá
+    for (let q = e.parentElement; q && q !== document.body; q = q.parentElement) if (/(auto|scroll)/.test(getComputedStyle(q).overflowY) && q.scrollHeight > q.clientHeight) { rolls = true; break; }
+    const bottom = fixedUi && !rolls ? H : 1e9;
+    if (r.right > right + 3 || r.left < left - 3 || r.bottom > bottom + 3)
+      out.push(`${e.tagName.toLowerCase()}${e.id ? "#" + e.id : ""}${e.className && typeof e.className === "string" ? "." + e.className.trim().split(/\s+/).slice(0, 3).join(".") : ""} [${Math.round(r.left)},${Math.round(r.top)} ${Math.round(r.right)},${Math.round(r.bottom)}] passa de ${box ? (box.id ? "#" + box.id : box.className || box.tagName) : "a janela"}`);
     // texto cortado no próprio elemento (sem reticências)
     if (e.children.length === 0 && e.scrollWidth > e.clientWidth + 2 && cs.overflow !== "visible" && cs.textOverflow !== "ellipsis" && e.textContent.trim()) out.push(`texto cortado: ${e.tagName.toLowerCase()}.${String(e.className)} "${e.textContent.trim().slice(0, 30)}"`);
   }
@@ -59,8 +65,12 @@ for (const [w, h] of sizes) {
   await page.waitForTimeout(3200);   // os avisos somem
   await check("biblioteca");
   await page.click("#accountBtn"); await page.waitForTimeout(400); await check("conta e ajustes");
+  await page.evaluate(() => { const s = document.querySelector("#settingsSheet"); s.scrollTop = 9999; }); await page.waitForTimeout(200); await check("conta e ajustes (fim)");
+  await page.evaluate(() => document.querySelector("#raBtn").click()); await page.waitForTimeout(300); await check("entrar no RetroAchievements");
   await page.goto(base); await page.waitForSelector("#games .tile:not(.add-tile)");
   await page.click("#games .tile:not(.add-tile)"); await page.waitForTimeout(400); await check("página do jogo");
+  await page.evaluate(() => { const b = [...document.querySelectorAll("#gameSheet .gs-action")].find((x) => /Apagar jogo/.test(x.textContent)); b && b.click(); }); await page.waitForTimeout(300); await check("confirmar apagar");
+  await page.evaluate(() => { const b = [...document.querySelectorAll(".dialog .btn")].find((x) => /Cancelar/.test(x.textContent)); b && b.click(); });
   for (const [i, sys] of [[0, "GBA"], [1, "DS"]]) {
     await page.goto(base); await page.waitForSelector("#games .tile:not(.add-tile)");
     await page.click(`#games .tile:not(.add-tile) >> nth=${i}`);
@@ -68,6 +78,7 @@ for (const [w, h] of sizes) {
     await page.waitForFunction(() => { const e = window.__cartucho && window.__cartucho.emu; if (e && e.started) return true; const b = document.querySelector(".dialog .btn.primary"); if (b) b.click(); return false; }, null, { timeout: 90000 });
     await page.waitForTimeout(1500);
     await check(`jogo ${sys}`);
+    if (sys === "GBA") { await page.evaluate(() => document.querySelector("#castBtn").click()); await page.waitForTimeout(300); await check("código da segunda tela"); await page.evaluate(() => document.querySelector("#dialogRoot").replaceChildren()); }
     await page.evaluate(() => { const b = document.querySelector("#padMenu:not([hidden])") || document.querySelector("#menuBtn"); b && b.click(); });
     await page.waitForTimeout(400);
     await page.evaluate(() => { const b = [...document.querySelectorAll("#gmActions .gs-action")].find((x) => /Ajustes/.test(x.textContent)); b && b.click(); });

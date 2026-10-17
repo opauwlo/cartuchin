@@ -126,6 +126,13 @@ button { cursor: pointer; }
 .field { display: grid; gap: 4px; font-size: 0.875rem; color: var(--muted); }
 .field input, .code-input { border: 1px solid var(--line); background: var(--bg); border-radius: 8px; padding: 9px 10px; min-width: 0; width: 100%; color: var(--ink); }
 .code-input { font-family: var(--font-pixel); font-size: 1.4rem; letter-spacing: 0.15em; text-align: center; text-transform: uppercase; }
+/* campos nunca passam do lugar deles (largura 100% + borda e espaço interno contavam por fora) */
+input, select, textarea, button { box-sizing: border-box; max-width: 100%; }
+.dialog, .sheet { box-sizing: border-box; }
+.scr-wait { place-items: safe center; }
+/* aviso maior que a tela (celular deitado): rola, sem cortar em cima */
+.scrim { overflow-y: auto; place-items: safe center; }
+.text-input { border: 1px solid var(--line); background: var(--bg); border-radius: 10px; padding: 11px 12px; width: 100%; color: var(--ink); font: inherit; font-size: 1rem; }
 .qr { background: #fff; border-radius: 10px; padding: 8px; width: min(220px, 100%); justify-self: center; }
 .qr svg { display: block; width: 100%; height: auto; }
 .pair-code { font-family: var(--font-pixel); font-size: 1.9rem; letter-spacing: 0.12em; text-align: center; color: var(--ink); }
@@ -823,9 +830,9 @@ body { margin: 0; }
 
 <div id="dialogRoot"></div>
 
-<script src="config.js?v=20261017202255"></script>
-<script src="vendor/lang-pt-BR.js?v=20261017202255"></script>
+<script src="config.js?v=20261017203056"></script>
+<script src="vendor/lang-pt-BR.js?v=20261017203056"></script>
 <script src="vendor/qrcode.js"></script>
-<script src="app.js?v=20261017202255"></script>
+<script src="app.js?v=20261017203056"></script>
 </body>
 </html>
