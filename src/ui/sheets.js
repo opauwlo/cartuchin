@@ -1,13 +1,11 @@
-import { busy, cloud, cloudName, uploadRom } from "../cloud.js";
+import { busy, cloud } from "../cloud.js";
 import { coverEl, gameInfo } from "../library.js";
 import { play } from "../player/player.js";
-import { confirmDeleteGame, confirmRemoveRom, confirmRestore, downloadSave } from "./dialogs.js";
-import { pickRom, pickSav } from "./pickers.js";
-import { pickCover, renameGame } from "./rename-cover.js";
+import { pickRom } from "./pickers.js";
 import { $, $$, ago, el } from "../util.js";
-import { listStates } from "./states.js";
-import { fmtPlay, gameMeta, toggleFav } from "../meta.js";
-import { render } from "./screens.js";
+import { fmtPlay, gameMeta } from "../meta.js";
+import { raCached } from "../ra.js";
+import { openDetails } from "./details.js";
 
 /* ---------------- sheets ---------------- */
 let sheetKey = null;
@@ -57,46 +55,25 @@ function openGameSheet(key) {
   fillGameSheet(key);
   openSheet("gameSheet");
 }
+/* a folha que sobe ao tocar no jogo: só jogar e ir para os detalhes (o resto fica na página do jogo) */
 function fillGameSheet(key) {
-  const g = gameInfo(key), sh = $("#gameSheet");
-  const status = el("div", { class: "gs-status" },
-    el("div", { class: "sync-line" }, g.save ? [el("span", { class: "dot ok" }), `Save na nuvem ${ago(g.save.at)}, do ${g.save.device || "outro aparelho"}`]
-      : cloud.db ? [el("span", { class: "dot" }), "Ainda sem save na nuvem"] : [el("span", { class: "dot warn" }), "Save só neste aparelho"]),
-    el("div", { class: "sync-line" }, g.crom ? [el("span", { class: "dot ok" }), "ROM na nuvem, abre em qualquer aparelho"]
-      : g.rom ? [el("span", { class: "dot" }), cloud.db ? "ROM só neste aparelho" : "ROM neste aparelho"] : [el("span", { class: "dot warn" }), "A ROM não está neste aparelho"]));
-  const meta = gameMeta(key);
-  if (meta.ms >= 60000) status.append(el("div", { class: "sync-line" }, el("span", { class: "dot ok" }), `Tempo de jogo: ${fmtPlay(meta.ms)}`));
-  // estados salvos deste jogo (ficam neste aparelho)
-  listStates(key).then((items) => {
-    if (!items.length || sheetKey !== key) return;
-    status.append(el("div", { class: "sync-line" }, el("span", { class: "dot ok" }),
-      `${items.length} ${items.length === 1 ? "estado salvo" : "estados salvos"} neste aparelho, o último ${ago(items[0].at)}`));
-  }, () => {});
+  const g = gameInfo(key), sh = $("#gameSheet"), meta = gameMeta(key), ra = raCached(key);
   const working = busy.get(key);
   const playBtn = working ? el("button", { class: "btn primary", type: "button", disabled: true }, working)
-    : g.playable ? el("button", { class: "btn primary", type: "button", onclick: () => {
-      closeSheets();
-      play(key);
-    } }, g.save ? "Continuar" : "Jogar")
-    : el("button", { class: "btn primary", type: "button", onclick: () => {
-      closeSheets();
-      pickRom();
-    } }, "Adicionar a ROM neste aparelho");
-  const acts = el("div", { class: "gs-actions" });
-  acts.append(sheetAction("star", meta.fav ? "Tirar dos favoritos" : "Favoritar", () => { toggleFav(key); fillGameSheet(key); render(); }));
-  if (g.rom && !g.crom && cloud.db && !working) acts.append(sheetAction("cloud", `Guardar a ROM no ${cloudName()}`, () => uploadRom(g.rom)));
-  acts.append(sheetAction("image", "Trocar capa", () => pickCover(key)));
-  acts.append(sheetAction("edit", "Renomear", () => renameGame(key)));
-  if (cloud.db) acts.append(sheetAction("upload", "Enviar arquivo .sav", () => pickSav(key, { title: g.title, system: g.system, code: g.code })));
-  if (g.save) acts.append(sheetAction("download", "Baixar o save", () => downloadSave(g.save)));
-  if (g.save && g.save.prev) acts.append(sheetAction("back", "Voltar à versão anterior do save", () => confirmRestore(key, g.save)));
-  if (g.rom && !g.crom) acts.append(sheetAction("trash", "Tirar a ROM deste aparelho", () => confirmRemoveRom(key, g.title), true));
-  acts.append(sheetAction("trash", "Apagar save e progresso", async () => { if (await confirmDeleteGame(key, g.title, false)) fillGameSheet(key); }, true));
-  acts.append(sheetAction("trash", "Apagar jogo (ROM, save e progresso)", async () => { if (await confirmDeleteGame(key, g.title, true)) closeSheets(); }, true));
+    : g.playable ? el("button", { class: "btn primary", type: "button", onclick: () => { closeSheets(); play(key); } }, g.save ? "Continuar" : "Jogar")
+    : el("button", { class: "btn primary", type: "button", onclick: () => { closeSheets(); pickRom(); } }, "Adicionar a ROM neste aparelho");
+  const facts = [
+    g.save ? `Salvo ${ago(g.save.at)}` : cloud.db ? "Ainda sem save" : "Save neste aparelho",
+    meta.ms >= 60000 ? `${fmtPlay(meta.ms)} de jogo` : null,
+    ra && ra.game ? `🏆 ${ra.game.unlocked}/${ra.game.total}` : null,
+  ].filter(Boolean);
   sh.replaceChildren(el("div", { class: "sheet-grip", "aria-hidden": "true" }),
     el("div", { class: "sheet-body" },
-      el("div", { class: "gs-head" }, coverEl(g), el("div", {}, el("h2", { class: "gs-title", id: "gsTitle" }, (meta.fav ? "★ " : "") + g.title), el("p", { class: "gs-sub" }, [g.sys, g.code].filter(Boolean).join(" · ")))),
-      el("div", { class: "gs-play" }, playBtn), status, acts));
+      el("div", { class: "gs-head" }, coverEl(g), el("div", {}, el("h2", { class: "gs-title", id: "gsTitle" }, (meta.fav ? "★ " : "") + g.title),
+        el("p", { class: "gs-sub" }, [g.sys, g.code].filter(Boolean).join(" · ")),
+        el("p", { class: "gs-facts" }, facts.join(" · ")))),
+      el("div", { class: "gs-play two" }, playBtn,
+        el("button", { class: "btn", type: "button", id: "gsDetails", onclick: () => openDetails(key) }, "Detalhes"))));
 }
 
 export { sheetKey, openSheet, closeSheets, sheetAction, openGameSheet, fillGameSheet };

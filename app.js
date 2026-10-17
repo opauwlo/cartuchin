@@ -1217,22 +1217,22 @@ registerProcessor("pix-play", PixPlay);`;
   }
   async function startPixels({ pix, snd, emu, isDs, layout, onSent }) {
     const worker = new Worker(URL.createObjectURL(new Blob([`(${pixWorkerSource.toString()})();`], { type: "text/javascript" })));
-    const stat = { sent: 0, dropped: 0, bytes: 0, keys: 0, ms: 0, frames: 0, empty: 0, offered: 0 };
+    const stat2 = { sent: 0, dropped: 0, bytes: 0, keys: 0, ms: 0, frames: 0, empty: 0, offered: 0 };
     worker.onmessage = ({ data }) => {
       if (!data.pkt) return;
-      stat.ms = stat.ms ? stat.ms * 0.9 + data.ms * 0.1 : data.ms;
-      stat.frames = data.frames;
-      stat.empty = data.empty;
+      stat2.ms = stat2.ms ? stat2.ms * 0.9 + data.ms * 0.1 : data.ms;
+      stat2.frames = data.frames;
+      stat2.empty = data.empty;
       if (pix.readyState !== "open" || pix.bufferedAmount > 262144) {
-        stat.dropped++;
+        stat2.dropped++;
         worker.postMessage({ cmd: "key" });
         return;
       }
       try {
         pix.send(data.pkt);
-        stat.sent++;
-        stat.bytes += data.bytes;
-        if (data.key) stat.keys++;
+        stat2.sent++;
+        stat2.bytes += data.bytes;
+        if (data.key) stat2.keys++;
       } catch (e) {
         worker.postMessage({ cmd: "key" });
       }
@@ -1242,7 +1242,7 @@ registerProcessor("pix-play", PixPlay);`;
       let small = null, sg = null;
       emu.onFrame = (im) => {
         if (onSent) onSent();
-        stat.offered++;
+        stat2.offered++;
         const fb = emu.fbCanvas, k = fb && fb.width >= 512 ? 2 : 1, fw = 256 * k, fh = 384 * k;
         let data;
         if (im && im.width === fw) data = im.data.slice();
@@ -1328,7 +1328,7 @@ registerProcessor("pix-play", PixPlay);`;
       }
     }
     return {
-      stat,
+      stat: stat2,
       key: () => worker.postMessage({ cmd: "key" }),
       stop: () => {
         for (const s of stops) {
@@ -3292,6 +3292,519 @@ void main() {
     }
   });
 
+  // src/ui/sheets.js
+  var sheetKey = null;
+  function openSheet(id) {
+    $("#sheetScrim").hidden = false;
+    for (const sh of $$(".sheet")) sh.hidden = sh.id !== id;
+    const first = $("#" + id).querySelector("button");
+    if (first) setTimeout(() => first.focus(), 30);
+  }
+  function closeSheets() {
+    sheetKey = null;
+    $("#sheetScrim").hidden = true;
+    for (const sh of $$(".sheet")) sh.hidden = true;
+  }
+  $("#sheetScrim").addEventListener("click", closeSheets);
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !$("#sheetScrim").hidden) closeSheets();
+  });
+  $("#accountBtn").addEventListener("click", () => openSheet("settingsSheet"));
+  $("#settingsClose").addEventListener("click", closeSheets);
+  var ICONS = {
+    save: '<path d="M5 4h11l3 3v13H5z"/><path d="M8 4v5h7V4M8 20v-6h8v6"/>',
+    upload: '<path d="M12 16V4M7 9l5-5 5 5"/><path d="M5 20h14"/>',
+    download: '<path d="M12 4v12M7 11l5 5 5-5"/><path d="M5 20h14"/>',
+    back: '<path d="M9 14 4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/>',
+    image: '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="m21 17-5-5-9 8"/>',
+    edit: '<path d="M4 20h4L19 9l-4-4L4 16z"/>',
+    cloud: '<path d="M7 18a4 4 0 0 1-.6-8A6 6 0 0 1 18 9a4.5 4.5 0 0 1-.5 9z"/><path d="M12 11v6M9.5 13.5 12 11l2.5 2.5"/>',
+    trash: '<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>',
+    pause: '<path d="M8 5v14M16 5v14"/>',
+    play: '<path d="M7 5l12 7-12 7z"/>',
+    sound: '<path d="M4 9h4l5-4v14l-5-4H4z"/><path d="M17 9a4 4 0 0 1 0 6"/>',
+    mute: '<path d="M4 9h4l5-4v14l-5-4H4z"/><path d="m17 10 4 4M21 10l-4 4"/>',
+    sliders: '<path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/>',
+    star: '<path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1 6.2L12 17.3 6.5 20.2l1-6.2L3 9.6l6.2-.9z"/>',
+    restart: '<path d="M4 4v6h6"/><path d="M5.5 15a8 8 0 1 0 1-8.5L4 10"/>'
+  };
+  function sheetAction(icon, label, fn, danger) {
+    const b = el("button", { class: "gs-action" + (danger ? " danger" : ""), type: "button", onclick: fn });
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.innerHTML = ICONS[icon];
+    b.append(svg, el("span", {}, label));
+    return b;
+  }
+  function openGameSheet(key) {
+    sheetKey = key;
+    fillGameSheet(key);
+    openSheet("gameSheet");
+  }
+  function fillGameSheet(key) {
+    const g = gameInfo(key), sh = $("#gameSheet"), meta = gameMeta(key), ra2 = raCached(key);
+    const working = busy.get(key);
+    const playBtn = working ? el("button", { class: "btn primary", type: "button", disabled: true }, working) : g.playable ? el("button", { class: "btn primary", type: "button", onclick: () => {
+      closeSheets();
+      play(key);
+    } }, g.save ? "Continuar" : "Jogar") : el("button", { class: "btn primary", type: "button", onclick: () => {
+      closeSheets();
+      pickRom();
+    } }, "Adicionar a ROM neste aparelho");
+    const facts = [
+      g.save ? `Salvo ${ago(g.save.at)}` : cloud.db ? "Ainda sem save" : "Save neste aparelho",
+      meta.ms >= 6e4 ? `${fmtPlay(meta.ms)} de jogo` : null,
+      ra2 && ra2.game ? `🏆 ${ra2.game.unlocked}/${ra2.game.total}` : null
+    ].filter(Boolean);
+    sh.replaceChildren(
+      el("div", { class: "sheet-grip", "aria-hidden": "true" }),
+      el(
+        "div",
+        { class: "sheet-body" },
+        el("div", { class: "gs-head" }, coverEl(g), el(
+          "div",
+          {},
+          el("h2", { class: "gs-title", id: "gsTitle" }, (meta.fav ? "★ " : "") + g.title),
+          el("p", { class: "gs-sub" }, [g.sys, g.code].filter(Boolean).join(" · ")),
+          el("p", { class: "gs-facts" }, facts.join(" · "))
+        )),
+        el(
+          "div",
+          { class: "gs-play two" },
+          playBtn,
+          el("button", { class: "btn", type: "button", id: "gsDetails", onclick: () => openDetails(key) }, "Detalhes")
+        )
+      )
+    );
+  }
+
+  // src/ra.js
+  var RA_KEY = "cartucho.ra";
+  var ra = window.__ra = { mod: null, loading: null, user: null, game: null, list: [], mem: null, waiting: {}, frameTimer: 0, lastFrame: -1, unlockedNow: [] };
+  var saved = () => {
+    try {
+      return JSON.parse(ls.get(RA_KEY) || "null");
+    } catch (e) {
+      return null;
+    }
+  };
+  function loadModule() {
+    if (ra.loading) return ra.loading;
+    ra.loading = new Promise((resolve, reject) => {
+      const s = document.createElement("script");
+      s.src = "vendor/rcheevos.js";
+      s.onload = () => resolve();
+      s.onerror = () => reject(new Error("rcheevos"));
+      document.head.append(s);
+    }).then(() => window.createRcheevos({
+      locateFile: (f) => "vendor/" + f,
+      raRead,
+      raServer,
+      raEvent,
+      raDone: (kind, result, msg) => {
+        const w = ra.waiting[kind];
+        ra.waiting[kind] = null;
+        if (w) w({ ok: result === 0, msg });
+      },
+      raLog: (m) => console.debug("[ra]", m)
+    })).then((m) => {
+      ra.mod = m;
+      m._ra_init();
+      return m;
+    });
+    ra.loading.catch(() => {
+      ra.loading = null;
+    });
+    return ra.loading;
+  }
+  var call = (fn, ...strs) => {
+    const m = ra.mod, ptrs = strs.map((s) => m.stringToNewUTF8(String(s)));
+    try {
+      return m[fn](...ptrs);
+    } finally {
+      for (const p of ptrs) m._free(p);
+    }
+  };
+  var json = (fn) => {
+    try {
+      return JSON.parse(ra.mod.UTF8ToString(ra.mod[fn]()));
+    } catch (e) {
+      return null;
+    }
+  };
+  var wait = (kind, ms = 3e4) => new Promise((resolve) => {
+    ra.waiting[kind] = resolve;
+    setTimeout(() => {
+      if (ra.waiting[kind] === resolve) {
+        ra.waiting[kind] = null;
+        resolve({ ok: false, msg: "Sem resposta do RetroAchievements." });
+      }
+    }, ms);
+  });
+  function raServer(url, post, ctype, cb, cbdata) {
+    fetch("api/ra", { method: "POST", headers: { "Content-Type": ctype || "application/x-www-form-urlencoded", "X-Cartuchin": "1" }, body: post || "" }).then(async (r) => ({ status: r.status, text: await r.text() }), () => ({ status: -2, text: "" })).then(({ status, text }) => {
+      const m = ra.mod, bytes = new TextEncoder().encode(text), p = m._malloc(bytes.length + 1);
+      m.HEAPU8.set(bytes, p);
+      m.HEAPU8[p + bytes.length] = 0;
+      try {
+        m._ra_response(cb, cbdata, p, bytes.length, status);
+      } finally {
+        m._free(p);
+      }
+    });
+  }
+  function raRead(addr, buf, n) {
+    const mem = ra.mem;
+    if (!mem) return 0;
+    if (mem.dummy) {
+      ra.mod.HEAPU8.fill(0, buf, buf + n);
+      return n;
+    }
+    const reg = mem.regions.find((r) => addr >= r.start && addr + n <= r.start + r.size);
+    if (!reg) return 0;
+    const heap = reg.heap();
+    ra.mod.HEAPU8.set(heap.subarray(reg.ptr + addr - reg.start, reg.ptr + addr - reg.start + n), buf);
+    return n;
+  }
+  function dsMemory(emu) {
+    const r = emu.ramInfo && emu.ramInfo();
+    if (!r || !r.ptr) return null;
+    return { regions: [{ start: 0, size: 4194304, ptr: r.ptr, heap: () => emu.ramInfo().heap }] };
+  }
+  function findBlock(heap, block, isCopy) {
+    let best = -1, bestScore = -1;
+    for (let o = 0; o + 64 <= block.length; o += 256) {
+      const seen = /* @__PURE__ */ new Set();
+      for (let i = 0; i < 64; i++) seen.add(block[o + i]);
+      if (seen.size > bestScore) {
+        bestScore = seen.size;
+        best = o;
+      }
+      if (bestScore >= 40) break;
+    }
+    if (bestScore < 8) return -1;
+    const needle = block.subarray(best, best + 64), first = needle[0];
+    for (let i = heap.indexOf(first); i >= 0 && i < heap.length - block.length; i = heap.indexOf(first, i + 1)) {
+      let ok = true;
+      for (let k = 1; k < 64; k++) if (heap[i + k] !== needle[k]) {
+        ok = false;
+        break;
+      }
+      if (!ok) continue;
+      const base = i - best;
+      if (base < 0 || isCopy && isCopy(base)) continue;
+      let same = 0;
+      for (let k = 0; k < block.length; k += 61) if (heap[base + k] === block[k]) same++;
+      if (same >= Math.floor(block.length / 61) * 0.98) return base;
+    }
+    return -1;
+  }
+  async function gbaMemory(emu) {
+    const gm = emu.gameManager, M = gm.Module;
+    if (!M || !M.HEAPU8) return null;
+    const wasPaused = emu.paused;
+    try {
+      emu.pause();
+    } catch (e) {
+    }
+    try {
+      await new Promise((r) => setTimeout(r, 50));
+      let st = gm.getState();
+      if (st && st.length > 16 && String.fromCharCode(...st.subarray(0, 7)) === "RASTATE" && String.fromCharCode(...st.subarray(8, 12)) === "MEM ") st = st.subarray(16);
+      if (!st || st.length < 397312) return null;
+      const heap = M.HEAPU8, head = st.subarray(0, 32);
+      const inState = (at) => (base) => base - at >= 0 && head.every((b, k) => heap[base - at + k] === b);
+      const ew = findBlock(heap, st.subarray(135168, 397312), inState(135168));
+      const iw = findBlock(heap, st.subarray(102400, 135168), (b) => inState(102400)(b) || ew >= 0 && b >= ew && b < ew + 262144);
+      if (iw < 0 || ew < 0) return null;
+      return { regions: [
+        { start: 0, size: 32768, ptr: iw, heap: () => M.HEAPU8 },
+        { start: 32768, size: 262144, ptr: ew, heap: () => M.HEAPU8 }
+      ] };
+    } finally {
+      if (!wasPaused) {
+        try {
+          emu.play();
+        } catch (e) {
+        }
+      }
+    }
+  }
+  async function md5Parts(parts) {
+    const m = ra.mod, st = m._ra_md5_new();
+    for (const u8 of parts) {
+      for (let o = 0; o < u8.length; o += 1 << 20) {
+        const piece = u8.subarray(o, o + (1 << 20)), p = m._malloc(piece.length);
+        m.HEAPU8.set(piece, p);
+        m._ra_md5_append(st, p, piece.length);
+        m._free(p);
+      }
+    }
+    const out = m._malloc(16);
+    m._ra_md5_finish(st, out);
+    const hex = Array.from(m.HEAPU8.subarray(out, out + 16), (b) => b.toString(16).padStart(2, "0")).join("");
+    m._free(out);
+    return hex;
+  }
+  async function gameHash(rom) {
+    const blob = rom.blob, sys = rom.system;
+    if (sys === "gba") return md5Parts([new Uint8Array(await blob.arrayBuffer())]);
+    if (sys !== "nds") return null;
+    const bytes = async (from, n) => new Uint8Array(await blob.slice(from, from + n).arrayBuffer());
+    const h = await bytes(0, 512), dv = new DataView(h.buffer);
+    const a9 = dv.getUint32(32, true), s9 = dv.getUint32(44, true), a7 = dv.getUint32(48, true), s7 = dv.getUint32(60, true), ic = dv.getUint32(104, true);
+    if (s9 + s7 > 16 << 20) return null;
+    const icon = new Uint8Array(2560);
+    icon.set(await bytes(ic, 2560));
+    return md5Parts([h.subarray(0, 352), await bytes(a9, s9), await bytes(a7, s7), icon]);
+  }
+  async function login(user, pass) {
+    await loadModule();
+    call("_ra_login_password", user, pass);
+    const r = await wait(1);
+    if (!r.ok) return r;
+    ra.user = json("_ra_user_json");
+    if (ra.user) ls.set(RA_KEY, JSON.stringify({ user: ra.user.username, token: ra.user.token }));
+    renderAccount();
+    return r;
+  }
+  async function resume() {
+    const s = saved();
+    if (!s || ra.user) return !!ra.user;
+    await loadModule();
+    call("_ra_login_token", s.user, s.token);
+    const r = await wait(1);
+    if (r.ok) ra.user = json("_ra_user_json");
+    else if (/token|password|credential|invalid/i.test(r.msg || "")) ls.set(RA_KEY, "");
+    renderAccount();
+    return r.ok;
+  }
+  function logout() {
+    if (ra.mod) ra.mod._ra_logout();
+    ra.user = null;
+    ls.set(RA_KEY, "");
+    renderAccount();
+  }
+  async function startGame() {
+    ra.game = null;
+    ra.list = [];
+    ra.mem = null;
+    stopFrames();
+    const emu = player.emu, rom = player.rom;
+    if (!saved() || !emu || !rom || player.guest || emu.workerCore) return;
+    try {
+      if (!await resume()) return;
+      const key = "cartucho.rahash." + player.key;
+      let hash = ls.get(key);
+      if (!hash) {
+        hash = await gameHash(rom);
+        if (hash) ls.set(key, hash);
+      }
+      if (!hash) return;
+      ra.mem = player.isDs ? dsMemory(emu) : await gbaMemory(emu);
+      for (let i = 0; !ra.mem && i < 30 && player.emu === emu; i++) {
+        await new Promise((r2) => setTimeout(r2, 4e3));
+        ra.mem = await gbaMemory(emu);
+      }
+      if (!ra.mem || player.emu !== emu) return;
+      call("_ra_load_game", hash);
+      const r = await wait(2);
+      if (!r.ok) {
+        if (!/unknown|not found|unrecognized/i.test(r.msg || "")) console.warn("[ra] jogo", r.msg);
+        return;
+      }
+      ra.game = json("_ra_game_json");
+      ra.list = json("_ra_achievements_json") || [];
+      cacheSet(player.key);
+      if (ra.game && ra.game.total) toast(`🏆 RetroAchievements: ${ra.game.unlocked} de ${ra.game.total} conquistas`, 4e3);
+      startFrames(emu);
+    } catch (e) {
+      console.warn("[ra]", e);
+    }
+  }
+  function startFrames(emu) {
+    if (emu.isDs) {
+      emu.onEmuFrame = () => {
+        if (ra.mem) ra.mod._ra_do_frame();
+      };
+      return;
+    }
+    const gm = emu.gameManager;
+    let idleAt = 0;
+    const loop = () => {
+      if (player.emu !== emu || !ra.game) return;
+      ra.frameTimer = requestAnimationFrame(loop);
+      let f = -1;
+      try {
+        f = Number(gm.getFrameNum());
+      } catch (e) {
+      }
+      if (f !== ra.lastFrame && ra.mem) {
+        ra.lastFrame = f;
+        ra.mod._ra_do_frame();
+      } else if (performance.now() - idleAt > 1e3) {
+        idleAt = performance.now();
+        ra.mod._ra_idle();
+      }
+    };
+    loop();
+  }
+  function stopFrames() {
+    cancelAnimationFrame(ra.frameTimer);
+    if (player.emu) player.emu.onEmuFrame = null;
+  }
+  var CACHE = (k) => "cartucho.raset." + k;
+  function cacheSet(key) {
+    if (!key || !ra.game) return;
+    const list2 = (ra.list || []).map(({ id, title, description, points, unlocked, badge, badgeLocked, progress }) => ({ id, title, description, points, unlocked, badge, badgeLocked, progress }));
+    ls.set(CACHE(key), JSON.stringify({ game: ra.game, list: list2, at: Date.now(), user: ra.user && ra.user.username }));
+    window.dispatchEvent(new Event("ra-cache"));
+  }
+  function raCached(key) {
+    const s = saved();
+    if (!s) return null;
+    try {
+      const c = JSON.parse(ls.get(CACHE(key)) || "null");
+      return c && c.user === s.user ? c : null;
+    } catch (e) {
+      return null;
+    }
+  }
+  var peeking = null;
+  async function peekGame(key, rom) {
+    if (peeking || !saved() || !rom || !rom.blob || player.emu && ra.game) return raCached(key);
+    peeking = (async () => {
+      if (!await resume()) return null;
+      const hk = "cartucho.rahash." + key;
+      let hash = ls.get(hk);
+      if (!hash) {
+        hash = await gameHash(rom);
+        if (hash) ls.set(hk, hash);
+      }
+      if (!hash) return null;
+      ra.mem = { dummy: true };
+      call("_ra_load_game", hash);
+      const r = await wait(2);
+      if (r.ok) {
+        ra.game = json("_ra_game_json");
+        ra.list = json("_ra_achievements_json") || [];
+        cacheSet(key);
+      } else ls.set(CACHE(key), JSON.stringify({ game: null, list: [], at: Date.now(), user: saved().user, none: true }));
+      ra.mod._ra_unload_game();
+      ra.mem = null;
+      ra.game = null;
+      ra.list = [];
+      return raCached(key);
+    })().finally(() => {
+      peeking = null;
+    });
+    return peeking;
+  }
+  function raEvent(type, id, data) {
+    let a = null;
+    try {
+      a = data ? JSON.parse(data) : null;
+    } catch (e) {
+    }
+    if (type === 1 && a) {
+      popup(a.badge, "Conquista desbloqueada", `${a.title} (+${a.points})`);
+      ra.unlockedNow.push(a.id);
+      ra.list = json("_ra_achievements_json") || ra.list;
+      ra.game = json("_ra_game_json") || ra.game;
+      cacheSet(player.key);
+    } else if (type === 15) popup(ra.game && ra.game.badge, "Jogo completo!", "Todas as conquistas desbloqueadas");
+    else if (type === 16 && a) toast("RetroAchievements: " + (a.error || "erro do servidor"), 4e3);
+    else if (type === 17) toast("RetroAchievements sem conexão: as conquistas vão quando a rede voltar.", 4e3);
+  }
+  function popup(img, title, text) {
+    const box = el(
+      "div",
+      { class: "ra-pop", role: "status" },
+      img ? el("img", { src: img, alt: "", width: "48", height: "48" }) : el("span", { class: "ra-cup" }, "🏆"),
+      el("div", {}, el("b", {}, title), el("span", {}, text))
+    );
+    document.body.append(box);
+    setTimeout(() => box.classList.add("out"), 4200);
+    setTimeout(() => box.remove(), 4800);
+  }
+  function renderAccount() {
+    const line = $("#raLine"), btn = $("#raBtn");
+    if (!line) return;
+    const s = saved();
+    line.textContent = ra.user ? `Conectado como ${ra.user.name} · ${ra.user.score} pontos (modo casual)` : s ? `Conta ${s.user}` : "Conquistas dos jogos com a sua conta do retroachievements.org (modo casual).";
+    btn.textContent = s ? "Sair do RetroAchievements" : "Entrar no RetroAchievements";
+  }
+  function askLogin() {
+    const root = $("#dialogRoot");
+    const u = el("input", { type: "text", autocomplete: "username", placeholder: "Usuário", class: "text-input", autocapitalize: "none" });
+    const p = el("input", { type: "password", autocomplete: "current-password", placeholder: "Senha", class: "text-input" });
+    const msg = el("p", { class: "small-note" }, "A senha vai uma vez para o RetroAchievements e não fica guardada aqui.");
+    const close = () => root.replaceChildren();
+    const form = el(
+      "form",
+      { class: "dialog", onsubmit: async (e) => {
+        e.preventDefault();
+        if (!u.value.trim() || !p.value) return;
+        msg.textContent = "Entrando…";
+        const r = await login(u.value.trim(), p.value).catch(() => ({ ok: false, msg: "Não deu para carregar o RetroAchievements." }));
+        if (r.ok) {
+          close();
+          toast(`RetroAchievements: conectado como ${ra.user ? ra.user.name : u.value}`);
+          if (player.emu) startGame();
+        } else msg.textContent = r.msg || "Usuário ou senha incorretos.";
+      } },
+      el("h2", {}, "RetroAchievements"),
+      u,
+      p,
+      msg,
+      el("button", { class: "btn primary", type: "submit" }, "Entrar"),
+      el("button", { class: "btn", type: "button", onclick: close }, "Cancelar"),
+      el("p", { class: "small-note" }, "Ainda não tem conta? Crie grátis em retroachievements.org.")
+    );
+    root.replaceChildren(el("div", { class: "scrim" }, form));
+    u.focus();
+  }
+  var sheet = el("section", { class: "sheet", id: "raSheet", role: "dialog", "aria-modal": "true", "aria-label": "Conquistas", hidden: true });
+  document.body.append(sheet);
+  function openAchievements() {
+    const g = ra.game;
+    const items = (ra.list || []).slice().sort((a, b) => b.unlocked - a.unlocked || a.bucket - b.bucket);
+    sheet.replaceChildren(
+      el("div", { class: "sheet-grip", "aria-hidden": "true" }),
+      el(
+        "div",
+        { class: "sheet-body" },
+        el("h3", {}, g ? `${g.title}: ${g.unlocked} de ${g.total} · ${g.pointsUnlocked}/${g.points} pontos` : "Conquistas"),
+        el("div", { class: "ra-list" }, ...items.map((a) => el(
+          "div",
+          { class: "ra-item" + (a.unlocked ? " on" : "") },
+          el("img", { src: a.unlocked ? a.badge : a.badgeLocked, alt: "", width: "48", height: "48", loading: "lazy" }),
+          el(
+            "div",
+            {},
+            el("b", {}, `${a.title} · ${a.points}`),
+            el("span", {}, a.description),
+            a.progress && !a.unlocked ? el("span", { class: "ra-prog" }, a.progress) : null
+          )
+        ))),
+        el("p", { class: "small-note" }, "Modo casual: as conquistas valem no seu perfil do retroachievements.org."),
+        el("button", { class: "btn", type: "button", onclick: closeSheets }, "Voltar ao jogo")
+      )
+    );
+    openSheet("raSheet");
+  }
+  var raSummary = () => ra.game && ra.game.total ? `${ra.game.unlocked}/${ra.game.total}` : "";
+  window.addEventListener("cartucho-game-running", () => {
+    startGame();
+  });
+  document.addEventListener("click", (e) => {
+    if (e.target.closest("#raBtn")) {
+      if (saved()) logout();
+      else askLogin();
+    }
+  });
+  renderAccount();
+
   // src/ui/rename-cover.js
   async function setGameMeta(key, patch) {
     const rom = roms.get(key);
@@ -3492,8 +4005,8 @@ void main() {
     const items = await list(game);
     return items[0] || null;
   }
-  var sheet = el("section", { class: "sheet", id: "statesSheet", role: "dialog", "aria-modal": "true", "aria-label": "Estados salvos", hidden: true });
-  $("#gameMenu").after(sheet);
+  var sheet2 = el("section", { class: "sheet", id: "statesSheet", role: "dialog", "aria-modal": "true", "aria-label": "Estados salvos", hidden: true });
+  $("#gameMenu").after(sheet2);
   var urls = [];
   var mode = "load";
   async function openGallery(m = "load") {
@@ -3550,7 +4063,7 @@ void main() {
         )
       ));
     }
-    sheet.replaceChildren(
+    sheet2.replaceChildren(
       el("div", { class: "sheet-grip", "aria-hidden": "true" }),
       el(
         "div",
@@ -3632,114 +4145,141 @@ void main() {
   window.addEventListener("cartucho-game-exit", autoSave);
   window.__states = { saveState, loadState, list, removeState, renameState, openGallery };
 
-  // src/ui/sheets.js
-  var sheetKey = null;
-  function openSheet(id) {
-    $("#sheetScrim").hidden = false;
-    for (const sh of $$(".sheet")) sh.hidden = sh.id !== id;
-    const first = $("#" + id).querySelector("button");
-    if (first) setTimeout(() => first.focus(), 30);
+  // src/ui/details.js
+  var page = el("section", { class: "details", id: "gameDetails", role: "dialog", "aria-modal": "true", "aria-labelledby": "gdTitle", hidden: true });
+  document.body.append(page);
+  var openKey = null;
+  function openDetails(key) {
+    openKey = key;
+    closeSheets();
+    fill();
+    page.hidden = false;
+    page.scrollTop = 0;
+    history.pushState({ details: key }, "");
+    const g = gameInfo(key), cached = raCached(key);
+    if (!cached && g.rom) peekGame(key, g.rom).then(() => {
+      if (openKey === key) fill();
+    }, () => {
+    });
   }
-  function closeSheets() {
-    sheetKey = null;
-    $("#sheetScrim").hidden = true;
-    for (const sh of $$(".sheet")) sh.hidden = true;
+  function closeDetails() {
+    if (page.hidden) return;
+    page.hidden = true;
+    openKey = null;
   }
-  $("#sheetScrim").addEventListener("click", closeSheets);
-  window.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && !$("#sheetScrim").hidden) closeSheets();
-  });
-  $("#accountBtn").addEventListener("click", () => openSheet("settingsSheet"));
-  $("#settingsClose").addEventListener("click", closeSheets);
-  var ICONS = {
-    save: '<path d="M5 4h11l3 3v13H5z"/><path d="M8 4v5h7V4M8 20v-6h8v6"/>',
-    upload: '<path d="M12 16V4M7 9l5-5 5 5"/><path d="M5 20h14"/>',
-    download: '<path d="M12 4v12M7 11l5 5 5-5"/><path d="M5 20h14"/>',
-    back: '<path d="M9 14 4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/>',
-    image: '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="m21 17-5-5-9 8"/>',
-    edit: '<path d="M4 20h4L19 9l-4-4L4 16z"/>',
-    cloud: '<path d="M7 18a4 4 0 0 1-.6-8A6 6 0 0 1 18 9a4.5 4.5 0 0 1-.5 9z"/><path d="M12 11v6M9.5 13.5 12 11l2.5 2.5"/>',
-    trash: '<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>',
-    pause: '<path d="M8 5v14M16 5v14"/>',
-    play: '<path d="M7 5l12 7-12 7z"/>',
-    sound: '<path d="M4 9h4l5-4v14l-5-4H4z"/><path d="M17 9a4 4 0 0 1 0 6"/>',
-    mute: '<path d="M4 9h4l5-4v14l-5-4H4z"/><path d="m17 10 4 4M21 10l-4 4"/>',
-    sliders: '<path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/>',
-    star: '<path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1 6.2L12 17.3 6.5 20.2l1-6.2L3 9.6l6.2-.9z"/>',
-    restart: '<path d="M4 4v6h6"/><path d="M5.5 15a8 8 0 1 0 1-8.5L4 10"/>'
-  };
-  function sheetAction(icon, label, fn, danger) {
-    const b = el("button", { class: "gs-action" + (danger ? " danger" : ""), type: "button", onclick: fn });
-    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-    svg.setAttribute("viewBox", "0 0 24 24");
-    svg.innerHTML = ICONS[icon];
-    b.append(svg, el("span", {}, label));
-    return b;
+  window.addEventListener("popstate", () => closeDetails());
+  function stat(label, value, note) {
+    return el("div", { class: "gd-stat" }, el("span", { class: "gd-stat-l" }, label), el("span", { class: "gd-stat-v" }, value), note ? el("span", { class: "gd-stat-l" }, note) : null);
   }
-  function openGameSheet(key) {
-    sheetKey = key;
-    fillGameSheet(key);
-    openSheet("gameSheet");
-  }
-  function fillGameSheet(key) {
-    const g = gameInfo(key), sh = $("#gameSheet");
-    const status = el(
+  function fill() {
+    const key = openKey;
+    if (!key) return;
+    const g = gameInfo(key), m = gameMeta(key), ra2 = raCached(key);
+    const working = busy.get(key);
+    const playBtn = working ? el("button", { class: "btn primary", type: "button", disabled: true }, working) : g.playable ? el("button", { class: "btn primary", type: "button", onclick: () => {
+      history.back();
+      play(key);
+    } }, g.save ? "Continuar" : "Jogar") : el("button", { class: "btn primary", type: "button", onclick: () => pickRom() }, "Adicionar a ROM neste aparelho");
+    const fav = el(
+      "button",
+      { class: "btn gd-fav" + (m.fav ? " on" : ""), type: "button", "aria-pressed": m.fav ? "true" : "false", onclick: () => {
+        toggleFav(key);
+        fill();
+        window.dispatchEvent(new Event("cartucho-library-changed"));
+      } },
+      m.fav ? "★ Favorito" : "☆ Favoritar"
+    );
+    const stats = el(
+      "div",
+      { class: "gd-stats" },
+      stat("Tempo de jogo", m.ms >= 6e4 ? fmtPlay(m.ms) : "ainda não"),
+      stat("Último save", g.save ? ago(g.save.at) : "ainda não", g.save ? `no ${g.save.device || "outro aparelho"}` : null),
+      ra2 && ra2.game ? stat("Conquistas", `${ra2.game.unlocked} de ${ra2.game.total}`, `${ra2.game.pointsUnlocked} pontos`) : null
+    );
+    let achievements = null;
+    if (ra2 && ra2.game && ra2.list.length) {
+      const pct = ra2.game.points ? Math.round(ra2.game.pointsUnlocked / ra2.game.points * 100) : 0;
+      const items = ra2.list.slice().sort((a, b) => b.unlocked - a.unlocked);
+      achievements = el(
+        "section",
+        { class: "gd-sec" },
+        el("h3", {}, "Conquistas"),
+        el("div", { class: "gd-bar", role: "progressbar", "aria-valuenow": String(pct), "aria-valuemin": "0", "aria-valuemax": "100" }, el("span", { style: `width:${pct}%` })),
+        el("p", { class: "gd-note" }, `${ra2.game.pointsUnlocked} de ${ra2.game.points} pontos · atualizado ${ago(ra2.at)}`),
+        el("div", { class: "gd-badges" }, ...items.map((a) => el(
+          "div",
+          { class: "gd-badge" + (a.unlocked ? " on" : ""), title: `${a.title}: ${a.description}` },
+          el("img", { src: a.unlocked ? a.badge : a.badgeLocked, alt: "", width: "56", height: "56", loading: "lazy" }),
+          el("span", {}, a.title)
+        )))
+      );
+    } else if (ra2 && ra2.none) achievements = el("section", { class: "gd-sec" }, el("h3", {}, "Conquistas"), el("p", { class: "gd-note" }, "Este jogo não tem conquistas no RetroAchievements (ou esta versão da ROM não é a reconhecida)."));
+    const saveLines = el(
       "div",
       { class: "gs-status" },
       el("div", { class: "sync-line" }, g.save ? [el("span", { class: "dot ok" }), `Save na nuvem ${ago(g.save.at)}, do ${g.save.device || "outro aparelho"}`] : cloud.db ? [el("span", { class: "dot" }), "Ainda sem save na nuvem"] : [el("span", { class: "dot warn" }), "Save só neste aparelho"]),
       el("div", { class: "sync-line" }, g.crom ? [el("span", { class: "dot ok" }), "ROM na nuvem, abre em qualquer aparelho"] : g.rom ? [el("span", { class: "dot" }), cloud.db ? "ROM só neste aparelho" : "ROM neste aparelho"] : [el("span", { class: "dot warn" }), "A ROM não está neste aparelho"])
     );
-    const meta = gameMeta(key);
-    if (meta.ms >= 6e4) status.append(el("div", { class: "sync-line" }, el("span", { class: "dot ok" }), `Tempo de jogo: ${fmtPlay(meta.ms)}`));
     list(key).then((items) => {
-      if (!items.length || sheetKey !== key) return;
-      status.append(el(
-        "div",
-        { class: "sync-line" },
-        el("span", { class: "dot ok" }),
-        `${items.length} ${items.length === 1 ? "estado salvo" : "estados salvos"} neste aparelho, o último ${ago(items[0].at)}`
-      ));
+      if (!items.length || openKey !== key) return;
+      saveLines.append(el("div", { class: "sync-line" }, el("span", { class: "dot ok" }), `${items.length} ${items.length === 1 ? "estado salvo" : "estados salvos"} neste aparelho, o último ${ago(items[0].at)}`));
     }, () => {
     });
-    const working = busy.get(key);
-    const playBtn = working ? el("button", { class: "btn primary", type: "button", disabled: true }, working) : g.playable ? el("button", { class: "btn primary", type: "button", onclick: () => {
-      closeSheets();
-      play(key);
-    } }, g.save ? "Continuar" : "Jogar") : el("button", { class: "btn primary", type: "button", onclick: () => {
-      closeSheets();
-      pickRom();
-    } }, "Adicionar a ROM neste aparelho");
-    const acts = el("div", { class: "gs-actions" });
-    acts.append(sheetAction("star", meta.fav ? "Tirar dos favoritos" : "Favoritar", () => {
-      toggleFav(key);
-      fillGameSheet(key);
-      render();
-    }));
-    if (g.rom && !g.crom && cloud.db && !working) acts.append(sheetAction("cloud", `Guardar a ROM no ${cloudName()}`, () => uploadRom(g.rom)));
-    acts.append(sheetAction("image", "Trocar capa", () => pickCover(key)));
-    acts.append(sheetAction("edit", "Renomear", () => renameGame(key)));
-    if (cloud.db) acts.append(sheetAction("upload", "Enviar arquivo .sav", () => pickSav(key, { title: g.title, system: g.system, code: g.code })));
-    if (g.save) acts.append(sheetAction("download", "Baixar o save", () => downloadSave(g.save)));
-    if (g.save && g.save.prev) acts.append(sheetAction("back", "Voltar à versão anterior do save", () => confirmRestore(key, g.save)));
-    if (g.rom && !g.crom) acts.append(sheetAction("trash", "Tirar a ROM deste aparelho", () => confirmRemoveRom(key, g.title), true));
-    acts.append(sheetAction("trash", "Apagar save e progresso", async () => {
-      if (await confirmDeleteGame(key, g.title, false)) fillGameSheet(key);
+    const saveActs = el("div", { class: "gs-actions" });
+    if (cloud.db) saveActs.append(sheetAction("upload", "Enviar arquivo .sav", () => pickSav(key, { title: g.title, system: g.system, code: g.code })));
+    if (g.save) saveActs.append(sheetAction("download", "Baixar o save", () => downloadSave(g.save)));
+    if (g.save && g.save.prev) saveActs.append(sheetAction("back", "Voltar à versão anterior do save", () => confirmRestore(key, g.save)));
+    const gameActs = el("div", { class: "gs-actions" });
+    if (g.rom && !g.crom && cloud.db && !working) gameActs.append(sheetAction("cloud", `Guardar a ROM no ${cloudName()}`, () => uploadRom(g.rom)));
+    gameActs.append(sheetAction("image", "Trocar capa", () => pickCover(key)));
+    gameActs.append(sheetAction("edit", "Renomear", () => renameGame(key)));
+    const dangerActs = el("div", { class: "gs-actions" });
+    if (g.rom && !g.crom) dangerActs.append(sheetAction("trash", "Tirar a ROM deste aparelho", () => confirmRemoveRom(key, g.title), true));
+    dangerActs.append(sheetAction("trash", "Apagar save e progresso", async () => {
+      if (await confirmDeleteGame(key, g.title, false)) fill();
     }, true));
-    acts.append(sheetAction("trash", "Apagar jogo (ROM, save e progresso)", async () => {
-      if (await confirmDeleteGame(key, g.title, true)) closeSheets();
+    dangerActs.append(sheetAction("trash", "Apagar jogo (ROM, save e progresso)", async () => {
+      if (await confirmDeleteGame(key, g.title, true)) history.back();
     }, true));
-    sh.replaceChildren(
-      el("div", { class: "sheet-grip", "aria-hidden": "true" }),
+    page.replaceChildren(
       el(
         "div",
-        { class: "sheet-body" },
-        el("div", { class: "gs-head" }, coverEl(g), el("div", {}, el("h2", { class: "gs-title", id: "gsTitle" }, (meta.fav ? "★ " : "") + g.title), el("p", { class: "gs-sub" }, [g.sys, g.code].filter(Boolean).join(" · ")))),
-        el("div", { class: "gs-play" }, playBtn),
-        status,
-        acts
+        { class: "gd-top" },
+        el(
+          "button",
+          { class: "btn small ghost pbtn", type: "button", "aria-label": "Voltar à biblioteca", onclick: () => history.back() },
+          Object.assign(document.createElementNS("http://www.w3.org/2000/svg", "svg"), { innerHTML: '<path d="M15 5l-7 7 7 7"/>' })
+        ),
+        el("span", { class: "gd-top-title" }, g.title)
+      ),
+      el(
+        "div",
+        { class: "gd-body" },
+        el(
+          "header",
+          { class: "gd-hero" },
+          coverEl(g),
+          el(
+            "div",
+            { class: "gd-head" },
+            el("h1", { id: "gdTitle" }, g.title),
+            el("p", { class: "gd-sub" }, [g.sys, g.code].filter(Boolean).join(" · ")),
+            el("div", { class: "gd-play" }, playBtn, fav)
+          )
+        ),
+        stats,
+        achievements,
+        el("section", { class: "gd-sec" }, el("h3", {}, "Save"), saveLines, saveActs),
+        el("section", { class: "gd-sec" }, el("h3", {}, "Jogo"), gameActs),
+        el("section", { class: "gd-sec danger" }, dangerActs)
       )
     );
+    const svg = page.querySelector(".gd-top svg");
+    if (svg) svg.setAttribute("viewBox", "0 0 24 24");
   }
+  for (const ev of ["ra-cache", "cartucho-library-changed"]) window.addEventListener(ev, () => {
+    if (openKey) fill();
+  });
 
   // src/ds/ds-emu.js
   var FPS = 59.8261;
@@ -4887,7 +5427,12 @@ void main() {
     if (games.length) box.append(addTile());
     if (sheetKey) fillGameSheet(sheetKey);
     updateSyncBadge();
+    if (openKey) fill();
   }
+  window.addEventListener("cartucho-library-changed", () => render());
+  window.addEventListener("ra-cache", () => {
+    if (!document.querySelector("#library").hidden) render();
+  });
   async function pendingSaves() {
     const keys = await idb.keys("pend"), out = [];
     for (const k of keys) {
@@ -6402,6 +6947,11 @@ void main() {
     if (g.rom && !g.crom && cloud.db) return [el("span", { class: "dot" }), el("span", {}, "Só neste aparelho")];
     return [el("span", { class: "dot" }), el("span", {}, "Ainda sem save")];
   }
+  function raLine(key) {
+    const c = raCached(key);
+    if (!c || !c.game || !c.game.total) return null;
+    return el("span", { class: "tile-ra" + (c.game.unlocked === c.game.total ? " done" : "") }, `🏆 ${c.game.unlocked}/${c.game.total}`);
+  }
   function tile(g) {
     const m = gameMeta(g.key);
     return el(
@@ -6410,7 +6960,8 @@ void main() {
       coverEl(g),
       m.fav ? el("span", { class: "tile-star", "aria-hidden": "true" }, "★") : null,
       el("span", { class: "tile-title" }, g.title),
-      el("span", { class: "tile-meta" }, saveLine(g))
+      el("span", { class: "tile-meta" }, saveLine(g)),
+      raLine(g.key)
     );
   }
   function addTile() {
@@ -7403,380 +7954,6 @@ Content-Type: ${type}\r
       return null;
     }
   }
-
-  // src/ra.js
-  var RA_KEY = "cartucho.ra";
-  var ra = window.__ra = { mod: null, loading: null, user: null, game: null, list: [], mem: null, waiting: {}, frameTimer: 0, lastFrame: -1, unlockedNow: [] };
-  var saved = () => {
-    try {
-      return JSON.parse(ls.get(RA_KEY) || "null");
-    } catch (e) {
-      return null;
-    }
-  };
-  function loadModule() {
-    if (ra.loading) return ra.loading;
-    ra.loading = new Promise((resolve, reject) => {
-      const s = document.createElement("script");
-      s.src = "vendor/rcheevos.js";
-      s.onload = () => resolve();
-      s.onerror = () => reject(new Error("rcheevos"));
-      document.head.append(s);
-    }).then(() => window.createRcheevos({
-      locateFile: (f) => "vendor/" + f,
-      raRead,
-      raServer,
-      raEvent,
-      raDone: (kind, result, msg) => {
-        const w = ra.waiting[kind];
-        ra.waiting[kind] = null;
-        if (w) w({ ok: result === 0, msg });
-      },
-      raLog: (m) => console.debug("[ra]", m)
-    })).then((m) => {
-      ra.mod = m;
-      m._ra_init();
-      return m;
-    });
-    ra.loading.catch(() => {
-      ra.loading = null;
-    });
-    return ra.loading;
-  }
-  var call = (fn, ...strs) => {
-    const m = ra.mod, ptrs = strs.map((s) => m.stringToNewUTF8(String(s)));
-    try {
-      return m[fn](...ptrs);
-    } finally {
-      for (const p of ptrs) m._free(p);
-    }
-  };
-  var json = (fn) => {
-    try {
-      return JSON.parse(ra.mod.UTF8ToString(ra.mod[fn]()));
-    } catch (e) {
-      return null;
-    }
-  };
-  var wait = (kind, ms = 3e4) => new Promise((resolve) => {
-    ra.waiting[kind] = resolve;
-    setTimeout(() => {
-      if (ra.waiting[kind] === resolve) {
-        ra.waiting[kind] = null;
-        resolve({ ok: false, msg: "Sem resposta do RetroAchievements." });
-      }
-    }, ms);
-  });
-  function raServer(url, post, ctype, cb, cbdata) {
-    fetch("api/ra", { method: "POST", headers: { "Content-Type": ctype || "application/x-www-form-urlencoded", "X-Cartuchin": "1" }, body: post || "" }).then(async (r) => ({ status: r.status, text: await r.text() }), () => ({ status: -2, text: "" })).then(({ status, text }) => {
-      const m = ra.mod, bytes = new TextEncoder().encode(text), p = m._malloc(bytes.length + 1);
-      m.HEAPU8.set(bytes, p);
-      m.HEAPU8[p + bytes.length] = 0;
-      try {
-        m._ra_response(cb, cbdata, p, bytes.length, status);
-      } finally {
-        m._free(p);
-      }
-    });
-  }
-  function raRead(addr, buf, n) {
-    const mem = ra.mem;
-    if (!mem) return 0;
-    const reg = mem.regions.find((r) => addr >= r.start && addr + n <= r.start + r.size);
-    if (!reg) return 0;
-    const heap = reg.heap();
-    ra.mod.HEAPU8.set(heap.subarray(reg.ptr + addr - reg.start, reg.ptr + addr - reg.start + n), buf);
-    return n;
-  }
-  function dsMemory(emu) {
-    const r = emu.ramInfo && emu.ramInfo();
-    if (!r || !r.ptr) return null;
-    return { regions: [{ start: 0, size: 4194304, ptr: r.ptr, heap: () => emu.ramInfo().heap }] };
-  }
-  function findBlock(heap, block, isCopy) {
-    let best = -1, bestScore = -1;
-    for (let o = 0; o + 64 <= block.length; o += 256) {
-      const seen = /* @__PURE__ */ new Set();
-      for (let i = 0; i < 64; i++) seen.add(block[o + i]);
-      if (seen.size > bestScore) {
-        bestScore = seen.size;
-        best = o;
-      }
-      if (bestScore >= 40) break;
-    }
-    if (bestScore < 8) return -1;
-    const needle = block.subarray(best, best + 64), first = needle[0];
-    for (let i = heap.indexOf(first); i >= 0 && i < heap.length - block.length; i = heap.indexOf(first, i + 1)) {
-      let ok = true;
-      for (let k = 1; k < 64; k++) if (heap[i + k] !== needle[k]) {
-        ok = false;
-        break;
-      }
-      if (!ok) continue;
-      const base = i - best;
-      if (base < 0 || isCopy && isCopy(base)) continue;
-      let same = 0;
-      for (let k = 0; k < block.length; k += 61) if (heap[base + k] === block[k]) same++;
-      if (same >= Math.floor(block.length / 61) * 0.98) return base;
-    }
-    return -1;
-  }
-  async function gbaMemory(emu) {
-    const gm = emu.gameManager, M = gm.Module;
-    if (!M || !M.HEAPU8) return null;
-    const wasPaused = emu.paused;
-    try {
-      emu.pause();
-    } catch (e) {
-    }
-    try {
-      await new Promise((r) => setTimeout(r, 50));
-      let st = gm.getState();
-      if (st && st.length > 16 && String.fromCharCode(...st.subarray(0, 7)) === "RASTATE" && String.fromCharCode(...st.subarray(8, 12)) === "MEM ") st = st.subarray(16);
-      if (!st || st.length < 397312) return null;
-      const heap = M.HEAPU8, head = st.subarray(0, 32);
-      const inState = (at) => (base) => base - at >= 0 && head.every((b, k) => heap[base - at + k] === b);
-      const ew = findBlock(heap, st.subarray(135168, 397312), inState(135168));
-      const iw = findBlock(heap, st.subarray(102400, 135168), (b) => inState(102400)(b) || ew >= 0 && b >= ew && b < ew + 262144);
-      if (iw < 0 || ew < 0) return null;
-      return { regions: [
-        { start: 0, size: 32768, ptr: iw, heap: () => M.HEAPU8 },
-        { start: 32768, size: 262144, ptr: ew, heap: () => M.HEAPU8 }
-      ] };
-    } finally {
-      if (!wasPaused) {
-        try {
-          emu.play();
-        } catch (e) {
-        }
-      }
-    }
-  }
-  async function md5Parts(parts) {
-    const m = ra.mod, st = m._ra_md5_new();
-    for (const u8 of parts) {
-      for (let o = 0; o < u8.length; o += 1 << 20) {
-        const piece = u8.subarray(o, o + (1 << 20)), p = m._malloc(piece.length);
-        m.HEAPU8.set(piece, p);
-        m._ra_md5_append(st, p, piece.length);
-        m._free(p);
-      }
-    }
-    const out = m._malloc(16);
-    m._ra_md5_finish(st, out);
-    const hex = Array.from(m.HEAPU8.subarray(out, out + 16), (b) => b.toString(16).padStart(2, "0")).join("");
-    m._free(out);
-    return hex;
-  }
-  async function gameHash(rom) {
-    const blob = rom.blob, sys = rom.system;
-    if (sys === "gba") return md5Parts([new Uint8Array(await blob.arrayBuffer())]);
-    if (sys !== "nds") return null;
-    const bytes = async (from, n) => new Uint8Array(await blob.slice(from, from + n).arrayBuffer());
-    const h = await bytes(0, 512), dv = new DataView(h.buffer);
-    const a9 = dv.getUint32(32, true), s9 = dv.getUint32(44, true), a7 = dv.getUint32(48, true), s7 = dv.getUint32(60, true), ic = dv.getUint32(104, true);
-    if (s9 + s7 > 16 << 20) return null;
-    const icon = new Uint8Array(2560);
-    icon.set(await bytes(ic, 2560));
-    return md5Parts([h.subarray(0, 352), await bytes(a9, s9), await bytes(a7, s7), icon]);
-  }
-  async function login(user, pass) {
-    await loadModule();
-    call("_ra_login_password", user, pass);
-    const r = await wait(1);
-    if (!r.ok) return r;
-    ra.user = json("_ra_user_json");
-    if (ra.user) ls.set(RA_KEY, JSON.stringify({ user: ra.user.username, token: ra.user.token }));
-    renderAccount();
-    return r;
-  }
-  async function resume() {
-    const s = saved();
-    if (!s || ra.user) return !!ra.user;
-    await loadModule();
-    call("_ra_login_token", s.user, s.token);
-    const r = await wait(1);
-    if (r.ok) ra.user = json("_ra_user_json");
-    else if (/token|password|credential|invalid/i.test(r.msg || "")) ls.set(RA_KEY, "");
-    renderAccount();
-    return r.ok;
-  }
-  function logout() {
-    if (ra.mod) ra.mod._ra_logout();
-    ra.user = null;
-    ls.set(RA_KEY, "");
-    renderAccount();
-  }
-  async function startGame() {
-    ra.game = null;
-    ra.list = [];
-    ra.mem = null;
-    stopFrames();
-    const emu = player.emu, rom = player.rom;
-    if (!saved() || !emu || !rom || player.guest || emu.workerCore) return;
-    try {
-      if (!await resume()) return;
-      const key = "cartucho.rahash." + player.key;
-      let hash = ls.get(key);
-      if (!hash) {
-        hash = await gameHash(rom);
-        if (hash) ls.set(key, hash);
-      }
-      if (!hash) return;
-      ra.mem = player.isDs ? dsMemory(emu) : await gbaMemory(emu);
-      for (let i = 0; !ra.mem && i < 30 && player.emu === emu; i++) {
-        await new Promise((r2) => setTimeout(r2, 4e3));
-        ra.mem = await gbaMemory(emu);
-      }
-      if (!ra.mem || player.emu !== emu) return;
-      call("_ra_load_game", hash);
-      const r = await wait(2);
-      if (!r.ok) {
-        if (!/unknown|not found|unrecognized/i.test(r.msg || "")) console.warn("[ra] jogo", r.msg);
-        return;
-      }
-      ra.game = json("_ra_game_json");
-      ra.list = json("_ra_achievements_json") || [];
-      if (ra.game && ra.game.total) toast(`🏆 RetroAchievements: ${ra.game.unlocked} de ${ra.game.total} conquistas`, 4e3);
-      startFrames(emu);
-    } catch (e) {
-      console.warn("[ra]", e);
-    }
-  }
-  function startFrames(emu) {
-    if (emu.isDs) {
-      emu.onEmuFrame = () => {
-        if (ra.mem) ra.mod._ra_do_frame();
-      };
-      return;
-    }
-    const gm = emu.gameManager;
-    let idleAt = 0;
-    const loop = () => {
-      if (player.emu !== emu || !ra.game) return;
-      ra.frameTimer = requestAnimationFrame(loop);
-      let f = -1;
-      try {
-        f = Number(gm.getFrameNum());
-      } catch (e) {
-      }
-      if (f !== ra.lastFrame && ra.mem) {
-        ra.lastFrame = f;
-        ra.mod._ra_do_frame();
-      } else if (performance.now() - idleAt > 1e3) {
-        idleAt = performance.now();
-        ra.mod._ra_idle();
-      }
-    };
-    loop();
-  }
-  function stopFrames() {
-    cancelAnimationFrame(ra.frameTimer);
-    if (player.emu) player.emu.onEmuFrame = null;
-  }
-  function raEvent(type, id, data) {
-    let a = null;
-    try {
-      a = data ? JSON.parse(data) : null;
-    } catch (e) {
-    }
-    if (type === 1 && a) {
-      popup(a.badge, "Conquista desbloqueada", `${a.title} (+${a.points})`);
-      ra.unlockedNow.push(a.id);
-      ra.list = json("_ra_achievements_json") || ra.list;
-      ra.game = json("_ra_game_json") || ra.game;
-    } else if (type === 15) popup(ra.game && ra.game.badge, "Jogo completo!", "Todas as conquistas desbloqueadas");
-    else if (type === 16 && a) toast("RetroAchievements: " + (a.error || "erro do servidor"), 4e3);
-    else if (type === 17) toast("RetroAchievements sem conexão: as conquistas vão quando a rede voltar.", 4e3);
-  }
-  function popup(img, title, text) {
-    const box = el(
-      "div",
-      { class: "ra-pop", role: "status" },
-      img ? el("img", { src: img, alt: "", width: "48", height: "48" }) : el("span", { class: "ra-cup" }, "🏆"),
-      el("div", {}, el("b", {}, title), el("span", {}, text))
-    );
-    document.body.append(box);
-    setTimeout(() => box.classList.add("out"), 4200);
-    setTimeout(() => box.remove(), 4800);
-  }
-  function renderAccount() {
-    const line = $("#raLine"), btn = $("#raBtn");
-    if (!line) return;
-    const s = saved();
-    line.textContent = ra.user ? `Conectado como ${ra.user.name} · ${ra.user.score} pontos (modo casual)` : s ? `Conta ${s.user}` : "Conquistas dos jogos com a sua conta do retroachievements.org (modo casual).";
-    btn.textContent = s ? "Sair do RetroAchievements" : "Entrar no RetroAchievements";
-  }
-  function askLogin() {
-    const root = $("#dialogRoot");
-    const u = el("input", { type: "text", autocomplete: "username", placeholder: "Usuário", class: "text-input", autocapitalize: "none" });
-    const p = el("input", { type: "password", autocomplete: "current-password", placeholder: "Senha", class: "text-input" });
-    const msg = el("p", { class: "small-note" }, "A senha vai uma vez para o RetroAchievements e não fica guardada aqui.");
-    const close = () => root.replaceChildren();
-    const form = el(
-      "form",
-      { class: "dialog", onsubmit: async (e) => {
-        e.preventDefault();
-        if (!u.value.trim() || !p.value) return;
-        msg.textContent = "Entrando…";
-        const r = await login(u.value.trim(), p.value).catch(() => ({ ok: false, msg: "Não deu para carregar o RetroAchievements." }));
-        if (r.ok) {
-          close();
-          toast(`RetroAchievements: conectado como ${ra.user ? ra.user.name : u.value}`);
-          if (player.emu) startGame();
-        } else msg.textContent = r.msg || "Usuário ou senha incorretos.";
-      } },
-      el("h2", {}, "RetroAchievements"),
-      u,
-      p,
-      msg,
-      el("button", { class: "btn primary", type: "submit" }, "Entrar"),
-      el("button", { class: "btn", type: "button", onclick: close }, "Cancelar"),
-      el("p", { class: "small-note" }, "Ainda não tem conta? Crie grátis em retroachievements.org.")
-    );
-    root.replaceChildren(el("div", { class: "scrim" }, form));
-    u.focus();
-  }
-  var sheet2 = el("section", { class: "sheet", id: "raSheet", role: "dialog", "aria-modal": "true", "aria-label": "Conquistas", hidden: true });
-  document.body.append(sheet2);
-  function openAchievements() {
-    const g = ra.game;
-    const items = (ra.list || []).slice().sort((a, b) => b.unlocked - a.unlocked || a.bucket - b.bucket);
-    sheet2.replaceChildren(
-      el("div", { class: "sheet-grip", "aria-hidden": "true" }),
-      el(
-        "div",
-        { class: "sheet-body" },
-        el("h3", {}, g ? `${g.title}: ${g.unlocked} de ${g.total} · ${g.pointsUnlocked}/${g.points} pontos` : "Conquistas"),
-        el("div", { class: "ra-list" }, ...items.map((a) => el(
-          "div",
-          { class: "ra-item" + (a.unlocked ? " on" : "") },
-          el("img", { src: a.unlocked ? a.badge : a.badgeLocked, alt: "", width: "48", height: "48", loading: "lazy" }),
-          el(
-            "div",
-            {},
-            el("b", {}, `${a.title} · ${a.points}`),
-            el("span", {}, a.description),
-            a.progress && !a.unlocked ? el("span", { class: "ra-prog" }, a.progress) : null
-          )
-        ))),
-        el("p", { class: "small-note" }, "Modo casual: as conquistas valem no seu perfil do retroachievements.org."),
-        el("button", { class: "btn", type: "button", onclick: closeSheets }, "Voltar ao jogo")
-      )
-    );
-    openSheet("raSheet");
-  }
-  var raSummary = () => ra.game && ra.game.total ? `${ra.game.unlocked}/${ra.game.total}` : "";
-  window.addEventListener("cartucho-game-running", () => {
-    startGame();
-  });
-  document.addEventListener("click", (e) => {
-    if (e.target.closest("#raBtn")) {
-      if (saved()) logout();
-      else askLogin();
-    }
-  });
-  renderAccount();
 
   // src/ui/game-menu.js
   var ffState = { ratio: 1, last: Number(ls.get("cartucho.ff") || 2) };

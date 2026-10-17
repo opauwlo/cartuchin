@@ -8,6 +8,7 @@ import { render } from "./ui/screens.js";
 import { openGameSheet } from "./ui/sheets.js";
 import { $, ago, el } from "./util.js";
 import { fmtPlay, gameMeta } from "./meta.js";
+import { raCached } from "./ra.js";
 
 /* ---------------- library ---------------- */
 let roms = new Map();
@@ -176,11 +177,18 @@ function saveLine(g) {
   if (g.rom && !g.crom && cloud.db) return [el("span", { class: "dot" }), el("span", {}, "Só neste aparelho")];
   return [el("span", { class: "dot" }), el("span", {}, "Ainda sem save")];
 }
+/* conquistas do RetroAchievements (quando a conta está conectada e o jogo tem) */
+function raLine(key) {
+  const c = raCached(key);
+  if (!c || !c.game || !c.game.total) return null;
+  return el("span", { class: "tile-ra" + (c.game.unlocked === c.game.total ? " done" : "") }, `🏆 ${c.game.unlocked}/${c.game.total}`);
+}
 function tile(g) {
   const m = gameMeta(g.key);
   return el("button", { class: "tile" + (m.fav ? " fav" : ""), type: "button", onclick: () => openGameSheet(g.key), "aria-label": g.title + (m.fav ? ", favorito" : "") },
     coverEl(g), m.fav ? el("span", { class: "tile-star", "aria-hidden": "true" }, "★") : null,
-    el("span", { class: "tile-title" }, g.title), el("span", { class: "tile-meta" }, saveLine(g)));
+    el("span", { class: "tile-title" }, g.title), el("span", { class: "tile-meta" }, saveLine(g)),
+    raLine(g.key));
 }
 function addTile() {
   const plus = document.createElementNS("http://www.w3.org/2000/svg", "svg");

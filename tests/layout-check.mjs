@@ -69,7 +69,9 @@ for (const [w, h] of sizes) {
   await page.evaluate(() => document.querySelector("#raBtn").click()); await page.waitForTimeout(300); await check("entrar no RetroAchievements");
   await page.goto(base); await page.waitForSelector("#games .tile:not(.add-tile)");
   await page.click("#games .tile:not(.add-tile)"); await page.waitForTimeout(400); await check("página do jogo");
-  await page.evaluate(() => { const b = [...document.querySelectorAll("#gameSheet .gs-action")].find((x) => /Apagar jogo/.test(x.textContent)); b && b.click(); }); await page.waitForTimeout(300); await check("confirmar apagar");
+  await page.click("#gsDetails"); await page.waitForTimeout(400); await check("detalhes do jogo");
+  if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/det-${w}x${h}.png`, fullPage: false });
+  await page.evaluate(() => { const b = [...document.querySelectorAll("#gameDetails .gs-action")].find((x) => /Apagar jogo/.test(x.textContent)); b && b.click(); }); await page.waitForTimeout(300); await check("confirmar apagar");
   await page.evaluate(() => { const b = [...document.querySelectorAll(".dialog .btn")].find((x) => /Cancelar/.test(x.textContent)); b && b.click(); });
   for (const [i, sys] of [[0, "GBA"], [1, "DS"]]) {
     await page.goto(base); await page.waitForSelector("#games .tile:not(.add-tile)");

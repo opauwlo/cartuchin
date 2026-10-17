@@ -58,6 +58,7 @@ function raServer(url, post, ctype, cb, cbdata) {
 function raRead(addr, buf, n) {
   const mem = ra.mem;
   if (!mem) return 0;
+  if (mem.dummy) { ra.mod.HEAPU8.fill(0, buf, buf + n); return n; }   // só para ler a lista de conquistas, sem jogo rodando
   const reg = mem.regions.find((r) => addr >= r.start && addr + n <= r.start + r.size);
   if (!reg) return 0;
   const heap = reg.heap();
@@ -202,6 +203,7 @@ async function startGame() {
     if (!r.ok) { if (!/unknown|not found|unrecognized/i.test(r.msg || "")) console.warn("[ra] jogo", r.msg); return; }
     ra.game = json("_ra_game_json");
     ra.list = json("_ra_achievements_json") || [];
+    cacheSet(player.key);
     if (ra.game && ra.game.total) toast(`🏆 RetroAchievements: ${ra.game.unlocked} de ${ra.game.total} conquistas`, 4000);
     startFrames(emu);
   } catch (e) { console.warn("[ra]", e); }
@@ -226,6 +228,41 @@ function stopFrames() {
   if (player.emu) player.emu.onEmuFrame = null;
 }
 
+/* ---- conquistas guardadas por jogo (para a página do jogo e a biblioteca, sem jogar) ---- */
+const CACHE = (k) => "cartucho.raset." + k;
+function cacheSet(key) {
+  if (!key || !ra.game) return;
+  const list = (ra.list || []).map(({ id, title, description, points, unlocked, badge, badgeLocked, progress }) => ({ id, title, description, points, unlocked, badge, badgeLocked, progress }));
+  ls.set(CACHE(key), JSON.stringify({ game: ra.game, list, at: Date.now(), user: ra.user && ra.user.username }));
+  window.dispatchEvent(new Event("ra-cache"));
+}
+function raCached(key) {
+  const s = saved();
+  if (!s) return null;
+  try { const c = JSON.parse(ls.get(CACHE(key)) || "null"); return c && c.user === s.user ? c : null; } catch (e) { return null; }
+}
+/* lê a lista de conquistas de um jogo sem jogar (memória falsa, zerada): carrega e descarrega */
+let peeking = null;
+async function peekGame(key, rom) {
+  if (peeking || !saved() || !rom || !rom.blob || (player.emu && ra.game)) return raCached(key);
+  peeking = (async () => {
+    if (!(await resume())) return null;
+    const hk = "cartucho.rahash." + key;
+    let hash = ls.get(hk);
+    if (!hash) { hash = await gameHash(rom); if (hash) ls.set(hk, hash); }
+    if (!hash) return null;
+    ra.mem = { dummy: true };
+    call("_ra_load_game", hash);
+    const r = await wait(2);
+    if (r.ok) { ra.game = json("_ra_game_json"); ra.list = json("_ra_achievements_json") || []; cacheSet(key); }
+    else ls.set(CACHE(key), JSON.stringify({ game: null, list: [], at: Date.now(), user: saved().user, none: true }));   // jogo sem conquistas no RA
+    ra.mod._ra_unload_game();
+    ra.mem = null; ra.game = null; ra.list = [];
+    return raCached(key);
+  })().finally(() => { peeking = null; });
+  return peeking;
+}
+
 /* ---- avisos ---- */
 function raEvent(type, id, data) {
   let a = null;
@@ -235,6 +272,7 @@ function raEvent(type, id, data) {
     ra.unlockedNow.push(a.id);
     ra.list = json("_ra_achievements_json") || ra.list;
     ra.game = json("_ra_game_json") || ra.game;
+    cacheSet(player.key);
   } else if (type === 15) popup(ra.game && ra.game.badge, "Jogo completo!", "Todas as conquistas desbloqueadas");
   else if (type === 16 && a) toast("RetroAchievements: " + (a.error || "erro do servidor"), 4000);
   else if (type === 17) toast("RetroAchievements sem conexão: as conquistas vão quando a rede voltar.", 4000);
@@ -301,4 +339,4 @@ document.addEventListener("click", (e) => {
 });
 renderAccount();
 
-export { ra, login, logout, openAchievements, raSummary, gameHash };
+export { ra, login, logout, openAchievements, raSummary, gameHash, raCached, peekGame };

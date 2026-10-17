@@ -253,6 +253,22 @@ async function connect(code) {
   await tv.close();
 }
 
+// biblioteca e página do jogo mostram as conquistas (guardadas depois de jogar)
+{
+  await phone.bringToFront();
+  await phone.evaluate(() => { window.__cartucho.leaving = true; });
+  await phone.goto(base);
+  const tileRa = await phone.waitForSelector("#games .tile-ra", { timeout: 10000 }).then((e) => e.textContent(), () => "");
+  ok(/1\/1/.test(tileRa), `[detalhes] contador de conquistas na biblioteca (${tileRa})`);
+  await phone.click("#games .tile:not(.add-tile)");
+  await phone.click("#gsDetails");
+  const det = await phone.waitForFunction(() => { const p = document.querySelector("#gameDetails"); return p && !p.hidden && p.querySelectorAll(".gd-badge.on").length === 1 && /Tempo de jogo/.test(p.textContent); }, null, { timeout: 5000 }).then(() => true, () => false);
+  ok(det, "[detalhes] página do jogo com tempo de jogo e conquistas");
+  await phone.goBack();
+  const closed = await phone.waitForFunction(() => document.querySelector("#gameDetails").hidden, null, { timeout: 3000 }).then(() => true, () => false);
+  ok(closed, "[detalhes] voltar fecha a página do jogo");
+}
+
 ok(errors.length === 0, `sem erros de JavaScript${errors.length ? ":\n  " + errors.join("\n  ") : ""}`);
 await browser.close();
 server.close();

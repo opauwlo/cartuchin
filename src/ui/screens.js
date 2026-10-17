@@ -1,6 +1,7 @@
 import { cloud, getSaveDoc, googleAvailable, isGoogle, writeCloud } from "../cloud.js";
 import { dialog } from "./dialogs.js";
 import { gameMeta } from "../meta.js";
+import { detailsKey, fillDetails } from "./details.js";
 import { showConnect } from "../connect.js";
 import { addTile, continueHero, gameInfo, roms, tile } from "../library.js";
 import { closeSheets, fillGameSheet, sheetKey } from "./sheets.js";
@@ -90,7 +91,10 @@ function render() {
   if (games.length) box.append(addTile());
   if (sheetKey) fillGameSheet(sheetKey);
   updateSyncBadge();
+  if (detailsKey) fillDetails();
 }
+window.addEventListener("cartucho-library-changed", () => render());
+window.addEventListener("ra-cache", () => { if (!document.querySelector("#library").hidden) render(); });
 /* "Tudo salvo" / "N para enviar" / "Sem conexão" ao lado do avatar */
 /* saves que ficaram só neste aparelho (jogou sem rede, fechou antes de enviar) */
 async function pendingSaves() {
