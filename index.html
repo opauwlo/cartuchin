@@ -500,6 +500,80 @@ button { cursor: pointer; }
 .rename-input { width: 100%; font: inherit; font-size: 1.1rem; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
 
 body { margin: 0; }
+
+/* ================= Cartuchin v2: a estante de cartuchos =================
+   Dois tons do mundo do portátil: roxo atômico (o GBA translúcido) para foco e seleção,
+   amarelo de etiqueta para a ação principal (Jogar, Continuar). A biblioteca é uma
+   estante de cartuchos de verdade: casca da cor do sistema, ranhuras em cima e a capa
+   como etiqueta. O controle é plástico fosco com botões A/B no roxo atômico. */
+:root {
+  --bg: #eeebf3; --surface: #ffffff; --raised: #f5f2fa; --ink: #1d1a26; --muted: #625c73; --line: #dcd7e6;
+  --accent: #5b3fd1; --accent-ink: #ffffff; --go: #ffc22e; --go-lo: #c98f00; --go-ink: #241a00; --label: #2b2540;
+  --shell-gba: #4a4458; --shell-ds: #d7d3e0; --shell-gb: #a7a4b2;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #16151d; --surface: #211f2b; --raised: #2c2938; --ink: #f1eef8; --muted: #a39db5; --line: #38344a;
+    --accent: #9b7bff; --accent-ink: #160f2e; --go: #ffcb45; --go-lo: #b38400; --go-ink: #241a00; --label: #2c2640;
+    --ok: #3dd68c; --warn: #f5b041; --bad: #ff6b5e;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #16151d; --surface: #211f2b; --raised: #2c2938; --ink: #f1eef8; --muted: #a39db5; --line: #38344a;
+  --accent: #9b7bff; --accent-ink: #160f2e; --go: #ffcb45; --go-lo: #b38400; --go-ink: #241a00; --label: #2c2640;
+  --ok: #3dd68c; --warn: #f5b041; --bad: #ff6b5e;
+}
+/* botões: a ação principal é uma tecla amarela que afunda ao tocar */
+.btn { border-radius: 12px; transition: transform .06s, box-shadow .06s; }
+.btn.primary { background: var(--go); color: var(--go-ink); border-color: transparent; box-shadow: 0 3px 0 var(--go-lo); font-weight: 700; }
+.btn.primary:active:not(:disabled) { transform: translateY(2px); box-shadow: 0 1px 0 var(--go-lo); }
+.btn.primary:disabled { opacity: .6; }
+.btn:not(.primary):active:not(:disabled) { background: var(--raised); }
+.iconbtn:active, .sync-badge:active { background: var(--raised); }
+/* cartuchos: casca (cor do sistema) com ranhuras e cantos de cima chanfrados; a capa é a etiqueta */
+.cover { box-sizing: border-box; aspect-ratio: 0.94; border-radius: 9px 9px 16px 16px; padding: 15% 8% 8%; background: var(--shell-gba); overflow: hidden;
+  clip-path: polygon(7% 0, 93% 0, 100% 6%, 100% 100%, 0 100%, 0 6%);
+  box-shadow: inset 0 -6px 0 rgba(0,0,0,.18), inset 0 2px 0 rgba(255,255,255,.12); }
+.cover.sys-nds { --shell: var(--shell-ds); background: var(--shell-ds); }
+.cover.sys-gb, .cover.sys-gbc { background: var(--shell-gb); }
+.cover::before { content: ""; position: absolute; top: 4.5%; left: 28%; right: 28%; height: 6%; border-radius: 2px;
+  background: repeating-linear-gradient(90deg, rgba(0,0,0,.28) 0 2px, transparent 2px 6px); }
+.cover.sys-nds::before { background: repeating-linear-gradient(90deg, rgba(0,0,0,.16) 0 2px, transparent 2px 6px); }
+.cover > img, .cover > .gen-cover { position: relative; inset: auto; width: 100%; height: 100%; border-radius: 6px; box-shadow: 0 0 0 1px rgba(0,0,0,.18); }
+.gen-cover { padding: 10% 9% 9%; grid-template-rows: 1fr auto; box-sizing: border-box; }
+.gen-cover::before { content: none; }
+.tile:active .cover { transform: translateY(2px); }
+.tile:focus-visible .cover { outline: none; filter: drop-shadow(0 0 0 var(--accent)) drop-shadow(0 0 4px var(--accent)); }
+.add-tile .cover { clip-path: none; padding: 0; background: transparent; box-shadow: none; border-radius: 14px; }
+.add-tile .cover::before { content: none; }
+.tile.skel .cover { clip-path: none; padding: 0; box-shadow: none; }
+.tile.skel .cover::before { content: none; }
+.tile-star { top: 9%; right: 6%; width: 26px; height: 26px; background: var(--go); color: var(--go-ink); font-size: 14px; box-shadow: 0 2px 0 var(--go-lo); }
+.tile-title { margin-top: 2px; }
+.shelf { gap: 22px 16px; }
+.shelf-title, .continue-title { letter-spacing: -0.015em; }
+/* folhas e menus */
+.sheet { border-radius: 22px 22px 0 0; }
+.gs-action { border-radius: 12px; min-height: 46px; }
+.gs-action:active, .gs-action:hover { background: var(--raised); }
+.gs-action svg { stroke: var(--accent); }
+.gs-action.danger svg { stroke: currentColor; }
+.dialog { border-radius: 18px; }
+.ra-pop { border-color: var(--go); }
+/* controle: plástico fosco; A/B no roxo atômico; o que está apertado acende em amarelo */
+#pad { --shell: #1a1822; --key: #2b2836; --key-hi: #3a3648; --key-lo: #0f0e14; --face: #7e5bef; --face-hi: #a58bff; --face-lo: #3f2a9c; --ink: #ece8f6; --glow: #ffcb45; }
+#pad .pad-face { background: radial-gradient(circle at 50% 30%, var(--face-hi), var(--face) 58%, #5a3fd0 100%); box-shadow: inset 0 2px 0 rgba(255,255,255,.28), 0 6px 0 var(--face-lo); font-family: var(--font-display) !important; font-weight: 800; }
+#pad .pad-face.on { background: var(--face-hi); transform: translateY(4px); box-shadow: inset 0 2px 0 rgba(255,255,255,.2), 0 2px 0 var(--face-lo), 0 0 0 3px var(--glow); }
+#pad .pad-sh.on, #pad .pad-pill.on { transform: translateY(3px); box-shadow: inset 0 1px 0 rgba(255,255,255,.08), 0 1px 0 var(--key-lo), 0 0 0 2px var(--glow); }
+#pad [data-btn].over { box-shadow: 0 0 0 2px rgba(155,123,255,.6), inset 0 1px 0 rgba(255,255,255,.12), 0 4px 0 var(--key-lo); }
+.pbtn { min-width: 42px; padding: 0 10px; gap: 6px; }
+.pbtn svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.pbtn.menu { padding: 0 12px; }
+.pbar .name { font-family: var(--font-display); font-weight: 800; font-size: 1.02rem; }
+@media (max-width: 480px) { .pbar .name { display: block; } }
+#castBtn.primary .cast-on { display: inline; } .cast-on { display: none; font-size: .8rem; }
+#pad .pad-sh { font-family: var(--font-display) !important; font-weight: 800; }
+.pbar { background: var(--surface); }
 </style>
 </head>
 <body>
@@ -611,14 +685,15 @@ body { margin: 0; }
 
 <section id="player" hidden>
   <div class="pbar">
-    <button class="btn small ghost" id="backBtn" type="button">←<span class="long"> Biblioteca</span></button>
+    <button class="btn small ghost pbtn" id="backBtn" type="button" aria-label="Voltar à biblioteca"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg></button>
     <span class="name" id="pName"></span>
     <span class="speed pix" id="pSpeed" hidden title="Velocidade da emulação"></span>
     <span class="chip" id="pChip"><span class="dot"></span><span id="pChipText">Carregando…</span></span>
-    <button class="btn small" id="castBtn" type="button"><span class="long">Segunda </span>tela</button>
-    <button class="btn small" id="pullBtn" type="button" title="Carregar o save mais recente da nuvem">Carregar</button>
-    <button class="btn small" id="saveNowBtn" type="button" title="Enviar o save e o progresso para a nuvem">Salvar</button>
-    <button class="btn small" id="menuBtn" type="button" aria-label="Menu do jogo">Menu</button>
+    <button class="btn small pbtn" id="castBtn" type="button" aria-label="Jogar numa segunda tela"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8 21h8M12 17v4"/></svg></button>
+    <!-- salvar e carregar da nuvem ficam no Menu (os botões seguem aqui para o menu acionar) -->
+    <button class="btn small" id="pullBtn" type="button" hidden>Carregar</button>
+    <button class="btn small" id="saveNowBtn" type="button" hidden>Salvar</button>
+    <button class="btn small pbtn menu" id="menuBtn" type="button" aria-label="Menu do jogo"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg><span>Menu</span></button>
   </div>
   <div id="game"></div>
   <div id="pad" hidden>
@@ -746,9 +821,9 @@ body { margin: 0; }
 
 <div id="dialogRoot"></div>
 
-<script src="config.js?v=20261017192901"></script>
-<script src="vendor/lang-pt-BR.js?v=20261017192901"></script>
+<script src="config.js?v=20261017193932"></script>
+<script src="vendor/lang-pt-BR.js?v=20261017193932"></script>
 <script src="vendor/qrcode.js"></script>
-<script src="app.js?v=20261017192901"></script>
+<script src="app.js?v=20261017193932"></script>
 </body>
 </html>

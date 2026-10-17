@@ -1,0 +1,48 @@
+// Fotos das telas principais (celular em pé), para revisar o visual.
+//   node tests/shots.mjs pasta
+import { chromium } from "playwright";
+import http from "node:http";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const OUT = process.argv[2] || "/tmp/shots";
+fs.mkdirSync(OUT, { recursive: true });
+const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".wasm": "application/wasm", ".svg": "image/svg+xml", ".json": "application/json", ".webmanifest": "application/manifest+json", ".txt": "text/plain", ".png": "image/png" };
+const server = http.createServer((req, res) => {
+  let p = decodeURIComponent(req.url.split("?")[0]); if (p.endsWith("/")) p += "index.html";
+  fs.readFile(path.join(root, p), (e, d) => { if (e) { res.writeHead(404); res.end(); return; } res.writeHead(200, { "content-type": types[path.extname(p)] || "application/octet-stream" }); res.end(d); });
+});
+await new Promise((r) => server.listen(0, "127.0.0.1", r));
+const base = `http://127.0.0.1:${server.address().port}/`;
+const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH, args: ["--enable-unsafe-swiftshader", "--use-gl=angle", "--use-angle=swiftshader", "--autoplay-policy=no-user-gesture-required"] });
+const ctx = await browser.newContext({ viewport: { width: 412, height: 860 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true, colorScheme: process.env.SCHEME || "dark" });
+await ctx.route(/^https:\/\//, (r) => r.fulfill({ status: 404, body: "" }));
+await ctx.addInitScript(() => localStorage.setItem("cartucho.localOnly", "1"));
+const page = await ctx.newPage();
+const shot = (n) => page.screenshot({ path: path.join(OUT, n + ".png") });
+await page.goto(base);
+await page.waitForTimeout(800);
+await shot("0-vazio");
+await page.setInputFiles("#romInput", path.join(root, "tests/gba-test.gba"));
+await page.waitForSelector("#games .tile:not(.add-tile)");
+await page.setInputFiles("#romInput", path.join(root, "ds/core/tools/roms/scene3d-arm.nds"));
+await page.waitForFunction(() => document.querySelectorAll("#games .tile:not(.add-tile)").length >= 2);
+await page.waitForTimeout(500);
+await shot("1-biblioteca");
+await page.click("#games .tile:not(.add-tile)");
+await page.waitForTimeout(500);
+await shot("2-pagina-jogo");
+await page.click("#gameSheet .btn.primary");
+await page.waitForFunction(() => { const e = window.__cartucho && window.__cartucho.emu; if (e && e.started) return true; const b = document.querySelector(".dialog .btn.primary"); if (b) b.click(); return false; }, null, { timeout: 90000 });
+await page.waitForTimeout(2500);
+await shot("3-jogo");
+await page.evaluate(() => { const b = document.querySelector("#padMenu") || document.querySelector("#menuBtn"); b && b.click(); });
+await page.waitForTimeout(600);
+await shot("4-menu");
+await page.setViewportSize({ width: 860, height: 412 });
+await page.keyboard.press("Escape");
+await page.evaluate(() => { for (const s of document.querySelectorAll(".sheet:not([hidden])")) s.hidden = true; document.querySelector(".scrim-sheet")?.remove(); });
+await page.waitForTimeout(1200);
+await shot("5-jogo-deitado");
+await browser.close(); server.close();

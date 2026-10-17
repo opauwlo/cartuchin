@@ -2657,7 +2657,9 @@ void main() {
   }
   function setCastUi(state) {
     const b = $("#castBtn");
-    b.innerHTML = state === "on" ? '<span class="long">Na 2ª </span>tela ●' : state === "wait" ? "Conectando…" : '<span class="long">Segunda </span>tela';
+    const tv = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8 21h8M12 17v4"/></svg>';
+    b.innerHTML = state === "on" ? tv + '<span class="cast-on">Na TV</span>' : state === "wait" ? tv + "<span>…</span>" : tv;
+    b.setAttribute("aria-label", state === "on" ? "Sair da segunda tela" : state === "wait" ? "Conectando com a segunda tela" : "Jogar numa segunda tela");
     b.classList.toggle("primary", state === "on");
   }
   function closeCastConnection() {
@@ -5882,7 +5884,7 @@ void main() {
         let cfg = orig.call(this);
         cfg = cfg.replace(/audio_latency = \d+/, "audio_latency = " + PROFILES[perfProfile()].latency);
         cfg = cfg.replace(/autosave_interval = \d+/, "autosave_interval = 0");
-        return cfg + "audio_rate_control = true\naudio_rate_control_delta = 0.010\nvideo_threaded = false\n";
+        return cfg + "audio_rate_control = true\naudio_rate_control_delta = 0.010\nvideo_threaded = false\nvideo_font_enable = false\nnotification_show_fast_forward = false\n";
       };
     }
     EJS.prototype.initGameCore = function(js, wasm, thread) {
@@ -6344,7 +6346,7 @@ void main() {
     return el("div", { class: "gen-cover", style: `--h:${hueOf(g.title)}` }, el("span", { class: "gen-title" }, g.title), el("span", { class: "gen-sys" }, [g.sys, g.code].filter(Boolean).join(" ")));
   }
   function coverEl(g) {
-    const box = el("div", { class: "cover" });
+    const box = el("div", { class: "cover sys-" + (g.system || "gba") });
     if (g.cover === "custom") {
       const id = g.key + ":" + g.coverRev;
       if (coverUrls.has(id)) box.append(el("img", { src: coverUrls.get(id), alt: "", loading: "lazy" }));

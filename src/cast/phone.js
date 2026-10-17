@@ -81,7 +81,9 @@ function applyRemote(mask) {
 }
 function setCastUi(state) {
   const b = $("#castBtn");
-  b.innerHTML = state === "on" ? "<span class=\"long\">Na 2ª </span>tela ●" : state === "wait" ? "Conectando…" : "<span class=\"long\">Segunda </span>tela";
+  const tv = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8 21h8M12 17v4"/></svg>';
+  b.innerHTML = state === "on" ? tv + "<span class=\"cast-on\">Na TV</span>" : state === "wait" ? tv + "<span>…</span>" : tv;
+  b.setAttribute("aria-label", state === "on" ? "Sair da segunda tela" : state === "wait" ? "Conectando com a segunda tela" : "Jogar numa segunda tela");
   b.classList.toggle("primary", state === "on");
 }
 /* Ends the current transmission and frees everything it held. Also runs before every

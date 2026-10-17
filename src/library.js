@@ -146,7 +146,7 @@ function genCover(g) {
   return el("div", { class: "gen-cover", style: `--h:${hueOf(g.title)}` }, el("span", { class: "gen-title" }, g.title), el("span", { class: "gen-sys" }, [g.sys, g.code].filter(Boolean).join(" ")));
 }
 function coverEl(g) {
-  const box = el("div", { class: "cover" });
+  const box = el("div", { class: "cover sys-" + (g.system || "gba") });
   if (g.cover === "custom") {
     const id = g.key + ":" + g.coverRev;
     if (coverUrls.has(id)) box.append(el("img", { src: coverUrls.get(id), alt: "", loading: "lazy" }));

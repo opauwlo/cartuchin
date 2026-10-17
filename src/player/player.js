@@ -280,7 +280,8 @@ function patchEmulator() {
       let cfg = orig.call(this);
       cfg = cfg.replace(/audio_latency = \d+/, "audio_latency = " + PROFILES[perfProfile()].latency);
       cfg = cfg.replace(/autosave_interval = \d+/, "autosave_interval = 0");  // the page saves on its own schedule
-      return cfg + "audio_rate_control = true\naudio_rate_control_delta = 0.010\nvideo_threaded = false\n";
+      // sem mensagens do RetroArch por cima do jogo ("Fast-Forward" aparecia com o ajuste automático de velocidade)
+      return cfg + "audio_rate_control = true\naudio_rate_control_delta = 0.010\nvideo_threaded = false\nvideo_font_enable = false\nnotification_show_fast_forward = false\n";
     };
   }
   EJS.prototype.initGameCore = function (js, wasm, thread) { this.initModule(wasm, thread); };
