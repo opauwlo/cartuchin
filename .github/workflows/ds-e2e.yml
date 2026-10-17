@@ -11,6 +11,7 @@ on:
       - "ds/*.wasm"
       - "tests/ds-e2e.mjs"
       - "tests/gba-e2e.mjs"
+      - "tests/layout-check.mjs"
       - "vendor/rcheevos.*"
       - "api/ra.js"
       - "tests/ra-api.mjs"
@@ -25,7 +26,7 @@ concurrency:
 jobs:
   e2e:
     runs-on: ubuntu-24.04
-    timeout-minutes: 16
+    timeout-minutes: 22
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -33,6 +34,8 @@ jobs:
           node-version: 22
       - run: npm install --no-audit --no-fund
       - run: npx playwright install --with-deps chromium
+      - name: Nada saindo da tela (celulares em pé e deitados, nomes compridos)
+        run: set -o pipefail; cp tests/gba-test.gba "/tmp/Pokemon Light Platinum Versao Definitiva Traduzida PTBR.gba"; cp ds/core/tools/roms/scene3d-arm.nds "/tmp/Pokemon Black Unova Pokedex Edition v1.23 Traduzido.nds"; ROM1="/tmp/Pokemon Light Platinum Versao Definitiva Traduzida PTBR.gba" ROM2="/tmp/Pokemon Black Unova Pokedex Edition v1.23 Traduzido.nds" node tests/layout-check.mjs 2>&1 | tee out.log || { grep -E -A4 '^\[|Error' out.log | head -30 | sed 's/^/::error::/'; exit 1; }
       - name: Ponte do RetroAchievements (/api/ra)
         run: set -o pipefail; node tests/ra-api.mjs 2>&1 | tee out.log || { grep -E -A4 '^FALHA|Error' out.log | head -30 | sed 's/^/::error::/'; exit 1; }
       - name: GBA (jogo, botões, save, estados, segunda tela pixels e console)
