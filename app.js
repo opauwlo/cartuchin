@@ -407,11 +407,11 @@
       tvScreen.pc = pc;
       $("#scrStatus").textContent = `Conectando com ${msg.from || "o celular"}…`;
       pc.ontrack = (e) => {
-        const v = $("#scrVideo"), st = e.streams[0];
+        const v = $("#scrVideo");
         v.muted = true;
-        if (v.srcObject !== st) v.srcObject = st;
+        if (e.track.kind === "video") v.srcObject = new MediaStream([e.track]);
         try {
-          e.receiver.jitterBufferTarget = 30;
+          e.receiver.jitterBufferTarget = e.track.kind === "video" ? 0 : 40;
         } catch (x) {
         }
         try {
@@ -436,8 +436,9 @@
               if (ac.state !== "running") $("#scrTap").hidden = false;
             }, 1500);
           } else {
-            v.muted = false;
-            v.play().catch(() => {
+            const au = tvScreen.audioEl || (tvScreen.audioEl = new Audio());
+            au.srcObject = new MediaStream([e.track]);
+            au.play().catch(() => {
               $("#scrTap").hidden = false;
             });
           }
@@ -923,6 +924,9 @@ void main() {
       }
       v.srcObject = null;
     }
+    if (tvScreen.audioEl) {
+      tvScreen.audioEl.srcObject = null;
+    }
     tvScreen.phoneStats = null;
     tvScreen.lastSent = -1;
     tvScreen.drawn = 0;
@@ -952,7 +956,8 @@ void main() {
   $("#scrTap").addEventListener("click", () => {
     if (tvScreen.ac) tvScreen.ac.resume().catch(() => {
     });
-    else $("#scrVideo").muted = false;
+    else if (tvScreen.audioEl) tvScreen.audioEl.play().catch(() => {
+    });
     $("#scrVideo").play().catch(() => {
     });
     $("#scrTap").hidden = true;
@@ -1568,8 +1573,9 @@ void main() {
       const tap = (window.__audioTaps || [])[0];
       if (tap && tap.out) {
         const at = tap.out.stream.getAudioTracks()[0];
-        if (at && mode2.plain) pc.addTrack(at, stream);
-        else if (at) prefer(pc.addTransceiver(at, { direction: "sendonly", streams: [stream] }), "audio", opt.red ? [/audio\/red/i, /opus/i] : [/opus/i]);
+        const as = at ? new MediaStream([at]) : null;
+        if (at && mode2.plain) pc.addTrack(at, as);
+        else if (at) prefer(pc.addTransceiver(at, { direction: "sendonly", streams: [as] }), "audio", opt.red ? [/audio\/red/i, /opus/i] : [/opus/i]);
       }
       const dc = pc.createDataChannel("controle", { ordered: false, maxRetransmits: 0 });
       cast.dc = dc;
@@ -1736,7 +1742,7 @@ void main() {
       }
       const tr = sender ? sender.track : cast.stream && cast.stream.getVideoTracks()[0];
       let br = -1;
-      if (tr && window.ImageCapture) {
+      if (tr && window.ImageCapture && (checks < 5 || checks % 10 === 0)) {
         try {
           const bmp = await Promise.race([new ImageCapture(tr).grabFrame(), sleep(600).then(() => null)]);
           if (bmp) {

@@ -220,8 +220,11 @@ async function castTo(code, attempt = 0) {
       const at = tap.out.stream.getAudioTracks()[0];
       // RED: every audio packet also carries the previous one, so a lost packet is
       // rebuilt from the next instead of becoming a crackle (what Google Meet does)
-      if (at && mode.plain) pc.addTrack(at, stream);
-      else if (at) prefer(pc.addTransceiver(at, { direction: "sendonly", streams: [stream] }), "audio", opt.red ? [/audio\/red/i, /opus/i] : [/opus/i]);
+      // som num stream separado do vídeo: no mesmo stream a TV sincroniza os dois e segura a
+      // imagem até o áudio (que tem buffer maior) chegar — era daí boa parte do atraso
+      const as = at ? new MediaStream([at]) : null;
+      if (at && mode.plain) pc.addTrack(at, as);
+      else if (at) prefer(pc.addTransceiver(at, { direction: "sendonly", streams: [as] }), "audio", opt.red ? [/audio\/red/i, /opus/i] : [/opus/i]);
     }
     const dc = pc.createDataChannel("controle", { ordered: false, maxRetransmits: 0 });
     cast.dc = dc;
@@ -365,7 +368,8 @@ function watchCast(pc, sender, dc, emu) {
     } catch (e) {}
     const tr = sender ? sender.track : (cast.stream && cast.stream.getVideoTracks()[0]);
     let br = -1;
-    if (tr && window.ImageCapture) {
+    // tirar um quadro da trilha custa caro no celular: só no começo (tela preta?) e a cada 20 s
+    if (tr && window.ImageCapture && (checks < 5 || checks % 10 === 0)) {
       try {
         const bmp = await Promise.race([new ImageCapture(tr).grabFrame(), sleep(600).then(() => null)]);
         if (bmp) {

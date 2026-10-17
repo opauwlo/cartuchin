@@ -61,12 +61,14 @@ async function startScreen() {
     tvScreen.pc = pc;
     $("#scrStatus").textContent = `Conectando com ${msg.from || "o celular"}…`;
     pc.ontrack = (e) => {
-      const v = $("#scrVideo"), st = e.streams[0];
+      const v = $("#scrVideo");
       // the picture is a muted video (muted video always autoplays);
-      // the sound goes through Web Audio, which was unlocked by the "Usar como tela" click
+      // the sound goes through Web Audio, which was unlocked by the "Usar como tela" click.
+      // The video element gets only the video track: with the audio in it too, the browser
+      // holds each frame back until the matching (more buffered) audio is ready.
       v.muted = true;
-      if (v.srcObject !== st) v.srcObject = st;
-      try { e.receiver.jitterBufferTarget = 30; } catch (x) {}
+      if (e.track.kind === "video") v.srcObject = new MediaStream([e.track]);
+      try { e.receiver.jitterBufferTarget = e.track.kind === "video" ? 0 : 40; } catch (x) {}
       try { e.receiver.playoutDelayHint = 0; } catch (x) {}
       playScreenVideo();
       if (e.track.kind === "audio") {
@@ -78,8 +80,9 @@ async function startScreen() {
           if (ac.state !== "running") ac.resume().then(() => {}, () => { $("#scrTap").hidden = false; });
           setTimeout(() => { if (ac.state !== "running") $("#scrTap").hidden = false; }, 1500);
         } else {
-          v.muted = false;
-          v.play().catch(() => { $("#scrTap").hidden = false; });
+          const au = tvScreen.audioEl || (tvScreen.audioEl = new Audio());
+          au.srcObject = new MediaStream([e.track]);
+          au.play().catch(() => { $("#scrTap").hidden = false; });
         }
       }
     };
@@ -505,6 +508,7 @@ function closeScreenConnection() {
     try { for (const t of v.srcObject.getTracks()) t.stop(); } catch (e) {}
     v.srcObject = null;
   }
+  if (tvScreen.audioEl) { tvScreen.audioEl.srcObject = null; }
   tvScreen.phoneStats = null;
   tvScreen.lastSent = -1;
   tvScreen.drawn = 0;
@@ -527,7 +531,7 @@ $("#screenBtn").addEventListener("click", startScreen);
 $("#scrExit").addEventListener("click", stopScreen);
 $("#scrTap").addEventListener("click", () => {
   if (tvScreen.ac) tvScreen.ac.resume().catch(() => {});
-  else $("#scrVideo").muted = false;
+  else if (tvScreen.audioEl) tvScreen.audioEl.play().catch(() => {});
   $("#scrVideo").play().catch(() => {});
   $("#scrTap").hidden = true;
 });
