@@ -571,12 +571,18 @@
         });
       }
       if (j.failed && c.started) c.started(false);
+      if (j.cfg && c.onCfg) c.onCfg(j);
     }, async (name, u8) => {
       if (name === "sav" && u8.length) {
         player.remoteSav = u8;
         flush({ quiet: true });
       }
       if (name === "state" && c.onEnd) c.onEnd(u8);
+      if (name === "snap" && c.onSnap) {
+        const f = c.onSnap;
+        c.onSnap = null;
+        f(u8);
+      }
     });
     scr.onmessage = async (e) => {
       const v = player.emu && player.emu.view;
@@ -637,6 +643,7 @@
         window.removeEventListener("ds-cast-layout", sendLayout);
       };
     }
+    player.remote = remoteEmu(c, emu);
     window.__castCap = 1;
     window.dispatchEvent(new Event("resize"));
     if (emu.relayout) emu.relayout();
@@ -645,6 +652,97 @@
     keepAwake();
     toast("O jogo está rodando na outra tela. Este celular é o controle.", 3500);
     return "ok";
+  }
+  var DS_CFG = ["perf", "scale", "gpu", "lag", "tvq"];
+  function remoteEmu(c, local) {
+    const send = (j) => {
+      try {
+        c.files.send(JSON.stringify(j));
+      } catch (e) {
+      }
+    };
+    const d = window.__ds;
+    const mine = d ? Object.fromEntries(DS_CFG.map((k) => [k, d[k]])) : null;
+    c.restoreCfg = () => {
+      if (!d || !mine) return;
+      Object.assign(d, mine);
+      for (const k of DS_CFG) ls.set("cartucho.ds." + k, k === "lag" ? mine.lag ? "on" : "off" : String(mine[k]));
+    };
+    let queued = false;
+    const sendCfg = () => {
+      if (queued) return true;
+      queued = true;
+      queueMicrotask(() => {
+        queued = false;
+        send({ cfg: d ? Object.fromEntries(DS_CFG.map((k) => [k, d[k]])) : {}, jit: r.jitOn });
+      });
+      return true;
+    };
+    const r = {
+      remote: true,
+      isDs: local.isDs,
+      started: true,
+      paused: false,
+      muted: false,
+      volume: local.volume || 1,
+      canScale: local.canScale,
+      gpu3d: local.gpu3d,
+      jitOn: local.jitOn,
+      get frames() {
+        return local.frames;
+      },
+      canvas: local.canvas,
+      view: local.view,
+      play() {
+        r.paused = false;
+        send({ cmd: "play" });
+      },
+      pause() {
+        r.paused = true;
+        send({ cmd: "pause" });
+      },
+      setVolume(v) {
+        send({ cmd: "vol", args: [v] });
+      },
+      relayout() {
+        if (local.relayout) local.relayout();
+        window.dispatchEvent(new Event("ds-cast-layout"));
+      },
+      localLayout: local.localLayout,
+      setScale: sendCfg,
+      applyRenderer: sendCfg,
+      applyCfg: sendCfg,
+      setLag: sendCfg,
+      setJit: sendCfg,
+      gameManager: {
+        getState: () => new Promise((ok, no) => {
+          c.onSnap = ok;
+          send({ cmd: "snap" });
+          setTimeout(() => no(new Error("sem resposta")), 1e4);
+        }),
+        loadState: (u8) => sendFile(c.files, "load", u8),
+        restart() {
+          send({ cmd: "restart" });
+        },
+        toggleFastForward(on) {
+          send({ cmd: "ff", args: [on ? 1 : 0] });
+        },
+        setFastForwardRatio(v) {
+          send({ cmd: "ffr", args: [v] });
+        },
+        getSaveFile: () => player.remoteSav || new Uint8Array(0),
+        getFrameNum: () => local.frames || 0
+      }
+    };
+    c.onCfg = (j) => {
+      if (d) {
+        for (const k of DS_CFG) if (j.cfg[k] != null) d[k] = j.cfg[k];
+      }
+      r.gpu3d = !!j.gpu3d;
+      r.jitOn = !!j.jit;
+      r.canScale = !!j.canScale;
+    };
+    return r;
   }
   async function endConsole(quiet = false) {
     const c = cast.console;
@@ -666,6 +764,8 @@
     if (cast.console !== c) return;
     cast.console = null;
     cast.consoleSend = null;
+    player.remote = null;
+    if (c.restoreCfg) c.restoreCfg();
     if (c.stop) c.stop();
     const emu = player.emu, gm = emu.gameManager;
     emu.onTouch = null;
@@ -706,6 +806,39 @@
     status(`Conectando com ${msg.from || "o celular"}…`);
     const ch = {};
     let info = null, rom = null, sav = null, state = null, live = false, wantLayout = null;
+    const applyCfg = (cfg, jit) => {
+      const d = window.__ds, emu = player.emu;
+      if (!d || !emu || !emu.isDs) return;
+      try {
+        if (cfg.perf && cfg.perf !== d.perf) {
+          d.perf = cfg.perf;
+          if (emu.applyCfg) emu.applyCfg();
+        }
+        if (cfg.scale && cfg.scale !== d.scale && emu.setScale) {
+          if (emu.setScale(cfg.scale)) d.scale = cfg.scale;
+        }
+        if (cfg.gpu && cfg.gpu !== d.gpu && emu.applyRenderer) {
+          d.gpu = cfg.gpu;
+          emu.applyRenderer();
+        }
+        if (cfg.lag != null && cfg.lag !== d.lag && emu.setLag) {
+          d.lag = cfg.lag;
+          emu.setLag(cfg.lag);
+        }
+        if (cfg.tvq) d.tvq = cfg.tvq;
+        if (jit != null && emu.setJit && !!jit !== !!emu.jitOn) {
+          emu.jitOn = !!jit;
+          emu.setJit(emu.jitOn);
+        }
+      } catch (e) {
+        console.warn("[console] ajustes", e);
+      }
+    };
+    const reportCfg = () => {
+      const d = window.__ds, emu = player.emu;
+      if (!d || !emu) return;
+      reply({ cfg: Object.fromEntries(["perf", "scale", "gpu", "lag", "tvq"].map((k) => [k, d[k]])), gpu3d: !!emu.gpu3d, jit: !!emu.jitOn, canScale: !!emu.canScale });
+    };
     const applyLayout = () => {
       if (!wantLayout || !window.__ds || !player.emu || !player.emu.relayout) return;
       window.__ds.local = wantLayout;
@@ -731,6 +864,23 @@
         if (cached && cached.id === info.romId) rom = cached.blob;
         reply({ need: !rom });
         status(rom ? `Abrindo ${info.rom.title}…` : `Recebendo ${info.rom.title}…`);
+      } else if (j.cmd) {
+        const emu = player.emu, gm = emu && emu.gameManager, a = j.args || [];
+        if (!emu || !live) return;
+        try {
+          if (j.cmd === "pause") emu.pause();
+          else if (j.cmd === "play") emu.play();
+          else if (j.cmd === "vol") emu.setVolume(a[0]);
+          else if (j.cmd === "restart") gm.restart();
+          else if (j.cmd === "ffr") gm.setFastForwardRatio(a[0]);
+          else if (j.cmd === "ff") gm.toggleFastForward(a[0]);
+          else if (j.cmd === "snap") await sendFile(ch.arquivo, "snap", new Uint8Array(await gm.getState()));
+        } catch (e) {
+          console.warn("[console] comando", j.cmd, e);
+        }
+      } else if (j.cfg) {
+        applyCfg(j.cfg, j.jit);
+        reportCfg();
       } else if (j.layout) {
         wantLayout = j.layout;
         applyLayout();
@@ -743,6 +893,13 @@
         });
       } else if (name === "sav") sav = u8;
       else if (name === "state") state = u8;
+      else if (name === "load" && live && player.emu) {
+        try {
+          await player.emu.gameManager.loadState(u8);
+        } catch (e) {
+          console.warn("[console] carregar estado", e);
+        }
+      }
     }, (name, f) => {
       if (name === "rom") status(`Recebendo ${info ? info.rom.title : "o jogo"}… ${f < 0 ? Math.round(-f / 1e6) + " MB" : Math.round(f * 100) + "%"}`);
     });
@@ -798,6 +955,7 @@
       live = true;
       applyLayout();
       reply({ started: 1 });
+      reportCfg();
       keepAwake();
       const emu = player.emu, gm = emu.gameManager;
       let noSlow = false;
@@ -1083,20 +1241,21 @@ registerProcessor("pix-play", PixPlay);`;
       emu.onFrame = (im) => {
         if (onSent) onSent();
         stat.offered++;
+        const fb = emu.fbCanvas, k = fb && fb.width >= 512 ? 2 : 1, fw = 256 * k, fh = 384 * k;
         let data;
-        if (im && im.width === 256) data = im.data.slice();
+        if (im && im.width === fw) data = im.data.slice();
         else {
-          if (!small) {
+          if (!small || small.width !== fw) {
             small = document.createElement("canvas");
-            small.width = 256;
-            small.height = 384;
+            small.width = fw;
+            small.height = fh;
             sg = small.getContext("2d", { alpha: false, willReadFrequently: true });
             sg.imageSmoothingEnabled = false;
           }
-          sg.drawImage(emu.fbCanvas, 0, 0, 256, 384);
-          data = sg.getImageData(0, 0, 256, 384).data;
+          sg.drawImage(fb, 0, 0, fw, fh);
+          data = sg.getImageData(0, 0, fw, fh).data;
         }
-        worker.postMessage({ cmd: "frame", f: { w: 256, h: 384, layout: LAYOUT[layout()] ?? 0, data } }, [data.buffer]);
+        worker.postMessage({ cmd: "frame", f: { w: fw, h: fh, layout: LAYOUT[layout()] ?? 0, data } }, [data.buffer]);
       };
       stops.push(() => {
         emu.onFrame = null;
@@ -1246,15 +1405,16 @@ registerProcessor("pix-play", PixPlay);`;
         }
       }
       last = seq;
-      const [cw, ch] = layout === 0 ? [256, 192] : layout === 2 ? [512, 192] : [w, h];
+      const hh = h / 2;
+      const [cw, ch] = layout === 0 ? [w, hh] : layout === 2 ? [w * 2, hh] : [w, h];
       if (canvas.width !== cw || canvas.height !== ch) {
         canvas.width = cw;
         canvas.height = ch;
       }
-      if (layout === 0) g.putImageData(img, 0, 0, 0, 0, 256, 192);
+      if (layout === 0) g.putImageData(img, 0, 0, 0, 0, w, hh);
       else if (layout === 2) {
-        g.putImageData(img, 0, 0, 0, 0, 256, 192);
-        g.putImageData(img, 256, -192, 0, 192, 256, 192);
+        g.putImageData(img, 0, 0, 0, 0, w, hh);
+        g.putImageData(img, w, -hh, 0, hh, w, hh);
       } else g.putImageData(img, 0, 0);
       tv.drawn++;
     }
@@ -3081,7 +3241,7 @@ void main() {
     return queue;
   }
   async function doSave({ auto = false, quiet = false, replaceId = null }) {
-    const emu = player.emu, game = player.key;
+    const emu = player.remote || player.emu, game = player.key;
     if (!emu || !game) return false;
     try {
       const st = await emu.gameManager.getState();
@@ -3114,7 +3274,7 @@ void main() {
     }
   }
   async function loadState(game, id) {
-    const emu = player.emu;
+    const emu = player.remote || player.emu;
     const rec = await idb.get("pend", dataKey(game, id));
     if (!emu || !rec || !(rec.blob || rec.raw)) {
       toast("Esse estado não está mais aqui.");
@@ -3275,6 +3435,7 @@ void main() {
   }
   function autoSave(e) {
     const emu = player.emu;
+    if (player.remote) return;
     if (!autoOn() || !emu || !player.key || !emu.frames || Date.now() - lastAuto < 6e4) return;
     lastAuto = Date.now();
     const p = saveState({ auto: true, quiet: true });
@@ -7029,7 +7190,7 @@ Content-Type: ${type}\r
   // src/ui/game-menu.js
   var ffState = { ratio: 1, last: Number(ls.get("cartucho.ff") || 2) };
   function setSpeed(r) {
-    const gm = player.emu && player.emu.gameManager;
+    const t = player.remote || player.emu, gm = t && t.gameManager;
     if (!gm) return;
     r = Number(r) || 1;
     try {
@@ -7058,7 +7219,7 @@ Content-Type: ${type}\r
   var lastInfo = { key: "", at: 0 };
   var setOpen = false;
   function fillGameMenu() {
-    const emu = player.emu, acts = $("#gmActions");
+    const emu = player.remote || player.emu, acts = $("#gmActions");
     lastState(player.key).then((it) => {
       const at = it ? it.at : 0;
       if (lastInfo.key !== player.key || lastInfo.at !== at) {

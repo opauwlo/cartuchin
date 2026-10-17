@@ -168,19 +168,21 @@ async function startPixels({ pix, snd, emu, isDs, layout, onSent }) {
   };
   const stops = [() => worker.terminate()];
   if (isDs) {
-    // DS: o quadro já está em memória (RGBA 256x384 em 1x); em 2x+ reduz o fb para 1x
+    // DS: o quadro já está em memória (RGBA 256x384 em 1x). Com "Resolução" 2x ou mais, vai
+    // em 2x (512x768: o 3D fica liso na TV; 4x os dados, por isso não passa de 2x)
     let small = null, sg = null;
     emu.onFrame = (im) => {
       if (onSent) onSent();
       stat.offered++;
+      const fb = emu.fbCanvas, k = fb && fb.width >= 512 ? 2 : 1, fw = 256 * k, fh = 384 * k;
       let data;
-      if (im && im.width === 256) data = im.data.slice();
+      if (im && im.width === fw) data = im.data.slice();
       else {
-        if (!small) { small = document.createElement("canvas"); small.width = 256; small.height = 384; sg = small.getContext("2d", { alpha: false, willReadFrequently: true }); sg.imageSmoothingEnabled = false; }
-        sg.drawImage(emu.fbCanvas, 0, 0, 256, 384);
-        data = sg.getImageData(0, 0, 256, 384).data;
+        if (!small || small.width !== fw) { small = document.createElement("canvas"); small.width = fw; small.height = fh; sg = small.getContext("2d", { alpha: false, willReadFrequently: true }); sg.imageSmoothingEnabled = false; }
+        sg.drawImage(fb, 0, 0, fw, fh);
+        data = sg.getImageData(0, 0, fw, fh).data;
       }
-      worker.postMessage({ cmd: "frame", f: { w: 256, h: 384, layout: LAYOUT[layout()] ?? 0, data } }, [data.buffer]);
+      worker.postMessage({ cmd: "frame", f: { w: fw, h: fh, layout: LAYOUT[layout()] ?? 0, data } }, [data.buffer]);
     };
     stops.push(() => { emu.onFrame = null; });
   } else {
@@ -281,10 +283,11 @@ function receivePixels(channel, tv, askKey) {
     }
     last = seq;
     // DS: a TV escolhe o que mostrar (de cima, as duas, lado a lado); GBA: a tela inteira
-    const [cw, ch] = layout === 0 ? [256, 192] : layout === 2 ? [512, 192] : [w, h];
+    const hh = h / 2;   // DS: uma tela (256x192, ou 512x384 em 2x)
+    const [cw, ch] = layout === 0 ? [w, hh] : layout === 2 ? [w * 2, hh] : [w, h];
     if (canvas.width !== cw || canvas.height !== ch) { canvas.width = cw; canvas.height = ch; }
-    if (layout === 0) g.putImageData(img, 0, 0, 0, 0, 256, 192);
-    else if (layout === 2) { g.putImageData(img, 0, 0, 0, 0, 256, 192); g.putImageData(img, 256, -192, 0, 192, 256, 192); }
+    if (layout === 0) g.putImageData(img, 0, 0, 0, 0, w, hh);
+    else if (layout === 2) { g.putImageData(img, 0, 0, 0, 0, w, hh); g.putImageData(img, w, -hh, 0, hh, w, hh); }
     else g.putImageData(img, 0, 0);
     tv.drawn++;
   }

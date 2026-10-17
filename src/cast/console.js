@@ -8,7 +8,7 @@ import { device } from "../device.js";
 import { idb } from "../idb.js";
 import { roms } from "../library.js";
 import { flush, play, player, writeSav } from "../player/player.js";
-import { $, rid, sleep, toast } from "../util.js";
+import { $, ls, rid, sleep, toast } from "../util.js";
 
 /* ---------- modo console ----------
    O jogo roda NA OUTRA TELA (notebook, TV, tablet) e o celular vira só o controle:
@@ -191,9 +191,11 @@ async function consoleTo(code) {
       endConsole(true).then(() => sleep(6000)).then(() => { say(null); castTo(code); });
     }
     if (j.failed && c.started) c.started(false);
+    if (j.cfg && c.onCfg) c.onCfg(j);
   }, async (name, u8) => {
     if (name === "sav" && u8.length) { player.remoteSav = u8; flush({ quiet: true }); }
     if (name === "state" && c.onEnd) c.onEnd(u8);
+    if (name === "snap" && c.onSnap) { const f = c.onSnap; c.onSnap = null; f(u8); }
   });
   scr.onmessage = async (e) => {
     const v = player.emu && player.emu.view;
@@ -240,6 +242,7 @@ async function consoleTo(code) {
     const prevStop = c.stop;
     c.stop = () => { prevStop(); window.removeEventListener("ds-cast-layout", sendLayout); };
   }
+  player.remote = remoteEmu(c, emu);   // menu, estados e velocidade passam a mexer no jogo de lá
   window.__castCap = 1;
   window.dispatchEvent(new Event("resize"));
   if (emu.relayout) emu.relayout();   // DS: este celular passa a mostrar só a tela de baixo
@@ -248,6 +251,55 @@ async function consoleTo(code) {
   keepAwake();
   toast("O jogo está rodando na outra tela. Este celular é o controle.", 3500);
   return "ok";
+}
+/* O jogo de lá visto daqui: o menu do jogo, a galeria de estados e o 2x usam isto no lugar
+   do emulador parado deste celular. Ajustes do DS (desempenho, resolução, 3D…) vão para lá;
+   enquanto dura, o menu mostra os valores de lá (os daqui voltam no fim, nada é gravado). */
+const DS_CFG = ["perf", "scale", "gpu", "lag", "tvq"];
+function remoteEmu(c, local) {
+  const send = (j) => { try { c.files.send(JSON.stringify(j)); } catch (e) {} };
+  const d = window.__ds;
+  const mine = d ? Object.fromEntries(DS_CFG.map((k) => [k, d[k]])) : null;
+  // no fim: os ajustes daqui de volta (na memória e gravados; o menu pode ter gravado os de lá)
+  c.restoreCfg = () => {
+    if (!d || !mine) return;
+    Object.assign(d, mine);
+    for (const k of DS_CFG) ls.set("cartucho.ds." + k, k === "lag" ? (mine.lag ? "on" : "off") : String(mine[k]));
+  };
+  let queued = false;
+  const sendCfg = () => {
+    if (queued) return true;
+    queued = true;
+    queueMicrotask(() => { queued = false; send({ cfg: d ? Object.fromEntries(DS_CFG.map((k) => [k, d[k]])) : {}, jit: r.jitOn }); });
+    return true;
+  };
+  const r = {
+    remote: true, isDs: local.isDs, started: true, paused: false, muted: false, volume: local.volume || 1,
+    canScale: local.canScale, gpu3d: local.gpu3d, jitOn: local.jitOn,
+    get frames() { return local.frames; },
+    canvas: local.canvas, view: local.view,
+    play() { r.paused = false; send({ cmd: "play" }); },
+    pause() { r.paused = true; send({ cmd: "pause" }); },
+    setVolume(v) { send({ cmd: "vol", args: [v] }); },
+    relayout() { if (local.relayout) local.relayout(); window.dispatchEvent(new Event("ds-cast-layout")); },
+    localLayout: local.localLayout,
+    setScale: sendCfg, applyRenderer: sendCfg, applyCfg: sendCfg, setLag: sendCfg, setJit: sendCfg,
+    gameManager: {
+      getState: () => new Promise((ok, no) => { c.onSnap = ok; send({ cmd: "snap" }); setTimeout(() => no(new Error("sem resposta")), 10000); }),
+      loadState: (u8) => sendFile(c.files, "load", u8),
+      restart() { send({ cmd: "restart" }); },
+      toggleFastForward(on) { send({ cmd: "ff", args: [on ? 1 : 0] }); },
+      setFastForwardRatio(v) { send({ cmd: "ffr", args: [v] }); },
+      getSaveFile: () => player.remoteSav || new Uint8Array(0),
+      getFrameNum: () => local.frames || 0,
+    },
+  };
+  // o que está valendo lá (a outra tela manda ao abrir e depois de cada ajuste)
+  c.onCfg = (j) => {
+    if (d) for (const k of DS_CFG) if (j.cfg[k] != null) d[k] = j.cfg[k];
+    r.gpu3d = !!j.gpu3d; r.jitOn = !!j.jit; r.canScale = !!j.canScale;
+  };
+  return r;
 }
 /** termina: pede o estado à outra tela e continua aqui do mesmo ponto */
 async function endConsole(quiet = false) {
@@ -266,6 +318,8 @@ async function backToPhone(c, state, msg) {
   if (cast.console !== c) return;
   cast.console = null;
   cast.consoleSend = null;
+  player.remote = null;
+  if (c.restoreCfg) c.restoreCfg();
   if (c.stop) c.stop();
   const emu = player.emu, gm = emu.gameManager;
   emu.onTouch = null;
@@ -297,6 +351,24 @@ async function tvConsole(msg, sig) {
   const ch = {};
   let info = null, rom = null, sav = null, state = null, live = false, wantLayout = null;
   // DS: mostra aqui o que o celular escolheu (por padrão só a de cima: a de baixo está no celular)
+  // ajustes do DS mandados pelo menu do celular (só nesta sessão: nada é gravado aqui)
+  const applyCfg = (cfg, jit) => {
+    const d = window.__ds, emu = player.emu;
+    if (!d || !emu || !emu.isDs) return;
+    try {
+      if (cfg.perf && cfg.perf !== d.perf) { d.perf = cfg.perf; if (emu.applyCfg) emu.applyCfg(); }
+      if (cfg.scale && cfg.scale !== d.scale && emu.setScale) { if (emu.setScale(cfg.scale)) d.scale = cfg.scale; }
+      if (cfg.gpu && cfg.gpu !== d.gpu && emu.applyRenderer) { d.gpu = cfg.gpu; emu.applyRenderer(); }
+      if (cfg.lag != null && cfg.lag !== d.lag && emu.setLag) { d.lag = cfg.lag; emu.setLag(cfg.lag); }
+      if (cfg.tvq) d.tvq = cfg.tvq;
+      if (jit != null && emu.setJit && !!jit !== !!emu.jitOn) { emu.jitOn = !!jit; emu.setJit(emu.jitOn); }
+    } catch (e) { console.warn("[console] ajustes", e); }
+  };
+  const reportCfg = () => {
+    const d = window.__ds, emu = player.emu;
+    if (!d || !emu) return;
+    reply({ cfg: Object.fromEntries(["perf", "scale", "gpu", "lag", "tvq"].map((k) => [k, d[k]])), gpu3d: !!emu.gpu3d, jit: !!emu.jitOn, canScale: !!emu.canScale });
+  };
   const applyLayout = () => {
     if (!wantLayout || !window.__ds || !player.emu || !player.emu.relayout) return;
     window.__ds.local = wantLayout;   // só nesta sessão (não grava)
@@ -315,6 +387,21 @@ async function tvConsole(msg, sig) {
       if (cached && cached.id === info.romId) rom = cached.blob;
       reply({ need: !rom });
       status(rom ? `Abrindo ${info.rom.title}…` : `Recebendo ${info.rom.title}…`);
+    } else if (j.cmd) {
+      const emu = player.emu, gm = emu && emu.gameManager, a = j.args || [];
+      if (!emu || !live) return;
+      try {
+        if (j.cmd === "pause") emu.pause();
+        else if (j.cmd === "play") emu.play();
+        else if (j.cmd === "vol") emu.setVolume(a[0]);
+        else if (j.cmd === "restart") gm.restart();
+        else if (j.cmd === "ffr") gm.setFastForwardRatio(a[0]);
+        else if (j.cmd === "ff") gm.toggleFastForward(a[0]);
+        else if (j.cmd === "snap") await sendFile(ch.arquivo, "snap", new Uint8Array(await gm.getState()));
+      } catch (e) { console.warn("[console] comando", j.cmd, e); }
+    } else if (j.cfg) {
+      applyCfg(j.cfg, j.jit);
+      reportCfg();
     } else if (j.layout) {
       wantLayout = j.layout;
       applyLayout();
@@ -326,6 +413,7 @@ async function tvConsole(msg, sig) {
       await idb.put("pend", "tvrom", { id: info.romId, blob: rom }).catch(() => {});   // próxima vez abre na hora
     } else if (name === "sav") sav = u8;
     else if (name === "state") state = u8;
+    else if (name === "load" && live && player.emu) { try { await player.emu.gameManager.loadState(u8); } catch (e) { console.warn("[console] carregar estado", e); } }
   }, (name, f) => { if (name === "rom") status(`Recebendo ${info ? info.rom.title : "o jogo"}… ${f < 0 ? Math.round(-f / 1e6) + " MB" : Math.round(f * 100) + "%"}`); });
   const onCtl = (e) => {
     const emu = player.emu, d = String(e.data);
@@ -360,6 +448,7 @@ async function tvConsole(msg, sig) {
     live = true;
     applyLayout();
     reply({ started: 1 });
+    reportCfg();
     keepAwake();
     const emu = player.emu, gm = emu.gameManager;
     // mede a velocidade de verdade (depois de assentar): abaixo de ~90% o som picota e o jogo

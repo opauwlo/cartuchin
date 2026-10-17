@@ -275,25 +275,33 @@ async function castOnce(mode, layout) {
     ok(!!px && px.sent > 0, `${tag} pixels: ${px ? `${px.sent} pacotes, ${Math.round(px.bytes / 1024)} KB, ${px.keys} inteiros, ${px.dropped} descartados; quadros ${px.offered} → processados ${px.frames} (${px.empty} iguais), ${px.ms.toFixed(1)} ms cada` : "nada"}`);
     ok(snd > 50, `${tag} som chega na tela (${snd} pacotes)`);
     // a imagem na TV é a mesma do celular, pixel a pixel (sem perda)
-    const sample = (d, top) => { const o = []; for (let p = 0; p < 256 * (top ? 192 : 384); p += 211) o.push(d[p * 4], d[p * 4 + 1], d[p * 4 + 2]); return o; };
-    const ref = await phone.evaluate((src) => { const s = eval(src), c = window.__cartucho.emu.fbCanvas; return s(c.getContext("2d").getImageData(0, 0, 256, 384).data, false); }, sample.toString());
+    // compara em tamanho cheio (1x ou 2x), sem reduzir: reduzir escolhe pixels diferentes
+    const sample = (d, top, k) => { const o = []; const n = 256 * k * (top ? 192 : 384) * k; for (let p = 0; p < n; p += 211) o.push(d[p * 4], d[p * 4 + 1], d[p * 4 + 2]); return o; };
     const got = await tv.evaluate(([lo, src]) => {
       const s = eval(src), c = document.querySelector("#scrCanvas");
-      const full = document.createElement("canvas"); full.width = 256; full.height = 384;
+      const k = Math.round((lo === "side" ? c.width / 2 : c.width) / 256);
+      const full = document.createElement("canvas"); full.width = 256 * k; full.height = 384 * k;
       const f = full.getContext("2d");
-      if (lo === "side") { f.drawImage(c, 0, 0, 256, 192, 0, 0, 256, 192); f.drawImage(c, 256, 0, 256, 192, 0, 192, 256, 192); }
+      const hw = 256 * k, hh = 192 * k;
+      if (lo === "side") { f.drawImage(c, 0, 0, hw, hh, 0, 0, hw, hh); f.drawImage(c, hw, 0, hw, hh, 0, hh, hw, hh); }
       else f.drawImage(c, 0, 0);
-      return s(f.getImageData(0, 0, 256, 384).data, lo === "top");
+      return { k, px: s(f.getImageData(0, 0, full.width, full.height).data, lo === "top", k) };
     }, [layout, sample.toString()]);
+    const ref = await phone.evaluate(([src, k]) => {
+      const s = eval(src), c = window.__cartucho.emu.fbCanvas, t = document.createElement("canvas");
+      t.width = 256 * k; t.height = 384 * k;
+      const g = t.getContext("2d"); g.imageSmoothingEnabled = false; g.drawImage(c, 0, 0, t.width, t.height);
+      return s(g.getImageData(0, 0, t.width, t.height).data, false, k);
+    }, [sample.toString(), got.k]);
     let bad = 0;
-    const n = got.length;
-    for (let i = 0; i < n; i++) if (Math.abs(ref[i] - got[i]) > 8) bad++;
-    ok(n > 0 && bad === 0, `${tag} imagem igual à do celular (${n - bad}/${n} amostras)`);
+    const n = got.px.length;
+    let maxd = 0;
+    for (let i = 0; i < n; i++) { const dd = Math.abs(ref[i] - got.px[i]); maxd = Math.max(maxd, dd); if (dd > 8) bad++; }
+    ok(n > 0 && bad === 0, `${tag} imagem igual à do celular em ${got.k}x (${n - bad}/${n} amostras, diferença máx. ${maxd})`);
     // trocar a arrumação com a tela parada muda na TV na hora
     const other = layout === "side" ? "top" : "side";
     await phone.evaluate((lo) => { window.__ds.cast = lo; window.__cartucho.emu.relayout(); }, other);
-    const want = other === "side" ? 512 : 256;
-    const changed = await tv.waitForFunction((w) => document.querySelector("#scrCanvas").width === w, want, { timeout: 5000 }).then(() => true, () => false);
+    const changed = await tv.waitForFunction((side) => { const c = document.querySelector("#scrCanvas"); return side ? c.width / c.height > 2.5 : c.width / c.height < 1.5; }, other === "side", { timeout: 5000 }).then(() => true, () => false);
     await phone.evaluate((lo) => { window.__ds.cast = lo; window.__cartucho.emu.relayout(); }, layout);
     ok(changed, `${tag} trocar a arrumação aparece na TV (${other})`);
   } else ok(Math.abs(ratio - want) < 0.01 && sent.w <= 1536 && sent.h <= 1536, `${tag} vídeo enviado ${sent.w}x${sent.h}`);
@@ -363,6 +371,19 @@ async function consoleOnce() {
   const lay1 = await tv.waitForFunction(() => window.__cartucho.emu.localLayout() === "both", null, { timeout: 5000 }).then(() => "both", () => "?");
   await phone.evaluate(() => { window.__ds.cast = "top"; window.dispatchEvent(new Event("ds-cast-layout")); });
   ok(lay0 === mine && lay1 === "both", `[console] arrumação na outra tela segue o celular (${lay0} → ${lay1})`);
+  // menu do celular mexe no jogo de lá: pausar e desempenho
+  await phone.evaluate(() => window.__cartucho.remote.pause());
+  const paused = await tv.waitForFunction(() => window.__cartucho.emu.paused, null, { timeout: 5000 }).then(() => true, () => false);
+  await phone.evaluate(() => window.__cartucho.remote.play());
+  const resumed = await tv.waitForFunction(() => !window.__cartucho.emu.paused, null, { timeout: 5000 }).then(() => true, () => false);
+  ok(paused && resumed, "[console] pausar pelo celular pausa a outra tela");
+  const perf0 = await tv.evaluate(() => window.__ds.perf);
+  const target = perf0 === "auto" ? "60" : "auto";
+  await phone.evaluate((v) => { window.__ds.perf = v; window.__cartucho.remote.applyCfg(); }, target);
+  const perfOk = await tv.waitForFunction((v) => window.__ds.perf === v, target, { timeout: 5000 }).then(() => true, () => false);
+  ok(perfOk, `[console] ajuste do DS no celular vale na outra tela (desempenho ${perf0} → ${target})`);
+  const snap = await phone.evaluate(async () => (await window.__cartucho.remote.gameManager.getState()).length);
+  ok(snap > 1000, `[console] estado salvo pelo celular vem da outra tela (${Math.round(snap / 1024)} KB)`);
   const f0 = await tv.evaluate(() => window.__cartucho.emu.frames);
   await phone.evaluate(() => document.querySelector("#padStop").click());
   const back = await phone.waitForFunction(() => !window.__cast.console && !window.__cartucho.emu.paused, null, { timeout: 20000 }).then(() => true, () => false);

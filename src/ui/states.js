@@ -66,7 +66,7 @@ function saveState(opts = {}) {
   return queue;
 }
 async function doSave({ auto = false, quiet = false, replaceId = null }) {
-  const emu = player.emu, game = player.key;
+  const emu = player.remote || player.emu, game = player.key;   // remote: estado do jogo que roda na outra tela
   if (!emu || !game) return false;
   try {
     const st = await emu.gameManager.getState();
@@ -100,7 +100,7 @@ async function doSave({ auto = false, quiet = false, replaceId = null }) {
   }
 }
 async function loadState(game, id) {
-  const emu = player.emu;
+  const emu = player.remote || player.emu;
   const rec = await idb.get("pend", dataKey(game, id));
   if (!emu || !rec || !(rec.blob || rec.raw)) { toast("Esse estado não está mais aqui."); return false; }
   try {
@@ -216,6 +216,7 @@ async function remove(it) {
    biblioteca), nunca no meio do jogo — gerar o estado trava uns quadros */
 function autoSave(e) {
   const emu = player.emu;
+  if (player.remote) return;   // jogo na outra tela: o estado final volta sozinho no fim
   if (!autoOn() || !emu || !player.key || !emu.frames || Date.now() - lastAuto < 60000) return;
   lastAuto = Date.now();
   const p = saveState({ auto: true, quiet: true });

@@ -11,7 +11,7 @@ import { $, $$, ago, ls, toast } from "../util.js";
    things people reach for while playing live here instead. */
 const ffState = { ratio: 1, last: Number(ls.get("cartucho.ff") || 2) };
 function setSpeed(r) {
-  const gm = player.emu && player.emu.gameManager;
+  const t = player.remote || player.emu, gm = t && t.gameManager;   // remote: o jogo roda na outra tela
   if (!gm) return;
   r = Number(r) || 1;
   try {
@@ -40,7 +40,7 @@ $("#ffModes").addEventListener("click", (e) => {
 const lastInfo = { key: "", at: 0 };
 let setOpen = false;   // seção "Ajustes" do menu aberta
 function fillGameMenu() {
-  const emu = player.emu, acts = $("#gmActions");
+  const emu = player.remote || player.emu, acts = $("#gmActions");
   lastState(player.key).then((it) => {
     const at = it ? it.at : 0;
     if (lastInfo.key !== player.key || lastInfo.at !== at) {
