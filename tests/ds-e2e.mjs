@@ -154,6 +154,46 @@ if (ONLY === "audio") {
   const a1 = await phone.evaluate(() => ({ s: window.__cartucho.emu.audioStats(), f: window.__cartucho.emu.frames, t: performance.now() }));
   console.log("AUDIO", JSON.stringify({ under: a1.s.underruns - a0.s.underruns, fps: Math.round((a1.f - a0.f) / ((a1.t - a0.t) / 1000)), fill: a1.s.fill, target: a1.s.target, state: a1.s.state }));
 }
+// RetroAchievements no DS: servidor do RA simulado; conquista quando a RAM em 0x3FFFF0 vira 7
+if ((!ONLY || ONLY === "ra") && CORE !== "mt") {
+  const calls = [];
+  await ctx.route("**/api/ra", async (route) => {
+    const r = new URLSearchParams(route.request().postData() || "").get("r");
+    calls.push(r);
+    const reply = {
+      login2: { Success: true, User: "Tester", Token: "tok123", Score: 0, SoftcoreScore: 10, Messages: 0, Permissions: 1, AccountType: "Registered" },
+      achievementsets: { Success: true, GameId: 88, Title: "Teste DS", ConsoleId: 18, ImageIconUrl: "", RichPresenceGameId: 88, RichPresencePatch: "",
+        Sets: [{ AchievementSetId: 1, GameId: 88, Title: null, Type: "core", ImageIconUrl: "",
+          Achievements: [{ ID: 201, Title: "Sete", Description: "RAM vira 7", Flags: 3, Points: 10, MemAddr: "0xH3ffff0=7", Author: "t", BadgeName: "00002", Created: 1, Modified: 1 }],
+          Leaderboards: [] }] },
+      startsession: { Success: true, Unlocks: [], HardcoreUnlocks: [], ServerNow: Math.floor(Date.now() / 1000) },
+      awardachievement: { Success: true, Score: 0, SoftcoreScore: 20, AchievementID: 201, AchievementsRemaining: 0 },
+    }[r] || { Success: true };
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(reply) });
+  });
+  await phone.evaluate(() => { const i = window.__cartucho.emu.ramInfo(); i.heap[i.ptr + 0x3ffff0] = 0; });
+  await phone.evaluate(() => document.querySelector("#raBtn").click());
+  await phone.fill(".dialog input[type=text]", "Tester");
+  await phone.fill(".dialog input[type=password]", "senha");
+  await phone.click(".dialog button[type=submit]");
+  const loaded = await phone.waitForFunction(() => window.__ra && window.__ra.game && window.__ra.mem, null, { timeout: 30000 }).then(() => true, () => false);
+  ok(loaded, `[conquistas] login e jogo de DS reconhecido (${calls.join(", ")})`);
+  // hash do DS como o RA calcula: cabeçalho + ARM9 + ARM7 + ícone
+  const rom = fs.readFileSync(ROM), u32 = (o) => rom.readUInt32LE(o);
+  const icon = Buffer.alloc(0xA00); rom.copy(icon, 0, u32(0x68), u32(0x68) + 0xA00);
+  const want = (await import("node:crypto")).createHash("md5").update(rom.subarray(0, 0x160)).update(rom.subarray(u32(0x20), u32(0x20) + u32(0x2C))).update(rom.subarray(u32(0x30), u32(0x30) + u32(0x3C))).update(icon).digest("hex");
+  const hash = await phone.evaluate(() => localStorage.getItem("cartucho.rahash." + window.__cartucho.key));
+  ok(hash === want, `[conquistas] hash do DS igual ao do RA (${hash})`);
+  if (loaded) {
+    await phone.waitForTimeout(500);
+    await phone.evaluate(() => { const i = window.__cartucho.emu.ramInfo(); i.heap[i.ptr + 0x3ffff0] = 7; });
+    const got = await phone.waitForFunction(() => window.__ra.unlockedNow.includes(201), null, { timeout: 10000 }).then(() => true, () => false);
+    await phone.waitForTimeout(1500);
+    ok(got && calls.includes("awardachievement"), "[conquistas] conquista do DS desbloqueia e vai para o servidor");
+  }
+  await phone.evaluate(() => { const i = window.__cartucho.emu.ramInfo(); i.heap[i.ptr + 0x3ffff0] = 0; });
+}
+
 if (!ONLY || ONLY === "state") {
   const r = await phone.evaluate(async () => {
     const emu = window.__cartucho.emu, gm = emu.gameManager;

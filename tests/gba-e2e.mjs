@@ -141,6 +141,45 @@ const meta = await phone.evaluate(async () => {
 ok(meta.ms >= 1000, `tempo de jogo conta (${meta.ms} ms)`);
 ok(meta.on === true && meta.off === false, "favoritar e desfavoritar");
 
+// RetroAchievements: servidor do RA simulado em /api/ra; uma conquista "aperte A" (EWRAM[0] = 1)
+{
+  const calls = [];
+  await ctx.route("**/api/ra", async (route) => {
+    const body = route.request().postData() || "";
+    const r = new URLSearchParams(body).get("r");
+    calls.push(r);
+    const reply = {
+      login2: { Success: true, User: "Tester", Token: "tok123", Score: 0, SoftcoreScore: 10, Messages: 0, Permissions: 1, AccountType: "Registered" },
+      achievementsets: { Success: true, GameId: 77, Title: "Teste", ConsoleId: 5, ImageIconUrl: "", RichPresenceGameId: 77, RichPresencePatch: "",
+        Sets: [{ AchievementSetId: 1, GameId: 77, Title: null, Type: "core", ImageIconUrl: "",
+          Achievements: [{ ID: 101, Title: "Aperte A", Description: "Aperte o botão A", Flags: 3, Points: 5, MemAddr: "0xH8000=1", Author: "t", BadgeName: "00001", Created: 1, Modified: 1 }],
+          Leaderboards: [] }] },
+      startsession: { Success: true, Unlocks: [], HardcoreUnlocks: [], ServerNow: Math.floor(Date.now() / 1000) },
+      awardachievement: { Success: true, Score: 0, SoftcoreScore: 15, AchievementID: 101, AchievementsRemaining: 0 },
+    }[r] || { Success: true };
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(reply) });
+  });
+  await phone.evaluate(() => document.querySelector("#raBtn").click());
+  await phone.fill(".dialog input[type=text]", "Tester");
+  await phone.fill(".dialog input[type=password]", "senha");
+  await phone.click(".dialog button[type=submit]");
+  const loaded = await phone.waitForFunction(() => window.__ra && window.__ra.game && window.__ra.mem, null, { timeout: 30000 }).then(() => true, () => false);
+  ok(loaded, `[conquistas] login, jogo reconhecido e memória achada (${calls.join(", ")})`);
+  const hash = await phone.evaluate(() => localStorage.getItem("cartucho.rahash." + window.__cartucho.key));
+  const md5 = (await import("node:crypto")).createHash("md5").update(fs.readFileSync(ROM)).digest("hex");
+  ok(hash === md5, `[conquistas] hash do jogo igual ao do RA (${hash})`);
+  if (loaded) {
+    await press(phone, "A", true);
+    const got = await phone.waitForFunction(() => window.__ra.unlockedNow.includes(101), null, { timeout: 10000 }).then(() => true, () => false);
+    if (!got) console.log("      dbg", JSON.stringify(await phone.evaluate(() => { const r = window.__ra, reg = r.mem.regions[1], h = reg.heap(); return { regs: r.mem.regions.map((x) => [x.start, x.size, x.ptr]), ew0: h[reg.ptr], ew1: h[reg.ptr + 1], ew5: h[reg.ptr + 5], frame: r.lastFrame, list: r.list.map((a) => [a.id, a.unlocked, a.bucket]) }; })));
+    await press(phone, "A", false);
+    await phone.waitForTimeout(1500);
+    ok(got && calls.includes("awardachievement"), "[conquistas] conquista desbloqueia ao apertar A e vai para o servidor");
+    const pop = await phone.evaluate(() => !!document.querySelector(".ra-pop"));
+    ok(pop, "[conquistas] aviso de conquista na tela");
+  }
+}
+
 async function tvPage() {
   const tv = await ctx.newPage();
   await tv.setViewportSize({ width: 960, height: 540 });   // TV / notebook deitado

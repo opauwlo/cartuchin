@@ -471,6 +471,7 @@ async function createDsEmulator(romBytes, gameName, startSav, skip = []) {
     else if (casting()) blit(cctx, ds.cast);
   }
   emu.fbCanvas = fb;
+  emu.workerCore = true;   // a memória do jogo está no worker: sem conquistas aqui
   emu.relayout = () => { shownLocal = ""; shownCast = ""; draw(); };
 
   // ---- toque na tela de baixo ----

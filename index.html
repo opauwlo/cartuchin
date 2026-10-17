@@ -101,6 +101,15 @@ button { cursor: pointer; }
 .choice small { font-weight: 400; opacity: 0.85; }
 .toast { position: fixed; left: 50%; bottom: calc(18px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 9px 14px; border-radius: 10px; z-index: 300001; max-width: calc(100% - 32px); font-size: 0.9rem; }
 .toast.cast-status { top: calc(14px + env(safe-area-inset-top, 0px)); bottom: auto; text-align: center; }
+.ra-pop { position: fixed; top: calc(14px + env(safe-area-inset-top, 0px)); left: 50%; transform: translateX(-50%); z-index: 300002; display: flex; gap: 12px; align-items: center; padding: 10px 16px 10px 10px; border-radius: 14px; background: #1b1e2b; color: #f2f3fa; box-shadow: 0 8px 28px rgba(0,0,0,.45); border: 1px solid #ffc94a; animation: raIn .35s ease-out; max-width: calc(100% - 32px); transition: opacity .5s, transform .5s; }
+.ra-pop.out { opacity: 0; transform: translate(-50%, -12px); }
+.ra-pop img, .ra-pop .ra-cup { width: 48px; height: 48px; border-radius: 8px; flex: none; display: grid; place-items: center; font-size: 28px; }
+.ra-pop div { display: grid; gap: 2px; } .ra-pop b { color: #ffc94a; font-size: 0.8rem; text-transform: uppercase; letter-spacing: .04em; } .ra-pop span { font-weight: 600; }
+@keyframes raIn { from { opacity: 0; transform: translate(-50%, -16px); } }
+.ra-list { display: grid; gap: 8px; margin: 10px 0; }
+.ra-item { display: flex; gap: 12px; align-items: center; padding: 8px; border-radius: 10px; background: var(--surface); opacity: .7; }
+.ra-item.on { opacity: 1; } .ra-item img { border-radius: 8px; flex: none; } .ra-item div { display: grid; gap: 2px; min-width: 0; }
+.ra-item span { color: var(--muted); font-size: 0.85rem; } .ra-item .ra-prog { color: #c77d12; font-weight: 600; }
 .toast-action { display: flex; align-items: center; gap: 12px; width: max-content; }
 .toast-btn { background: transparent; border: 1px solid currentColor; color: inherit; border-radius: 8px; padding: 5px 10px; font-weight: 600; white-space: nowrap; }
 @media (prefers-reduced-motion: no-preference) { .toast { animation: rise 0.18s ease-out; } @keyframes rise { from { transform: translate(-50%, 8px); opacity: 0; } } }
@@ -694,6 +703,11 @@ body { margin: 0; }
           <button class="btn small ghost" id="disconnectBtn" type="button" hidden>Sair da conta</button>
         </div>
       </div>
+      <div class="set-group">
+        <h3>RetroAchievements</h3>
+        <p id="raLine" class="set-line"></p>
+        <div class="seg"><button class="btn small" id="raBtn" type="button">Entrar no RetroAchievements</button></div>
+      </div>
       <div class="set-group perf">
         <h3>Desempenho neste aparelho</h3>
         <div class="seg" id="perfModes" role="group" aria-label="Desempenho">
@@ -732,9 +746,9 @@ body { margin: 0; }
 
 <div id="dialogRoot"></div>
 
-<script src="config.js?v=20261017190922"></script>
-<script src="vendor/lang-pt-BR.js?v=20261017190922"></script>
+<script src="config.js?v=20261017192901"></script>
+<script src="vendor/lang-pt-BR.js?v=20261017192901"></script>
 <script src="vendor/qrcode.js"></script>
-<script src="app.js?v=20261017190922"></script>
+<script src="app.js?v=20261017192901"></script>
 </body>
 </html>

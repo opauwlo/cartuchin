@@ -584,6 +584,7 @@ async function createDsEmulator(romBytes, gameName, startSav) {
     }
   }
   emu.fbCanvas = fb;
+  emu.ramInfo = () => ({ heap: M.HEAPU8, ptr: M._getSymbol(7) });   // RAM principal (4 MB), para as conquistas
 
   // ---- toque na tela de baixo ----
   let touchId = null;
@@ -684,6 +685,7 @@ async function createDsEmulator(romBytes, gameName, startSav) {
     for (let i = 0; i < n; i++) {
       const want = i === n - 1 && (!cfg.video30 || (++toggle30 & 1) === 0);
       M._runFrame(want ? 1 : 0, keys, emu.touch ? 1 : 0, emu.tx, emu.ty);
+      if (emu.onEmuFrame) emu.onEmuFrame();   // conquistas (RetroAchievements) avaliam a cada quadro
       drainAudio(emu.turbo === 1 && !emu.muted);
       emu.frames++;
       if (emu.frames === 3 && stageEl) { stageEl.remove(); stageEl = null; }   // já rodando: tira o "Iniciando…"

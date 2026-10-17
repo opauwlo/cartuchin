@@ -1,5 +1,6 @@
 import { player } from "../player/player.js";
 import { gov } from "../player/perf.js";
+import { openAchievements, ra, raSummary } from "../ra.js";
 import { dsMenuItems } from "../ds/ds-emu.js";
 import { dialog } from "./dialogs.js";
 import { lastState, openGallery } from "./states.js";
@@ -67,6 +68,7 @@ function fillGameMenu() {
       closeSheets();
       $("#pullBtn").click();
     }),
+    ra.game && ra.game.total ? sheetAction("star", `Conquistas (${raSummary()})`, () => { closeSheets(); openAchievements(); }) : null,
     sheetAction("image", "Jogar numa segunda tela", () => {
       closeSheets();
       $("#castBtn").click();

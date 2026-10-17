@@ -439,6 +439,7 @@ async function play(key, given = null) {
     if (!cast.pc) showPad(false);
     startSpeedMeter();
     startSpeedGovernor();
+    window.dispatchEvent(new Event("cartucho-game-running"));
     if (cast.pending) {
       const c = cast.pending;
       cast.pending = null;
