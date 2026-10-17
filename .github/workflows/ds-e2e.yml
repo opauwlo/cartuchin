@@ -34,20 +34,20 @@ jobs:
       - run: npm install --no-audit --no-fund
       - run: npx playwright install --with-deps chromium
       - name: Ponte do RetroAchievements (/api/ra)
-        run: set -o pipefail; node tests/ra-api.mjs 2>&1 | tee out.log || { grep -E '^FALHA|Error|erro' out.log | head -20 | sed 's/^/::error::/'; exit 1; }
+        run: set -o pipefail; node tests/ra-api.mjs 2>&1 | tee out.log || { grep -E -A4 '^FALHA|Error' out.log | head -30 | sed 's/^/::error::/'; exit 1; }
       - name: GBA (jogo, botões, save, estados, segunda tela pixels e console)
-        run: set -o pipefail; node tests/gba-e2e.mjs 2>&1 | tee out.log || { grep -E '^FALHA|Error|erro' out.log | head -20 | sed 's/^/::error::/'; exit 1; }
+        run: set -o pipefail; node tests/gba-e2e.mjs 2>&1 | tee out.log || { grep -E -A4 '^FALHA|Error' out.log | head -30 | sed 's/^/::error::/'; exit 1; }
       - name: Core estável 1x (segunda tela em todos os formatos e arrumações)
-        run: set -o pipefail; node tests/ds-e2e.mjs 2>&1 | tee out.log || { grep -E '^FALHA|Error|erro' out.log | head -20 | sed 's/^/::error::/'; exit 1; }
+        run: set -o pipefail; node tests/ds-e2e.mjs 2>&1 | tee out.log || { grep -E -A4 '^FALHA|Error' out.log | head -30 | sed 's/^/::error::/'; exit 1; }
       - name: Core de teste + JIT 6x (segunda tela no limite)
-        run: set -o pipefail; node tests/ds-e2e.mjs 2>&1 | tee out.log || { grep -E '^FALHA|Error|erro' out.log | head -20 | sed 's/^/::error::/'; exit 1; }
+        run: set -o pipefail; node tests/ds-e2e.mjs 2>&1 | tee out.log || { grep -E -A4 '^FALHA|Error' out.log | head -30 | sed 's/^/::error::/'; exit 1; }
         env:
           CORE: jit
           SCALE: "6"
           CAST_MODES: "0"
           CAST_LAYOUTS: top
       - name: Core de teste com threads (página isolada)
-        run: set -o pipefail; node tests/ds-e2e.mjs 2>&1 | tee out.log || { grep -E '^FALHA|Error|erro' out.log | head -20 | sed 's/^/::error::/'; exit 1; }
+        run: set -o pipefail; node tests/ds-e2e.mjs 2>&1 | tee out.log || { grep -E -A4 '^FALHA|Error' out.log | head -30 | sed 's/^/::error::/'; exit 1; }
         env:
           CORE: mt
           CAST_MODES: "0"
