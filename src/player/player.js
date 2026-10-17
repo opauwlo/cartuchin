@@ -7,7 +7,7 @@ import { askGoogleToken, cloud, cloudName, fetchRom, gauth, getSaveDoc, googleNe
 import { device } from "../device.js";
 import { idb } from "../idb.js";
 import { roms } from "../library.js";
-import { PROFILES, coreOptions, perfProfile, startSpeedMeter } from "./perf.js";
+import { PROFILES, coreOptions, perfProfile, startSpeedMeter, startSpeedGovernor } from "./perf.js";
 import { fixSaveChip } from "../rom.js";
 import { createDsEmulator, ds, dsLastError, dsStatesOk } from "../ds/ds-emu.js";
 import { dialog } from "../ui/dialogs.js";
@@ -64,6 +64,14 @@ function writeSav(gm, sav) {
   gm.FS.writeFile(path, sav);
 }
 
+/* GBA (EmulatorJS): pedir o save manda o core gravar o arquivo, mas a gravação termina uns
+   quadros depois; ler na hora devolve o save da vez anterior. Grava, espera e lê. */
+async function freshSave(gm, wait = true) {
+  if (!wait || typeof gm.saveSaveFiles !== "function") return gm.getSaveFile();
+  try { gm.saveSaveFiles(); } catch (e) {}
+  await sleep(300);
+  return gm.getSaveFile(false);
+}
 async function flush(opts = {}) {
   const emu = player.emu;
   if (!emu || !emu.started || !emu.gameManager || !player.key || player.guest) return;   // guest: jogo de outro aparelho (modo console), quem salva é ele
@@ -75,7 +83,7 @@ async function flush(opts = {}) {
   try {
     let sav = null;
     // modo console: o jogo roda na outra tela, que manda o save dela para cá
-    try { sav = player.remoteSav || emu.gameManager.getSaveFile(); } catch (e) {}
+    try { sav = player.remoteSav || await freshSave(emu.gameManager, !opts.leaving); } catch (e) {}
     if (!sav || !sav.length) {
       if (!player.lastSha) setChip("none");
       return;
@@ -430,6 +438,7 @@ async function play(key, given = null) {
     player.timer = setInterval(flush, 30000);
     if (!cast.pc) showPad(false);
     startSpeedMeter();
+    startSpeedGovernor();
     if (cast.pending) {
       const c = cast.pending;
       cast.pending = null;
@@ -538,4 +547,4 @@ window.fetch = (input, init) => {
   return realFetch(input, init);
 };
 
-export { player, writeSav, flush, uploadState, createEmulator, play, tokenFromTap, dsPage };
+export { player, writeSav, freshSave, flush, uploadState, createEmulator, play, tokenFromTap, dsPage };

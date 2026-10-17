@@ -1,4 +1,5 @@
 import { player } from "../player/player.js";
+import { gov } from "../player/perf.js";
 import { dsMenuItems } from "../ds/ds-emu.js";
 import { dialog } from "./dialogs.js";
 import { lastState, openGallery } from "./states.js";
@@ -21,9 +22,10 @@ function setSpeed(r) {
       ffState.last = r;
       ls.set("cartucho.ff", String(r));
     }
-    else gm.toggleFastForward(0);
+    else { gm.toggleFastForward(0); gov.ratio = 0; gov.last = null; }   // o ajuste automático recomeça do zero
   } catch (e) {}
   ffState.ratio = r;
+  player.userFF = r > 1;   // o ajuste automático de velocidade do GBA não mexe enquanto isso
   const ff = $("#padFF");
   ff.textContent = (r > 1 ? r : ffState.last) + "x";
   ff.setAttribute("aria-pressed", r > 1 ? "true" : "false");

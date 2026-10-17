@@ -982,7 +982,7 @@
       let lastSav = sav && sav.length ? await sha(sav) : null;
       savTimer = setInterval(async () => {
         try {
-          const s = new Uint8Array(gm.getSaveFile() || []);
+          const s = new Uint8Array(await freshSave(gm) || []);
           if (!s.length) return;
           const h = await sha(s);
           if (h !== lastSav) {
@@ -2503,6 +2503,57 @@ void main() {
       }
       speed.last = { f: frames, t: now };
     }, 2e3);
+  }
+  var gov = { ratio: 0, last: null, timer: null };
+  window.__gov = gov;
+  function startSpeedGovernor() {
+    clearInterval(gov.timer);
+    gov.ratio = 0;
+    gov.last = null;
+    if (player.isDs || ls.get("cartucho.gbaGov") === "off") return;
+    gov.timer = setInterval(() => {
+      const emu = player.emu, gm = emu && emu.gameManager;
+      if (!gm || player.isDs) {
+        clearInterval(gov.timer);
+        return;
+      }
+      if (player.userFF || emu.paused || document.visibilityState !== "visible" || player.remote) {
+        gov.last = null;
+        if (gov.ratio && !player.userFF) setGov(gm, 0);
+        return;
+      }
+      let f;
+      try {
+        f = Number(gm.getFrameNum());
+      } catch (e) {
+        return;
+      }
+      const now = performance.now();
+      if (gov.last) {
+        const pct = (f - gov.last.f) / ((now - gov.last.t) / 1e3) / 59.73;
+        if (pct > 0 && pct < 3) {
+          let r = gov.ratio;
+          if (!r) {
+            if (pct < 0.96) r = 1.1;
+          } else if (pct < 0.97) r = Math.min(1.25, r + 0.03);
+          else if (pct > 1.02) r = r - 0.03;
+          if (r && r < 1) r = 0;
+          r = r && Math.round(r * 100) / 100;
+          if (r !== gov.ratio) setGov(gm, r);
+        }
+      }
+      gov.last = { f, t: now };
+    }, 1e3);
+  }
+  function setGov(gm, r) {
+    gov.ratio = r;
+    try {
+      if (r) {
+        gm.setFastForwardRatio(r);
+        gm.toggleFastForward(1);
+      } else gm.toggleFastForward(0);
+    } catch (e) {
+    }
   }
   var devInput = $("#deviceName");
   devInput.value = device.name;
@@ -5476,6 +5527,15 @@ void main() {
     if (gm.FS.analyzePath(path).exists) gm.FS.unlink(path);
     gm.FS.writeFile(path, sav);
   }
+  async function freshSave(gm, wait = true) {
+    if (!wait || typeof gm.saveSaveFiles !== "function") return gm.getSaveFile();
+    try {
+      gm.saveSaveFiles();
+    } catch (e) {
+    }
+    await sleep(300);
+    return gm.getSaveFile(false);
+  }
   async function flush(opts = {}) {
     const emu = player.emu;
     if (!emu || !emu.started || !emu.gameManager || !player.key || player.guest) return;
@@ -5487,7 +5547,7 @@ void main() {
     try {
       let sav = null;
       try {
-        sav = player.remoteSav || emu.gameManager.getSaveFile();
+        sav = player.remoteSav || await freshSave(emu.gameManager, !opts.leaving);
       } catch (e) {
       }
       if (!sav || !sav.length) {
@@ -5889,6 +5949,7 @@ void main() {
       player.timer = setInterval(flush, 3e4);
       if (!cast.pc) showPad(false);
       startSpeedMeter();
+      startSpeedGovernor();
       if (cast.pending) {
         const c = cast.pending;
         cast.pending = null;
@@ -7202,10 +7263,15 @@ Content-Type: ${type}\r
         gm.toggleFastForward(1);
         ffState.last = r;
         ls.set("cartucho.ff", String(r));
-      } else gm.toggleFastForward(0);
+      } else {
+        gm.toggleFastForward(0);
+        gov.ratio = 0;
+        gov.last = null;
+      }
     } catch (e) {
     }
     ffState.ratio = r;
+    player.userFF = r > 1;
     const ff = $("#padFF");
     ff.textContent = (r > 1 ? r : ffState.last) + "x";
     ff.setAttribute("aria-pressed", r > 1 ? "true" : "false");

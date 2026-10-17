@@ -187,10 +187,10 @@ async function connect(code) {
     if (process.env.SHOT) await tv.screenshot({ path: process.env.SHOT });
     ok(!!t0 && t0.r > 150, `[console] imagem na outra tela (${JSON.stringify(t0)})`);
     const k0 = Date.now();
-    await phone.evaluate(() => window.__cast.consoleSend(1 << 7));   // bit 7 = A (PAD_BITS)
+    await phone.evaluate(() => window.__cast.consoleSend((1 << 7) | 1));   // A + B (PAD_BITS): save = 3, diferente de tudo antes
     const green = await tv.waitForFunction(`(async () => { const c = await (${PIXEL})("#game canvas"); return !!c && c.g > 20; })()`, null, { timeout: 5000, polling: 20 }).then(() => Date.now() - k0, () => -1);
     // o save de lá chega aqui (a outra tela manda quando muda)
-    const remoteSav = await phone.waitForFunction(() => window.__cartucho.remoteSav && window.__cartucho.remoteSav[0] !== 0, null, { timeout: 15000 }).then(() => true, () => false);
+    const remoteSav = await phone.waitForFunction(() => window.__cartucho.remoteSav && window.__cartucho.remoteSav[0] === 3, null, { timeout: 15000 }).then(() => true, () => false);
     if (!remoteSav) console.log("      dbg", JSON.stringify(await tv.evaluate(() => { const s = window.__cartucho.emu.gameManager.getSaveFile(); return [s && s.length, s && s[0], window.__cast.remoteMask, window.__cartucho.emu.gameManager.getFrameNum(), document.visibilityState, document.hasFocus()]; })), JSON.stringify(await phone.evaluate(() => { const r = window.__cartucho.remoteSav; return r ? [r.length, r[0]] : null; })));
     await phone.evaluate(() => window.__cast.consoleSend(0));
     ok(green >= 0, `[console] botão do celular chega no jogo de lá${green >= 0 ? ` (${green} ms até a imagem mudar)` : ""}`);

@@ -108,6 +108,49 @@ function startSpeedMeter() {
   }, 2000);
 }
 
+/* GBA: o EmulatorJS roda um quadro por atualização da tela. Num celular em que um quadro
+   às vezes passa de 16,7 ms, ele perde a vez e o jogo anda a 70-80% (fica "lento" mesmo
+   com folga de CPU). O avanço rápido do core, com um limite pouco acima de 1x, deixa rodar
+   dois quadros numa vez quando atrasou e segura em 100%. Medido com CPU 4x mais lenta:
+   43 → ~57 quadros/s; em aparelho rápido fica em 60 (o limite não deixa passar).
+   Ajuste a cada segundo; não mexe quando a pessoa usa o 2x. */
+const gov = { ratio: 0, last: null, timer: null };
+window.__gov = gov;
+function startSpeedGovernor() {
+  clearInterval(gov.timer);
+  gov.ratio = 0; gov.last = null;
+  if (player.isDs || ls.get("cartucho.gbaGov") === "off") return;
+  gov.timer = setInterval(() => {
+    const emu = player.emu, gm = emu && emu.gameManager;
+    if (!gm || player.isDs) { clearInterval(gov.timer); return; }
+    if (player.userFF || emu.paused || document.visibilityState !== "visible" || player.remote) { gov.last = null; if (gov.ratio && !player.userFF) setGov(gm, 0); return; }
+    let f;
+    try { f = Number(gm.getFrameNum()); } catch (e) { return; }
+    const now = performance.now();
+    if (gov.last) {
+      const pct = (f - gov.last.f) / ((now - gov.last.t) / 1000) / 59.73;
+      if (pct > 0 && pct < 3) {
+        // passos pequenos e teto baixo: acima de ~1,25x o core tenta quadros demais numa vez e piora
+        let r = gov.ratio;
+        if (!r) { if (pct < 0.96) r = 1.1; }
+        else if (pct < 0.97) r = Math.min(1.25, r + 0.03);
+        else if (pct > 1.02) r = r - 0.03;
+        if (r && r < 1.0) r = 0;   // não precisa mais
+        r = r && Math.round(r * 100) / 100;
+        if (r !== gov.ratio) setGov(gm, r);
+      }
+    }
+    gov.last = { f, t: now };
+  }, 1000);
+}
+function setGov(gm, r) {
+  gov.ratio = r;
+  try {
+    if (r) { gm.setFastForwardRatio(r); gm.toggleFastForward(1); }
+    else gm.toggleFastForward(0);
+  } catch (e) {}
+}
+
 const devInput = $("#deviceName");
 devInput.value = device.name;
 devInput.addEventListener("change", () => {
@@ -117,4 +160,4 @@ devInput.addEventListener("change", () => {
   ls.set("cartucho.device", device.name);
 });
 
-export { perf, perfProfile, PROFILES, coreOptions, renderPerf, startSpeedMeter, speed };
+export { perf, perfProfile, PROFILES, coreOptions, renderPerf, startSpeedMeter, startSpeedGovernor, speed, gov };

@@ -7,7 +7,7 @@ import { sha } from "../bytes.js";
 import { device } from "../device.js";
 import { idb } from "../idb.js";
 import { roms } from "../library.js";
-import { flush, play, player, writeSav } from "../player/player.js";
+import { flush, freshSave, play, player, writeSav } from "../player/player.js";
 import { $, ls, rid, sleep, toast } from "../util.js";
 
 /* ---------- modo console ----------
@@ -473,7 +473,7 @@ async function tvConsole(msg, sig) {
     let lastSav = sav && sav.length ? await sha(sav) : null;
     savTimer = setInterval(async () => {
       try {
-        const s = new Uint8Array(gm.getSaveFile() || []);
+        const s = new Uint8Array((await freshSave(gm)) || []);
         if (!s.length) return;
         const h = await sha(s);
         if (h !== lastSav) { lastSav = h; await sendFile(ch.arquivo, "sav", s); }
