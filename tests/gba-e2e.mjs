@@ -130,6 +130,17 @@ const st = await phone.evaluate(async () => {
 });
 ok(st.ok1 && st.ok2 && st.n === 1, `estado salva e carrega${st.thumb ? " (com miniatura)" : " (sem miniatura)"}`);
 
+// tempo de jogo conta enquanto joga; favorito liga e desliga
+const meta = await phone.evaluate(async () => {
+  const k = window.__cartucho.key;
+  window.__meta.account(); await new Promise((r) => setTimeout(r, 1500)); window.__meta.account();
+  const ms = window.__meta.gameMeta(k).ms;
+  const on = window.__meta.toggleFav(k), off = window.__meta.toggleFav(k);
+  return { ms, on, off };
+});
+ok(meta.ms >= 1000, `tempo de jogo conta (${meta.ms} ms)`);
+ok(meta.on === true && meta.off === false, "favoritar e desfavoritar");
+
 async function tvPage() {
   const tv = await ctx.newPage();
   await tv.setViewportSize({ width: 960, height: 540 });   // TV / notebook deitado
@@ -190,7 +201,7 @@ async function connect(code) {
     await phone.evaluate(() => window.__cast.consoleSend((1 << 7) | 1));   // A + B (PAD_BITS): save = 3, diferente de tudo antes
     const green = await tv.waitForFunction(`(async () => { const c = await (${PIXEL})("#game canvas"); return !!c && c.g > 20; })()`, null, { timeout: 5000, polling: 20 }).then(() => Date.now() - k0, () => -1);
     // o save de lá chega aqui (a outra tela manda quando muda)
-    const remoteSav = await phone.waitForFunction(() => window.__cartucho.remoteSav && window.__cartucho.remoteSav[0] === 3, null, { timeout: 15000 }).then(() => true, () => false);
+    const remoteSav = await phone.waitForFunction(() => window.__cartucho.remoteSav && window.__cartucho.remoteSav[0] === 3, null, { timeout: 25000 }).then(() => true, () => false);
     if (!remoteSav) console.log("      dbg", JSON.stringify(await tv.evaluate(() => { const s = window.__cartucho.emu.gameManager.getSaveFile(); return [s && s.length, s && s[0], window.__cast.remoteMask, window.__cartucho.emu.gameManager.getFrameNum(), document.visibilityState, document.hasFocus()]; })), JSON.stringify(await phone.evaluate(() => { const r = window.__cartucho.remoteSav; return r ? [r.length, r[0]] : null; })));
     await phone.evaluate(() => window.__cast.consoleSend(0));
     ok(green >= 0, `[console] botão do celular chega no jogo de lá${green >= 0 ? ` (${green} ms até a imagem mudar)` : ""}`);

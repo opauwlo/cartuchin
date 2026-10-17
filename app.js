@@ -655,7 +655,7 @@
     return "ok";
   }
   var DS_CFG = ["perf", "scale", "gpu", "lag", "tvq"];
-  function remoteEmu(c, local) {
+  function remoteEmu(c, local2) {
     const send = (j) => {
       try {
         c.files.send(JSON.stringify(j));
@@ -681,19 +681,19 @@
     };
     const r = {
       remote: true,
-      isDs: local.isDs,
+      isDs: local2.isDs,
       started: true,
       paused: false,
       muted: false,
-      volume: local.volume || 1,
-      canScale: local.canScale,
-      gpu3d: local.gpu3d,
-      jitOn: local.jitOn,
+      volume: local2.volume || 1,
+      canScale: local2.canScale,
+      gpu3d: local2.gpu3d,
+      jitOn: local2.jitOn,
       get frames() {
-        return local.frames;
+        return local2.frames;
       },
-      canvas: local.canvas,
-      view: local.view,
+      canvas: local2.canvas,
+      view: local2.view,
       play() {
         r.paused = false;
         send({ cmd: "play" });
@@ -706,10 +706,10 @@
         send({ cmd: "vol", args: [v] });
       },
       relayout() {
-        if (local.relayout) local.relayout();
+        if (local2.relayout) local2.relayout();
         window.dispatchEvent(new Event("ds-cast-layout"));
       },
-      localLayout: local.localLayout,
+      localLayout: local2.localLayout,
       setScale: sendCfg,
       applyRenderer: sendCfg,
       applyCfg: sendCfg,
@@ -732,7 +732,7 @@
           send({ cmd: "ffr", args: [v] });
         },
         getSaveFile: () => player.remoteSav || new Uint8Array(0),
-        getFrameNum: () => local.frames || 0
+        getFrameNum: () => local2.frames || 0
       }
     };
     c.onCfg = (j) => {
@@ -1667,9 +1667,9 @@ registerProcessor("pix-play", PixPlay);`;
     });
     clearInterval(tvScreen.padTimer);
     let lastBeat = 0;
-    const tick = () => {
+    const tick2 = () => {
       if (!tvScreen.active) return;
-      requestAnimationFrame(tick);
+      requestAnimationFrame(tick2);
       pushPad();
     };
     tvScreen.pushPad = pushPad;
@@ -1699,7 +1699,7 @@ registerProcessor("pix-play", PixPlay);`;
         lastBeat = now;
       }
     }
-    requestAnimationFrame(tick);
+    requestAnimationFrame(tick2);
   }
   var brightnessCanvas = null;
   function brightness(src) {
@@ -2246,10 +2246,10 @@ void main() {
         const ctx = dest.context;
         let t = taps.get(ctx);
         if (!t) {
-          const mix = ctx.createGain(), local = ctx.createGain();
-          connect2.call(mix, local);
-          connect2.call(local, dest);
-          t = { ctx, mix, local, out: null, connect: (a, b) => connect2.call(a, b) };
+          const mix = ctx.createGain(), local2 = ctx.createGain();
+          connect2.call(mix, local2);
+          connect2.call(local2, dest);
+          t = { ctx, mix, local: local2, out: null, connect: (a, b) => connect2.call(a, b) };
           t.ensureOut = () => {
             if (!t.out && ctx.createMediaStreamDestination) {
               t.out = ctx.createMediaStreamDestination();
@@ -3086,6 +3086,118 @@ void main() {
     }, 2e3);
   }
 
+  // src/meta.js
+  var KEY = "cartucho.meta";
+  var devId = (() => {
+    let v = ls.get("cartucho.devid");
+    if (!v) {
+      v = rid();
+      ls.set("cartucho.devid", v);
+    }
+    return v;
+  })();
+  function load() {
+    try {
+      return JSON.parse(ls.get(KEY) || "{}") || {};
+    } catch (e) {
+      return {};
+    }
+  }
+  var local = load();
+  var saveLocal = () => ls.set(KEY, JSON.stringify(local));
+  var entry = (key) => local[key] = local[key] || {};
+  function gameMeta(key) {
+    const l = local[key] || {}, ix = cloud.index && cloud.index.games && cloud.index.games[key] || {};
+    const fav = (l.favAt || 0) >= (ix.favAt || 0) ? !!l.fav : !!ix.fav;
+    const play2 = { ...ix.play || {} };
+    if (l.ms) play2[devId] = Math.max(play2[devId] || 0, l.ms);
+    const ms = Object.values(play2).reduce((a, b) => a + (Number(b) || 0), 0);
+    return { fav, ms, lastPlayed: Math.max(l.lastAt || 0, ix.lastAt || 0) };
+  }
+  function fmtPlay(ms) {
+    const m = Math.floor(ms / 6e4);
+    if (m < 1) return "menos de 1 min";
+    if (m < 60) return `${m} min`;
+    const h = Math.floor(m / 60), r = m % 60;
+    return r ? `${h} h ${r} min` : `${h} h`;
+  }
+  var pushTimer = null;
+  function pushSoon(key, ms = 4e3) {
+    if (!cloud.db) return;
+    clearTimeout(pushTimer);
+    pushTimer = setTimeout(() => pushNow(key).catch(() => {
+    }), ms);
+  }
+  async function pushNow(key) {
+    if (!cloud.db || !key) return;
+    const l = local[key];
+    if (!l) return;
+    await updateIndex((d) => {
+      const g = d.games[key] = d.games[key] || {};
+      if ((l.favAt || 0) > (g.favAt || 0)) {
+        g.fav = !!l.fav;
+        g.favAt = l.favAt;
+      }
+      if (l.ms) {
+        g.play = g.play || {};
+        g.play[devId] = Math.max(g.play[devId] || 0, l.ms);
+      }
+      if ((l.lastAt || 0) > (g.lastAt || 0)) g.lastAt = l.lastAt;
+    }, "Tempo de jogo e favoritos");
+  }
+  function toggleFav(key) {
+    const e = entry(key), now = gameMeta(key).fav;
+    e.fav = !now;
+    e.favAt = Date.now();
+    saveLocal();
+    pushSoon(key, 500);
+    return e.fav;
+  }
+  var tick = null;
+  var lastAt = 0;
+  function playing() {
+    const emu = player.emu;
+    if (!emu || !player.key || player.guest || document.visibilityState !== "visible") return false;
+    return !!player.remote || !emu.paused;
+  }
+  function account() {
+    const now = Date.now();
+    if (lastAt && playing()) {
+      const dt = Math.min(now - lastAt, 15e3);
+      const e = entry(player.key);
+      e.ms = (e.ms || 0) + dt;
+      e.lastAt = now;
+      saveLocal();
+    }
+    lastAt = now;
+  }
+  window.addEventListener("cartucho-game-start", () => {
+    lastAt = Date.now();
+    const key = player.key, ix = cloud.index && cloud.index.games && cloud.index.games[key];
+    const e = entry(key), mine = ix && ix.play && ix.play[devId];
+    if (mine && mine > (e.ms || 0)) {
+      e.ms = mine;
+      saveLocal();
+    }
+    clearInterval(tick);
+    tick = setInterval(account, 1e4);
+  });
+  var flushPlay = () => {
+    account();
+    if (player.key && !player.guest) pushNow(player.key).catch(() => {
+    });
+  };
+  window.addEventListener("cartucho-game-exit", flushPlay);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") flushPlay();
+    else lastAt = Date.now();
+  });
+  setInterval(() => {
+    if (player.key && !player.guest && playing()) pushNow(player.key).catch(() => {
+    });
+  }, 5 * 6e4);
+  window.__meta = { gameMeta, toggleFav, account };
+
   // src/ui/pickers.js
   function pickRom() {
     const i = $("#romInput");
@@ -3534,6 +3646,7 @@ void main() {
     sound: '<path d="M4 9h4l5-4v14l-5-4H4z"/><path d="M17 9a4 4 0 0 1 0 6"/>',
     mute: '<path d="M4 9h4l5-4v14l-5-4H4z"/><path d="m17 10 4 4M21 10l-4 4"/>',
     sliders: '<path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/>',
+    star: '<path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1 6.2L12 17.3 6.5 20.2l1-6.2L3 9.6l6.2-.9z"/>',
     restart: '<path d="M4 4v6h6"/><path d="M5.5 15a8 8 0 1 0 1-8.5L4 10"/>'
   };
   function sheetAction(icon, label, fn, danger) {
@@ -3557,6 +3670,8 @@ void main() {
       el("div", { class: "sync-line" }, g.save ? [el("span", { class: "dot ok" }), `Save na nuvem ${ago(g.save.at)}, do ${g.save.device || "outro aparelho"}`] : cloud.db ? [el("span", { class: "dot" }), "Ainda sem save na nuvem"] : [el("span", { class: "dot warn" }), "Save só neste aparelho"]),
       el("div", { class: "sync-line" }, g.crom ? [el("span", { class: "dot ok" }), "ROM na nuvem, abre em qualquer aparelho"] : g.rom ? [el("span", { class: "dot" }), cloud.db ? "ROM só neste aparelho" : "ROM neste aparelho"] : [el("span", { class: "dot warn" }), "A ROM não está neste aparelho"])
     );
+    const meta = gameMeta(key);
+    if (meta.ms >= 6e4) status.append(el("div", { class: "sync-line" }, el("span", { class: "dot ok" }), `Tempo de jogo: ${fmtPlay(meta.ms)}`));
     list(key).then((items) => {
       if (!items.length || sheetKey !== key) return;
       status.append(el(
@@ -3576,6 +3691,11 @@ void main() {
       pickRom();
     } }, "Adicionar a ROM neste aparelho");
     const acts = el("div", { class: "gs-actions" });
+    acts.append(sheetAction("star", meta.fav ? "Tirar dos favoritos" : "Favoritar", () => {
+      toggleFav(key);
+      fillGameSheet(key);
+      render();
+    }));
     if (g.rom && !g.crom && cloud.db && !working) acts.append(sheetAction("cloud", `Guardar a ROM no ${cloudName()}`, () => uploadRom(g.rom)));
     acts.append(sheetAction("image", "Trocar capa", () => pickCover(key)));
     acts.append(sheetAction("edit", "Renomear", () => renameGame(key)));
@@ -3594,7 +3714,7 @@ void main() {
       el(
         "div",
         { class: "sheet-body" },
-        el("div", { class: "gs-head" }, coverEl(g), el("div", {}, el("h2", { class: "gs-title", id: "gsTitle" }, g.title), el("p", { class: "gs-sub" }, [g.sys, g.code].filter(Boolean).join(" · ")))),
+        el("div", { class: "gs-head" }, coverEl(g), el("div", {}, el("h2", { class: "gs-title", id: "gsTitle" }, (meta.fav ? "★ " : "") + g.title), el("p", { class: "gs-sub" }, [g.sys, g.code].filter(Boolean).join(" · ")))),
         el("div", { class: "gs-play" }, playBtn),
         status,
         acts
@@ -4070,11 +4190,11 @@ registerProcessor("ds-out", DSOut);
       M._emuSetOpt(1, cfg.interp);
     }
     emu.applyCfg = applyCfg;
-    function autoTune(fps, load) {
+    function autoTune(fps, load2) {
       if (ds.perf !== "auto" || emu.turbo > 1 || emu.paused) return;
       const under = audio.underruns - tune.lastUnder;
       tune.lastUnder = audio.underruns;
-      const struggling = load > 80 || fps < 57 || under > 0;
+      const struggling = load2 > 80 || fps < 57 || under > 0;
       tune.bad = struggling ? tune.bad + 1 : 0;
       if ((under > 0 || tune.bad >= 2) && ds.level < LEVELS.length - 1) {
         ds.level++;
@@ -4083,7 +4203,7 @@ registerProcessor("ds-out", DSOut);
         applyCfg();
         return;
       }
-      tune.calm = !struggling && load < 45 ? tune.calm + 1 : 0;
+      tune.calm = !struggling && load2 < 45 ? tune.calm + 1 : 0;
       if (tune.calm >= 15 && ds.level > 0) {
         ds.level--;
         tune.calm = 0;
@@ -4346,9 +4466,9 @@ registerProcessor("ds-out", DSOut);
       for (let i = 0; i < out.length; i++) out[i] = src[i] * (1 / 32768);
       audio.push(out);
     }
-    function tick(now) {
+    function tick2(now) {
       if (!alive) return;
-      raf = requestAnimationFrame(tick);
+      raf = requestAnimationFrame(tick2);
       pollGamepad();
       if (!emu.started || emu.paused || document.visibilityState !== "visible") {
         last = now;
@@ -4445,7 +4565,7 @@ registerProcessor("ds-out", DSOut);
         stageEl = null;
       } else if (stageEl) stage("O jogo não começou a rodar (0 quadros). Mande um print disto.", true);
     }, 4e3);
-    raf = requestAnimationFrame(tick);
+    raf = requestAnimationFrame(tick2);
     setTimeout(() => {
       for (const cb of listeners.start || []) cb();
     }, 0);
@@ -4721,7 +4841,8 @@ void main() {
     }
     if (welcome) return;
     const keys = /* @__PURE__ */ new Set([...roms.keys(), ...cloud.docs.keys(), ...cloud.roms.keys()]);
-    const games = [...keys].map(gameInfo).sort((a, b) => (b.save && b.save.at || 0) - (a.save && a.save.at || 0) || a.title.localeCompare(b.title, "pt"));
+    const recentOf = (g) => Math.max(g.save && g.save.at || 0, gameMeta(g.key).lastPlayed || 0);
+    const games = [...keys].map(gameInfo).sort((a, b) => gameMeta(b.key).fav - gameMeta(a.key).fav || recentOf(b) - recentOf(a) || a.title.localeCompare(b.title, "pt"));
     const recent = games.find((g) => g.save && g.playable);
     if (recent) continueHero(recent);
     else $("#continue").hidden = true;
@@ -6252,10 +6373,12 @@ void main() {
     return [el("span", { class: "dot" }), el("span", {}, "Ainda sem save")];
   }
   function tile(g) {
+    const m = gameMeta(g.key);
     return el(
       "button",
-      { class: "tile", type: "button", onclick: () => openGameSheet(g.key), "aria-label": g.title },
+      { class: "tile" + (m.fav ? " fav" : ""), type: "button", onclick: () => openGameSheet(g.key), "aria-label": g.title + (m.fav ? ", favorito" : "") },
       coverEl(g),
+      m.fav ? el("span", { class: "tile-star", "aria-hidden": "true" }, "★") : null,
       el("span", { class: "tile-title" }, g.title),
       el("span", { class: "tile-meta" }, saveLine(g))
     );
@@ -6275,7 +6398,7 @@ void main() {
         { class: "continue-body" },
         el("p", { class: "continue-kicker" }, "Continuar jogando"),
         el("h2", { class: "continue-title" }, g.title),
-        el("p", { class: "continue-meta" }, `Salvo ${ago(g.save.at)} no ${g.save.device || "outro aparelho"}`),
+        el("p", { class: "continue-meta" }, `Salvo ${ago(g.save.at)} no ${g.save.device || "outro aparelho"}` + (gameMeta(g.key).ms >= 6e4 ? ` · ${fmtPlay(gameMeta(g.key).ms)} de jogo` : "")),
         el("button", { class: "btn primary", type: "button", onclick: () => play(g.key) }, busy.get(g.key) || "Continuar")
       )
     );
@@ -7417,8 +7540,8 @@ Content-Type: ${type}\r
       } catch (e) {
       }
     }
-    function tick(t) {
-      requestAnimationFrame(tick);
+    function tick2(t) {
+      requestAnimationFrame(tick2);
       if (!$("#player").hidden || !$("#screen").hidden || t - last < 60) return;
       last = t;
       let pad = null;
@@ -7442,7 +7565,7 @@ Content-Type: ${type}\r
       }
       was = now;
     }
-    if (navigator.getGamepads) requestAnimationFrame(tick);
+    if (navigator.getGamepads) requestAnimationFrame(tick2);
     window.addEventListener("gamepadconnected", () => {
       if ($("#player").hidden && !document.activeElement.matches("button")) move(0);
     });

@@ -1,5 +1,6 @@
 import { cloud, getSaveDoc, googleAvailable, isGoogle, writeCloud } from "../cloud.js";
 import { dialog } from "./dialogs.js";
+import { gameMeta } from "../meta.js";
 import { showConnect } from "../connect.js";
 import { addTile, continueHero, gameInfo, roms, tile } from "../library.js";
 import { closeSheets, fillGameSheet, sheetKey } from "./sheets.js";
@@ -68,8 +69,10 @@ function render() {
   if (welcome) return;
   // library
   const keys = new Set([...roms.keys(), ...cloud.docs.keys(), ...cloud.roms.keys()]);
+  // favoritos primeiro; depois o jogado/salvo mais recente
+  const recentOf = (g) => Math.max((g.save && g.save.at) || 0, gameMeta(g.key).lastPlayed || 0);
   const games = [...keys].map(gameInfo)
-    .sort((a, b) => ((b.save && b.save.at) || 0) - ((a.save && a.save.at) || 0) || a.title.localeCompare(b.title, "pt"));
+    .sort((a, b) => (gameMeta(b.key).fav - gameMeta(a.key).fav) || recentOf(b) - recentOf(a) || a.title.localeCompare(b.title, "pt"));
   const recent = games.find((g) => g.save && g.playable);
   if (recent) continueHero(recent);
   else $("#continue").hidden = true;

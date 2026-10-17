@@ -6,6 +6,8 @@ import { pickRom, pickSav } from "./pickers.js";
 import { pickCover, renameGame } from "./rename-cover.js";
 import { $, $$, ago, el } from "../util.js";
 import { listStates } from "./states.js";
+import { fmtPlay, gameMeta, toggleFav } from "../meta.js";
+import { render } from "./screens.js";
 
 /* ---------------- sheets ---------------- */
 let sheetKey = null;
@@ -39,6 +41,7 @@ const ICONS = {
   sound: '<path d="M4 9h4l5-4v14l-5-4H4z"/><path d="M17 9a4 4 0 0 1 0 6"/>',
   mute: '<path d="M4 9h4l5-4v14l-5-4H4z"/><path d="m17 10 4 4M21 10l-4 4"/>',
   sliders: '<path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/>',
+  star: '<path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1 6.2L12 17.3 6.5 20.2l1-6.2L3 9.6l6.2-.9z"/>',
   restart: '<path d="M4 4v6h6"/><path d="M5.5 15a8 8 0 1 0 1-8.5L4 10"/>',
 };
 function sheetAction(icon, label, fn, danger) {
@@ -61,6 +64,8 @@ function fillGameSheet(key) {
       : cloud.db ? [el("span", { class: "dot" }), "Ainda sem save na nuvem"] : [el("span", { class: "dot warn" }), "Save só neste aparelho"]),
     el("div", { class: "sync-line" }, g.crom ? [el("span", { class: "dot ok" }), "ROM na nuvem, abre em qualquer aparelho"]
       : g.rom ? [el("span", { class: "dot" }), cloud.db ? "ROM só neste aparelho" : "ROM neste aparelho"] : [el("span", { class: "dot warn" }), "A ROM não está neste aparelho"]));
+  const meta = gameMeta(key);
+  if (meta.ms >= 60000) status.append(el("div", { class: "sync-line" }, el("span", { class: "dot ok" }), `Tempo de jogo: ${fmtPlay(meta.ms)}`));
   // estados salvos deste jogo (ficam neste aparelho)
   listStates(key).then((items) => {
     if (!items.length || sheetKey !== key) return;
@@ -78,6 +83,7 @@ function fillGameSheet(key) {
       pickRom();
     } }, "Adicionar a ROM neste aparelho");
   const acts = el("div", { class: "gs-actions" });
+  acts.append(sheetAction("star", meta.fav ? "Tirar dos favoritos" : "Favoritar", () => { toggleFav(key); fillGameSheet(key); render(); }));
   if (g.rom && !g.crom && cloud.db && !working) acts.append(sheetAction("cloud", `Guardar a ROM no ${cloudName()}`, () => uploadRom(g.rom)));
   acts.append(sheetAction("image", "Trocar capa", () => pickCover(key)));
   acts.append(sheetAction("edit", "Renomear", () => renameGame(key)));
@@ -89,7 +95,7 @@ function fillGameSheet(key) {
   acts.append(sheetAction("trash", "Apagar jogo (ROM, save e progresso)", async () => { if (await confirmDeleteGame(key, g.title, true)) closeSheets(); }, true));
   sh.replaceChildren(el("div", { class: "sheet-grip", "aria-hidden": "true" }),
     el("div", { class: "sheet-body" },
-      el("div", { class: "gs-head" }, coverEl(g), el("div", {}, el("h2", { class: "gs-title", id: "gsTitle" }, g.title), el("p", { class: "gs-sub" }, [g.sys, g.code].filter(Boolean).join(" · ")))),
+      el("div", { class: "gs-head" }, coverEl(g), el("div", {}, el("h2", { class: "gs-title", id: "gsTitle" }, (meta.fav ? "★ " : "") + g.title), el("p", { class: "gs-sub" }, [g.sys, g.code].filter(Boolean).join(" · ")))),
       el("div", { class: "gs-play" }, playBtn), status, acts));
 }
 

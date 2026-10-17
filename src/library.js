@@ -7,6 +7,7 @@ import { pickRom } from "./ui/pickers.js";
 import { render } from "./ui/screens.js";
 import { openGameSheet } from "./ui/sheets.js";
 import { $, ago, el } from "./util.js";
+import { fmtPlay, gameMeta } from "./meta.js";
 
 /* ---------------- library ---------------- */
 let roms = new Map();
@@ -176,8 +177,10 @@ function saveLine(g) {
   return [el("span", { class: "dot" }), el("span", {}, "Ainda sem save")];
 }
 function tile(g) {
-  return el("button", { class: "tile", type: "button", onclick: () => openGameSheet(g.key), "aria-label": g.title },
-    coverEl(g), el("span", { class: "tile-title" }, g.title), el("span", { class: "tile-meta" }, saveLine(g)));
+  const m = gameMeta(g.key);
+  return el("button", { class: "tile" + (m.fav ? " fav" : ""), type: "button", onclick: () => openGameSheet(g.key), "aria-label": g.title + (m.fav ? ", favorito" : "") },
+    coverEl(g), m.fav ? el("span", { class: "tile-star", "aria-hidden": "true" }, "★") : null,
+    el("span", { class: "tile-title" }, g.title), el("span", { class: "tile-meta" }, saveLine(g)));
 }
 function addTile() {
   const plus = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -191,7 +194,7 @@ function continueHero(g) {
     el("div", { class: "continue-body" },
       el("p", { class: "continue-kicker" }, "Continuar jogando"),
       el("h2", { class: "continue-title" }, g.title),
-      el("p", { class: "continue-meta" }, `Salvo ${ago(g.save.at)} no ${g.save.device || "outro aparelho"}`),
+      el("p", { class: "continue-meta" }, `Salvo ${ago(g.save.at)} no ${g.save.device || "outro aparelho"}` + (gameMeta(g.key).ms >= 60000 ? ` · ${fmtPlay(gameMeta(g.key).ms)} de jogo` : "")),
       el("button", { class: "btn primary", type: "button", onclick: () => play(g.key) }, busy.get(g.key) || "Continuar")));
   sec.hidden = false;
 }
