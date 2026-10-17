@@ -442,6 +442,12 @@ button { cursor: pointer; }
 #pad.local.land .pad-ff { grid-area: ext; justify-self: center; }
 #pad.local.land #padMenu { grid-area: ext2; justify-self: center; }
 #player.show-ejs .ejs_menu_bar { display: flex !important; }
+/* modo console na outra tela (TV, notebook): só o jogo, na tela toda; quem manda é o celular */
+#player.guest .pbar, #player.guest .ejs_menu_bar, #player.guest .ejs_virtualGamepad_parent, #player.guest .ejs_virtualGamepad_open, #player.guest #pad { display: none !important; }
+#player.guest #game { flex: 1 1 auto; width: 100vw; height: 100vh; padding: 0; }
+#game.remote-game { position: relative; }
+#game.remote-game > * { visibility: hidden; }
+#game.remote-game::after { content: "O jogo está na outra tela"; position: absolute; inset: 0; display: grid; place-items: center; color: #9aa0b8; font-weight: 600; background: #000; }
 @media (prefers-reduced-motion: no-preference) { .sheet:not([hidden]) { animation: sheet-up 0.22s ease-out; } @keyframes sheet-up { from { transform: translateY(40px); opacity: 0.4; } } }
 .sheet-grip { width: 40px; height: 4px; border-radius: 2px; background: var(--line); margin: 4px auto 12px; }
 .sheet-body { display: grid; gap: 16px; }
@@ -724,9 +730,9 @@ body { margin: 0; }
 
 <div id="dialogRoot"></div>
 
-<script src="config.js?v=20261017180808"></script>
-<script src="vendor/lang-pt-BR.js?v=20261017180808"></script>
+<script src="config.js?v=20261017184518"></script>
+<script src="vendor/lang-pt-BR.js?v=20261017184518"></script>
 <script src="vendor/qrcode.js"></script>
-<script src="app.js?v=20261017180808"></script>
+<script src="app.js?v=20261017184518"></script>
 </body>
 </html>

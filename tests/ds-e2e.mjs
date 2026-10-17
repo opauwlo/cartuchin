@@ -39,7 +39,9 @@ const base = `http://127.0.0.1:${server.address().port}/`;
 
 const browser = await chromium.launch({
   executablePath: process.env.CHROMIUM_PATH || undefined,
-  args: ["--enable-unsafe-swiftshader", "--use-gl=angle", "--use-angle=swiftshader", "--autoplay-policy=no-user-gesture-required", "--allow-loopback-in-peer-connection"],
+  args: ["--enable-unsafe-swiftshader", "--use-gl=angle", "--use-angle=swiftshader", "--autoplay-policy=no-user-gesture-required", "--allow-loopback-in-peer-connection",
+    // celular e TV são aparelhos diferentes, os dois em primeiro plano: aqui nenhuma página fica em segundo plano
+    "--disable-background-timer-throttling", "--disable-renderer-backgrounding", "--disable-backgrounding-occluded-windows"],
 });
 const ctx = await browser.newContext({ viewport: { width: 412, height: 860 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
 await ctx.route(/^https:\/\//, (r) => r.fulfill({ status: 404, body: "" }));   // sem fontes, Google, GitHub

@@ -242,7 +242,9 @@ async function consoleTo(code) {
     const prevStop = c.stop;
     c.stop = () => { prevStop(); window.removeEventListener("ds-cast-layout", sendLayout); };
   }
-  player.remote = remoteEmu(c, emu);   // menu, estados e velocidade passam a mexer no jogo de lá
+  player.remote = remoteEmu(c, emu);
+  // GBA: a imagem daqui ficou parada (o jogo está lá); um aviso no lugar
+  $("#game").classList.toggle("remote-game", !emu.isDs);   // menu, estados e velocidade passam a mexer no jogo de lá
   window.__castCap = 1;
   window.dispatchEvent(new Event("resize"));
   if (emu.relayout) emu.relayout();   // DS: este celular passa a mostrar só a tela de baixo
@@ -319,6 +321,7 @@ async function backToPhone(c, state, msg) {
   cast.console = null;
   cast.consoleSend = null;
   player.remote = null;
+  $("#game").classList.remove("remote-game");
   if (c.restoreCfg) c.restoreCfg();
   if (c.stop) c.stop();
   const emu = player.emu, gm = emu.gameManager;

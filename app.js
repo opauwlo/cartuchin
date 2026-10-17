@@ -644,6 +644,7 @@
       };
     }
     player.remote = remoteEmu(c, emu);
+    $("#game").classList.toggle("remote-game", !emu.isDs);
     window.__castCap = 1;
     window.dispatchEvent(new Event("resize"));
     if (emu.relayout) emu.relayout();
@@ -765,6 +766,7 @@
     cast.console = null;
     cast.consoleSend = null;
     player.remote = null;
+    $("#game").classList.remove("remote-game");
     if (c.restoreCfg) c.restoreCfg();
     if (c.stop) c.stop();
     const emu = player.emu, gm = emu.gameManager;
@@ -5799,6 +5801,7 @@ void main() {
     const isDs = rom.system === "nds";
     const resume = given || isDs && !dsStatesOk ? null : await findResumeState(key, start);
     player.guest = !!given;
+    $("#player").classList.toggle("guest", !!given);
     player.rom = rom;
     player.key = key;
     player.meta = { title: rom.title, system: rom.system, code: rom.code };

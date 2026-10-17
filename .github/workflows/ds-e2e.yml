@@ -1,4 +1,4 @@
-name: Teste do DS (jogo, save state, segunda tela)
+name: Teste do DS e do GBA (jogo, save state, segunda tela)
 
 # Roda quando muda algo do app ou do core publicado. Uma execução por vez: um push novo cancela a anterior.
 on:
@@ -10,6 +10,8 @@ on:
       - "ds/*.js"
       - "ds/*.wasm"
       - "tests/ds-e2e.mjs"
+      - "tests/gba-e2e.mjs"
+      - "tests/make_gba_test_rom.py"
       - ".github/workflows/ds-e2e.yml"
   workflow_dispatch:
 
@@ -20,7 +22,7 @@ concurrency:
 jobs:
   e2e:
     runs-on: ubuntu-24.04
-    timeout-minutes: 12
+    timeout-minutes: 16
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -28,6 +30,8 @@ jobs:
           node-version: 22
       - run: npm install --no-audit --no-fund
       - run: npx playwright install --with-deps chromium
+      - name: GBA (jogo, botões, save, estados, segunda tela pixels e console)
+        run: node tests/gba-e2e.mjs
       - name: Core estável 1x (segunda tela em todos os formatos e arrumações)
         run: node tests/ds-e2e.mjs
       - name: Core de teste + JIT 6x (segunda tela no limite)

@@ -359,6 +359,7 @@ async function play(key, given = null) {
   // DS: retomar do save state fica desligado enquanto o load state do core não está confiável
   const resume = given || (isDs && !dsStatesOk) ? null : await findResumeState(key, start);
   player.guest = !!given;
+  $("#player").classList.toggle("guest", !!given);
   player.rom = rom;
   player.key = key;
   player.meta = { title: rom.title, system: rom.system, code: rom.code };
