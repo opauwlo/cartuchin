@@ -100,6 +100,7 @@ button { cursor: pointer; }
 .choice { text-align: left; display: grid; gap: 2px; justify-items: start; }
 .choice small { font-weight: 400; opacity: 0.85; }
 .toast { position: fixed; left: 50%; bottom: calc(18px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 9px 14px; border-radius: 10px; z-index: 300001; max-width: calc(100% - 32px); font-size: 0.9rem; }
+.toast.cast-status { top: calc(14px + env(safe-area-inset-top, 0px)); bottom: auto; text-align: center; }
 .toast-action { display: flex; align-items: center; gap: 12px; width: max-content; }
 .toast-btn { background: transparent; border: 1px solid currentColor; color: inherit; border-radius: 8px; padding: 5px 10px; font-weight: 600; white-space: nowrap; }
 @media (prefers-reduced-motion: no-preference) { .toast { animation: rise 0.18s ease-out; } @keyframes rise { from { transform: translate(-50%, 8px); opacity: 0; } } }
@@ -723,9 +724,9 @@ body { margin: 0; }
 
 <div id="dialogRoot"></div>
 
-<script src="config.js?v=20261017163535"></script>
-<script src="vendor/lang-pt-BR.js?v=20261017163535"></script>
+<script src="config.js?v=20261017171355"></script>
+<script src="vendor/lang-pt-BR.js?v=20261017171355"></script>
 <script src="vendor/qrcode.js"></script>
-<script src="app.js?v=20261017163535"></script>
+<script src="app.js?v=20261017171355"></script>
 </body>
 </html>

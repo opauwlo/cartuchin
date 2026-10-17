@@ -66,19 +66,26 @@ function receiver(onJson, onFile, onProgress) {
       if (j.fileEnd && cur) {   // fim de um arquivo comprimido (tamanho só se sabe no fim)
         const c = cur;
         cur = null;
-        const raw = new Blob(c.parts).stream().pipeThrough(new DecompressionStream("gzip"));
-        await onFile(c.name, new Uint8Array(await new Response(raw).arrayBuffer()));
+        await c.writer.close();
+        await onFile(c.name, await c.out);   // Blob (pode ficar fora da memória do JS)
         return;
       }
       if (j.file) {
         cur = { name: j.file, size: j.size, gz: !!j.gz, parts: [], got: 0, shown: 0 };
+        if (cur.gz) {
+          // descomprime enquanto chega: nunca junta a ROM comprimida inteira na memória
+          const dz = new DecompressionStream("gzip");
+          cur.writer = dz.writable.getWriter();
+          cur.out = new Response(dz.readable).blob();
+        }
         if (!j.size) { cur = null; await onFile(j.file, new Uint8Array(0)); }
       } else await onJson(j);
       return;
     }
     if (!cur) return;
-    cur.parts.push(data);
     cur.got += data.byteLength;
+    if (cur.gz) await cur.writer.write(new Uint8Array(data));
+    else cur.parts.push(data);
     if (onProgress && !cur.gz && cur.got - cur.shown > (2 << 20)) { cur.shown = cur.got; onProgress(cur.name, cur.got / cur.size); }
     if (onProgress && cur.gz && cur.got - cur.shown > (2 << 20)) { cur.shown = cur.got; onProgress(cur.name, -cur.got); }
     if (!cur.gz && cur.got >= cur.size) {
@@ -105,6 +112,13 @@ const waitOpen = (dc, ms) => new Promise((ok, no) => {
 });
 
 /* ================= celular ================= */
+/* aviso fixo de cada etapa (o botão "Conectando…" some com o celular deitado) */
+let statusEl = null;
+function say(text) {
+  if (!text) { if (statusEl) statusEl.remove(); statusEl = null; return; }
+  if (!statusEl) { statusEl = document.createElement("div"); statusEl.className = "toast cast-status"; statusEl.setAttribute("role", "status"); document.body.append(statusEl); }
+  statusEl.textContent = text;
+}
 /** liga numa segunda tela: tenta o modo console; se a outra tela não souber, vai de vídeo */
 async function connectScreen(code) {
   const emu = player.emu;
@@ -120,7 +134,8 @@ async function consoleTo(code) {
   if (!rom || !rom.blob) return "video";
   stopCast();
   setCastUi("wait");
-  const btn = $("#castBtn");
+  say("Conectando com a segunda tela…");
+  const btn = { set textContent(t) { say(t); } };
   const wasPaused = emu.paused;
   try { emu.pause(); } catch (e) {}
   const resumeHere = () => { if (!wasPaused) { try { emu.play(); } catch (e) {} } };
@@ -140,6 +155,7 @@ async function consoleTo(code) {
   cast.code = code;
   const c = cast.console = { pc, ctl, files, scr, ending: false, onEnd: null, started: null, need: null };
   const fail = (msg, video) => {
+    say(null);
     if (cast.console === c) cast.console = null;
     stopCast(video ? undefined : msg);
     resumeHere();
@@ -155,6 +171,7 @@ async function consoleTo(code) {
       setTimeout(() => { stop(); resolve(null); }, 20000);
       sig.send("oferta", { id, sdp: pc.localDescription.toJSON(), from: device.name, console: { key: player.key, title: rom.title } });
     });
+    if (answer) say("Conectado. Preparando o jogo…");
     if (!answer) return fail("A segunda tela não respondeu. Confira o código e se ela está na tela de espera.");
     if (!answer.console) return fail(null, true);   // tela de versão antiga: só vídeo
     await pc.setRemoteDescription(answer.sdp);
@@ -167,6 +184,12 @@ async function consoleTo(code) {
   files.onmessage = receiver(async (j) => {
     if ("need" in j && c.need) c.need(j.need);
     if (j.started && c.started) c.started(true);
+    // a outra tela não aguenta emular em velocidade cheia: volta e transmite a imagem daqui
+    if (j.slow && cast.console === c && !c.ending) {
+      say(`A outra tela está lenta para rodar o jogo (${j.slow}%). Trocando: o jogo roda aqui e a imagem vai para lá…`);
+      // a outra tela recarrega e volta a esperar com o mesmo código: dá um tempo para ela
+      endConsole(true).then(() => sleep(6000)).then(() => { say(null); castTo(code); });
+    }
     if (j.failed && c.started) c.started(false);
   }, async (name, u8) => {
     if (name === "sav" && u8.length) { player.remoteSav = u8; flush({ quiet: true }); }
@@ -191,12 +214,11 @@ async function consoleTo(code) {
     files.send(JSON.stringify({ hello: { key: player.key, romId: player.key + ":" + rom.blob.size, rom: meta } }));
     const need = await Promise.race([got, sleep(10000).then(() => { throw new Error("sem resposta"); })]);
     if (need) {
-      toast("Mandando o jogo para a outra tela (só na primeira vez)…", 3000);
-      const prog = (f) => { btn.textContent = `Enviando ${Math.round(f * 100)}%`; };
+      const prog = (f) => { btn.textContent = `Mandando o jogo para a outra tela: ${Math.round(f * 100)}% (só na primeira vez)`; };
       if (window.CompressionStream) await sendGz(files, "rom", rom.blob, prog);
       else await sendFile(files, "rom", rom.blob, prog);
     }
-    btn.textContent = "Abrindo lá…";
+    btn.textContent = "Abrindo o jogo na outra tela…";
     await sendFile(files, "sav", sav);
     await sendFile(files, "state", state);
     files.send(JSON.stringify({ go: 1 }));
@@ -204,6 +226,7 @@ async function consoleTo(code) {
     if (!ok) return fail("A segunda tela não conseguiu abrir o jogo. Ele continua aqui.");
   } catch (e) { return fail("A transferência para a segunda tela parou no meio. O jogo continua aqui."); }
 
+  say(null);
   // daqui em diante este celular é o controle
   const keys = repeater(ctl), touch = repeater(ctl);
   c.stop = () => { keys.stop(); touch.stop(); };
@@ -219,7 +242,7 @@ async function consoleTo(code) {
   return "ok";
 }
 /** termina: pede o estado à outra tela e continua aqui do mesmo ponto */
-async function endConsole() {
+async function endConsole(quiet = false) {
   const c = cast.console;
   if (!c) return false;
   c.ending = true;
@@ -228,7 +251,7 @@ async function endConsole() {
     try { c.files.send(JSON.stringify({ end: 1 })); } catch (e) { resolve(null); }
     setTimeout(() => resolve(null), 12000);
   });
-  await backToPhone(c, state, state ? "O jogo voltou para o celular." : "A outra tela não respondeu. O jogo voltou pelo último save.");
+  await backToPhone(c, state, quiet ? null : state ? "O jogo voltou para o celular." : "A outra tela não respondeu. O jogo voltou pelo último save.");
   return true;
 }
 async function backToPhone(c, state, msg) {
@@ -282,7 +305,7 @@ async function tvConsole(msg, sig) {
     else if (j.end) finish();
   }, async (name, u8) => {
     if (name === "rom") {
-      rom = new Blob([u8]);
+      rom = u8 instanceof Blob ? u8 : new Blob([u8]);
       await idb.put("pend", "tvrom", { id: info.romId, blob: rom }).catch(() => {});   // próxima vez abre na hora
     } else if (name === "sav") sav = u8;
     else if (name === "state") state = u8;
@@ -321,6 +344,21 @@ async function tvConsole(msg, sig) {
     reply({ started: 1 });
     keepAwake();
     const emu = player.emu, gm = emu.gameManager;
+    // mede a velocidade de verdade (depois de assentar): abaixo de ~90% o som picota e o jogo
+    // fica lento; aí é melhor o celular rodar e mandar a imagem (modo pixels)
+    let noSlow = false;   // teste automático: a máquina de teste é lenta de propósito
+    try { noSlow = localStorage.getItem("cartucho.tvNoSlow") === "1"; } catch (e) {}
+    let force = false;
+    try { force = localStorage.getItem("cartucho.tvForceSlow") === "1"; } catch (e) {}
+    if (force) setTimeout(() => reply({ slow: 40 }), 1000);
+    else if (!noSlow) setTimeout(async () => {
+      if (!live) return;
+      const f0 = emu.frames, t0 = performance.now();
+      await sleep(4000);
+      if (!live || emu.paused || emu.frames == null) return;
+      const pct = Math.round((emu.frames - f0) / ((performance.now() - t0) / 1000) / 59.83 * 100);
+      if (pct < 88) reply({ slow: pct });
+    }, 3000);
     // save novo (o jogo salvou): vai para o celular, que manda para a nuvem
     let lastSav = sav && sav.length ? await sha(sav) : null;
     savTimer = setInterval(async () => {

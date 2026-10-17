@@ -319,6 +319,7 @@ async function createDsEmulator(romBytes, gameName, startSav) {
     play() { emu.paused = false; audio.reset(); acc = 0; },
     pause() { emu.paused = true; },
     setVolume(v) { emu.volume = v; if (audio.gain) audio.gain.gain.value = v; },
+    audioStats: () => ({ ready: audio.ready, fill: Math.round(audio.fill), target: audio.target, underruns: audio.underruns, state: audio.ctx && audio.ctx.state }),
     destroy,
   };
   const gm = emu.gameManager = {
@@ -575,11 +576,14 @@ async function createDsEmulator(romBytes, gameName, startSav) {
       fctx.putImageData(im, 0, 0);
     }
     blit(vctx, shownLocal);
-    if (casting()) {
+    // modo "pixels": os pixels do quadro vão crus para a TV (a imagem em memória, se em 1x)
+    if (emu.onFrame) emu.onFrame(S > 1 && perScreen ? null : img);
+    else if (casting()) {
       if (castGl) castGl.draw(fb, ds.cast, false, S);
       else blit(cctx, ds.cast);
     }
   }
+  emu.fbCanvas = fb;
 
   // ---- toque na tela de baixo ----
   let touchId = null;

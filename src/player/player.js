@@ -439,6 +439,7 @@ async function play(key, given = null) {
 
 async function pullSave(report) {
   if (!player.key || !player.emu || !player.emu.started) return;
+  if (cast.console) { report("O jogo está rodando na outra tela. Saia da segunda tela para carregar um save."); return; }
   if (!cloud.db) {
     report(isGoogle() ? "Reconecte ao Google primeiro (botão no topo da biblioteca)." : "Este aparelho não está conectado à nuvem.");
     return;

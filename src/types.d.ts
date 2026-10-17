@@ -24,7 +24,7 @@ interface Window {
   __tvScreen: any;
   __castOpts: any;
   __castCap: number;
-  __audioTaps: { ctx: AudioContext; local: GainNode; out: MediaStreamAudioDestinationNode | null }[];
+  __audioTaps: { ctx: AudioContext; mix: GainNode; local: GainNode; out: MediaStreamAudioDestinationNode | null; ensureOut: () => MediaStreamAudioDestinationNode | null; connect: (a: AudioNode, b: AudioNode) => void }[];
   __CARTUCHO_LANG: any;
 }
 declare var google: any;

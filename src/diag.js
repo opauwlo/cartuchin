@@ -86,8 +86,9 @@ async function diagLoopback(emu) {
   const stream = emu.canvas.captureStream(60);
   a.addTrack(stream.getVideoTracks()[0], stream);
   const tap = (window.__audioTaps || [])[0];
-  if (tap && tap.out) {
-    const at = tap.out.stream.getAudioTracks()[0];
+  const tapOut = tap && tap.ensureOut ? tap.ensureOut() : null;
+  if (tapOut) {
+    const at = tapOut.stream.getAudioTracks()[0];
     if (at) a.addTrack(at, stream);
   }
   const v = document.createElement("video");

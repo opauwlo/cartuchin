@@ -385,12 +385,17 @@
         if (j.fileEnd && cur) {
           const c = cur;
           cur = null;
-          const raw = new Blob(c.parts).stream().pipeThrough(new DecompressionStream("gzip"));
-          await onFile(c.name, new Uint8Array(await new Response(raw).arrayBuffer()));
+          await c.writer.close();
+          await onFile(c.name, await c.out);
           return;
         }
         if (j.file) {
           cur = { name: j.file, size: j.size, gz: !!j.gz, parts: [], got: 0, shown: 0 };
+          if (cur.gz) {
+            const dz = new DecompressionStream("gzip");
+            cur.writer = dz.writable.getWriter();
+            cur.out = new Response(dz.readable).blob();
+          }
           if (!j.size) {
             cur = null;
             await onFile(j.file, new Uint8Array(0));
@@ -399,8 +404,9 @@
         return;
       }
       if (!cur) return;
-      cur.parts.push(data);
       cur.got += data.byteLength;
+      if (cur.gz) await cur.writer.write(new Uint8Array(data));
+      else cur.parts.push(data);
       if (onProgress && !cur.gz && cur.got - cur.shown > 2 << 20) {
         cur.shown = cur.got;
         onProgress(cur.name, cur.got / cur.size);
@@ -446,6 +452,21 @@
     dc.addEventListener("open", () => ok(), { once: true });
     setTimeout(() => no(new Error("canal não abriu")), ms);
   });
+  var statusEl = null;
+  function say(text) {
+    if (!text) {
+      if (statusEl) statusEl.remove();
+      statusEl = null;
+      return;
+    }
+    if (!statusEl) {
+      statusEl = document.createElement("div");
+      statusEl.className = "toast cast-status";
+      statusEl.setAttribute("role", "status");
+      document.body.append(statusEl);
+    }
+    statusEl.textContent = text;
+  }
   async function connectScreen(code) {
     const emu = player.emu;
     if (!emu || !emu.started) {
@@ -465,7 +486,10 @@
     if (!rom || !rom.blob) return "video";
     stopCast();
     setCastUi("wait");
-    const btn = $("#castBtn");
+    say("Conectando com a segunda tela…");
+    const btn = { set textContent(t) {
+      say(t);
+    } };
     const wasPaused = emu.paused;
     try {
       emu.pause();
@@ -498,6 +522,7 @@
     cast.code = code;
     const c = cast.console = { pc, ctl, files, scr, ending: false, onEnd: null, started: null, need: null };
     const fail = (msg, video) => {
+      say(null);
       if (cast.console === c) cast.console = null;
       stopCast(video ? void 0 : msg);
       resumeHere();
@@ -521,6 +546,7 @@
         }, 2e4);
         sig.send("oferta", { id, sdp: pc.localDescription.toJSON(), from: device.name, console: { key: player.key, title: rom.title } });
       });
+      if (answer) say("Conectado. Preparando o jogo…");
       if (!answer) return fail("A segunda tela não respondeu. Confira o código e se ela está na tela de espera.");
       if (!answer.console) return fail(null, true);
       await pc.setRemoteDescription(answer.sdp);
@@ -537,6 +563,13 @@
     files.onmessage = receiver(async (j) => {
       if ("need" in j && c.need) c.need(j.need);
       if (j.started && c.started) c.started(true);
+      if (j.slow && cast.console === c && !c.ending) {
+        say(`A outra tela está lenta para rodar o jogo (${j.slow}%). Trocando: o jogo roda aqui e a imagem vai para lá…`);
+        endConsole(true).then(() => sleep(6e3)).then(() => {
+          say(null);
+          castTo(code);
+        });
+      }
       if (j.failed && c.started) c.started(false);
     }, async (name, u8) => {
       if (name === "sav" && u8.length) {
@@ -566,14 +599,13 @@
         throw new Error("sem resposta");
       })]);
       if (need) {
-        toast("Mandando o jogo para a outra tela (só na primeira vez)…", 3e3);
         const prog = (f) => {
-          btn.textContent = `Enviando ${Math.round(f * 100)}%`;
+          btn.textContent = `Mandando o jogo para a outra tela: ${Math.round(f * 100)}% (só na primeira vez)`;
         };
         if (window.CompressionStream) await sendGz(files, "rom", rom.blob, prog);
         else await sendFile(files, "rom", rom.blob, prog);
       }
-      btn.textContent = "Abrindo lá…";
+      btn.textContent = "Abrindo o jogo na outra tela…";
       await sendFile(files, "sav", sav);
       await sendFile(files, "state", state);
       files.send(JSON.stringify({ go: 1 }));
@@ -582,6 +614,7 @@
     } catch (e) {
       return fail("A transferência para a segunda tela parou no meio. O jogo continua aqui.");
     }
+    say(null);
     const keys = repeater(ctl), touch = repeater(ctl);
     c.stop = () => {
       keys.stop();
@@ -598,7 +631,7 @@
     toast("O jogo está rodando na outra tela. Este celular é o controle.", 3500);
     return "ok";
   }
-  async function endConsole() {
+  async function endConsole(quiet = false) {
     const c = cast.console;
     if (!c) return false;
     c.ending = true;
@@ -611,7 +644,7 @@
       }
       setTimeout(() => resolve(null), 12e3);
     });
-    await backToPhone(c, state, state ? "O jogo voltou para o celular." : "A outra tela não respondeu. O jogo voltou pelo último save.");
+    await backToPhone(c, state, quiet ? null : state ? "O jogo voltou para o celular." : "A outra tela não respondeu. O jogo voltou pelo último save.");
     return true;
   }
   async function backToPhone(c, state, msg) {
@@ -682,7 +715,7 @@
       else if (j.end) finish();
     }, async (name, u8) => {
       if (name === "rom") {
-        rom = new Blob([u8]);
+        rom = u8 instanceof Blob ? u8 : new Blob([u8]);
         await idb.put("pend", "tvrom", { id: info.romId, blob: rom }).catch(() => {
         });
       } else if (name === "sav") sav = u8;
@@ -743,6 +776,25 @@
       reply({ started: 1 });
       keepAwake();
       const emu = player.emu, gm = emu.gameManager;
+      let noSlow = false;
+      try {
+        noSlow = localStorage.getItem("cartucho.tvNoSlow") === "1";
+      } catch (e) {
+      }
+      let force = false;
+      try {
+        force = localStorage.getItem("cartucho.tvForceSlow") === "1";
+      } catch (e) {
+      }
+      if (force) setTimeout(() => reply({ slow: 40 }), 1e3);
+      else if (!noSlow) setTimeout(async () => {
+        if (!live) return;
+        const f0 = emu.frames, t0 = performance.now();
+        await sleep(4e3);
+        if (!live || emu.paused || emu.frames == null) return;
+        const pct = Math.round((emu.frames - f0) / ((performance.now() - t0) / 1e3) / 59.83 * 100);
+        if (pct < 88) reply({ slow: pct });
+      }, 3e3);
       let lastSav = sav && sav.length ? await sha(sav) : null;
       savTimer = setInterval(async () => {
         try {
@@ -810,6 +862,413 @@
     }
     player.leaving = true;
     setTimeout(() => location.reload(), 300);
+  }
+
+  // src/cast/pixels.js
+  var LAYOUT = { top: 0, both: 1, side: 2 };
+  var pixWorkerSource = () => {
+    const self_ = self;
+    let prev = null, seq = 0, wantKey = true, w = 0, h = 0, sinceKey = 0, busy2 = false, next = null;
+    const T = 8;
+    async function deflate(u8) {
+      const cs = new CompressionStream("deflate-raw");
+      const wr = cs.writable.getWriter();
+      wr.write(u8);
+      wr.close();
+      return new Uint8Array(await new Response(cs.readable).arrayBuffer());
+    }
+    function to555(d, n) {
+      const out = new Uint16Array(n);
+      for (let i = 0, j = 0; i < n; i++, j += 4) out[i] = d[j] >> 3 << 10 | d[j + 1] >> 3 << 5 | d[j + 2] >> 3;
+      return out;
+    }
+    let frames = 0, empty = 0;
+    async function process(f) {
+      const t0 = performance.now();
+      frames++;
+      const n = f.w * f.h, cur = to555(f.data, n);
+      if (!prev || f.w !== w || f.h !== h || ++sinceKey > 240) wantKey = true;
+      w = f.w;
+      h = f.h;
+      let type, body;
+      if (wantKey) {
+        type = 1;
+        body = new Uint8Array(cur.buffer);
+        wantKey = false;
+        sinceKey = 0;
+      } else {
+        const tx = w / T, ty = h / T, changed = [];
+        for (let by = 0; by < ty; by++) for (let bx = 0; bx < tx; bx++) {
+          let diff = false;
+          for (let y = 0; y < T && !diff; y++) {
+            const o = (by * T + y) * w + bx * T;
+            for (let x = 0; x < T; x++) if (cur[o + x] !== prev[o + x]) {
+              diff = true;
+              break;
+            }
+          }
+          if (diff) changed.push(by * tx + bx);
+        }
+        if (!changed.length) {
+          prev = cur;
+          empty++;
+          return;
+        }
+        type = 2;
+        const out = new Uint16Array(1 + changed.length + changed.length * T * T);
+        out[0] = changed.length;
+        out.set(changed, 1);
+        let p = 1 + changed.length;
+        for (const t of changed) {
+          const bx = t % tx, by = t / tx | 0;
+          for (let y = 0; y < T; y++) {
+            const o = (by * T + y) * w + bx * T;
+            out.set(cur.subarray(o, o + T), p);
+            p += T;
+          }
+        }
+        body = new Uint8Array(out.buffer);
+      }
+      prev = cur;
+      const z = await deflate(body);
+      const pkt = new Uint8Array(10 + z.length), dv = new DataView(pkt.buffer);
+      pkt[0] = type;
+      pkt[1] = f.layout;
+      dv.setUint32(2, ++seq, true);
+      dv.setUint16(6, w, true);
+      dv.setUint16(8, h, true);
+      pkt.set(z, 10);
+      self_.postMessage({ pkt: pkt.buffer, key: type === 1, bytes: pkt.length, ms: performance.now() - t0, frames, empty }, [pkt.buffer]);
+    }
+    async function run(f) {
+      if (busy2) {
+        next = f;
+        return;
+      }
+      busy2 = true;
+      try {
+        await process(f);
+      } catch (e) {
+        self_.postMessage({ error: String(e) });
+      }
+      busy2 = false;
+      if (next) {
+        const g = next;
+        next = null;
+        run(g);
+      }
+    }
+    async function readTrack(readable, fw, fh) {
+      const oc = new OffscreenCanvas(fw, fh), g = oc.getContext("2d", { alpha: false, willReadFrequently: true });
+      g.imageSmoothingEnabled = false;
+      const reader = readable.getReader();
+      for (; ; ) {
+        const { value: frame, done } = await reader.read();
+        if (done) break;
+        if (busy2) {
+          frame.close();
+          continue;
+        }
+        g.drawImage(frame, 0, 0, fw, fh);
+        frame.close();
+        run({ w: fw, h: fh, layout: 3, data: g.getImageData(0, 0, fw, fh).data });
+      }
+    }
+    self_.onmessage = ({ data }) => {
+      if (data.cmd === "frame") run(data.f);
+      else if (data.cmd === "key") wantKey = true;
+      else if (data.cmd === "track") readTrack(data.readable, data.w, data.h);
+    };
+  };
+  var TAP_WORKLET = `class PixTap extends AudioWorkletProcessor {
+  constructor() { super(); this.buf = new Int16Array(960); this.n = 0; }
+  process(inputs) {
+    const i = inputs[0];
+    if (!i || !i.length) return true;
+    const l = i[0], r = i[1] || i[0];
+    for (let k = 0; k < l.length; k++) {
+      this.buf[this.n++] = Math.max(-1, Math.min(1, l[k])) * 32767;
+      this.buf[this.n++] = Math.max(-1, Math.min(1, r[k])) * 32767;
+      if (this.n === this.buf.length) { this.port.postMessage(this.buf.buffer, [this.buf.buffer]); this.buf = new Int16Array(960); this.n = 0; }
+    }
+    return true;
+  }
+}
+registerProcessor("pix-tap", PixTap);`;
+  var PLAY_WORKLET = `class PixPlay extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    this.cap = 48000 * 2; this.L = new Float32Array(this.cap); this.R = new Float32Array(this.cap);
+    this.w = 0; this.r = 0; this.rate = 48000; this.prime = true; this.under = 0;
+    this.port.onmessage = (e) => {
+      const d = new Int16Array(e.data.d); this.rate = e.data.rate;
+      for (let k = 0; k < d.length; k += 2) { const p = this.w % this.cap; this.L[p] = d[k] / 32768; this.R[p] = d[k + 1] / 32768; this.w++; }
+      const target = this.rate * 0.05;
+      if (this.w - this.r > target + this.rate * 0.08) this.r = this.w - target;
+      if (this.w - this.r > this.cap - 1024) this.r = this.w - target;
+    };
+  }
+  process(_in, outputs) {
+    const o = outputs[0], l = o[0], r = o[1] || o[0], step = this.rate / sampleRate, target = this.rate * 0.05;
+    if (this.prime && this.w - this.r >= target * 0.5) this.prime = false;
+    for (let k = 0; k < l.length; k++) {
+      if (this.prime || this.w - this.r < 2) { l[k] = 0; r[k] = 0; if (!this.prime) { this.prime = true; this.under++; } continue; }
+      const i = Math.floor(this.r), f = this.r - i, a = i % this.cap, b = (i + 1) % this.cap;
+      l[k] = this.L[a] + (this.L[b] - this.L[a]) * f;
+      r[k] = this.R[a] + (this.R[b] - this.R[a]) * f;
+      this.r += step;
+    }
+    return true;
+  }
+}
+registerProcessor("pix-play", PixPlay);`;
+  async function addWorklet(ctx, src) {
+    const url = URL.createObjectURL(new Blob([src], { type: "application/javascript" }));
+    try {
+      await ctx.audioWorklet.addModule(url);
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }
+  async function startPixels({ pix, snd, emu, isDs, layout, onSent }) {
+    const worker = new Worker(URL.createObjectURL(new Blob([`(${pixWorkerSource.toString()})();`], { type: "text/javascript" })));
+    const stat = { sent: 0, dropped: 0, bytes: 0, keys: 0, ms: 0, frames: 0, empty: 0, offered: 0 };
+    worker.onmessage = ({ data }) => {
+      if (!data.pkt) return;
+      stat.ms = stat.ms ? stat.ms * 0.9 + data.ms * 0.1 : data.ms;
+      stat.frames = data.frames;
+      stat.empty = data.empty;
+      if (pix.readyState !== "open" || pix.bufferedAmount > 262144) {
+        stat.dropped++;
+        worker.postMessage({ cmd: "key" });
+        return;
+      }
+      try {
+        pix.send(data.pkt);
+        stat.sent++;
+        stat.bytes += data.bytes;
+        if (data.key) stat.keys++;
+      } catch (e) {
+        worker.postMessage({ cmd: "key" });
+      }
+    };
+    const stops = [() => worker.terminate()];
+    if (isDs) {
+      let small = null, sg = null;
+      emu.onFrame = (im) => {
+        if (onSent) onSent();
+        stat.offered++;
+        let data;
+        if (im && im.width === 256) data = im.data.slice();
+        else {
+          if (!small) {
+            small = document.createElement("canvas");
+            small.width = 256;
+            small.height = 384;
+            sg = small.getContext("2d", { alpha: false, willReadFrequently: true });
+            sg.imageSmoothingEnabled = false;
+          }
+          sg.drawImage(emu.fbCanvas, 0, 0, 256, 384);
+          data = sg.getImageData(0, 0, 256, 384).data;
+        }
+        worker.postMessage({ cmd: "frame", f: { w: 256, h: 384, layout: LAYOUT[layout()] ?? 0, data } }, [data.buffer]);
+      };
+      stops.push(() => {
+        emu.onFrame = null;
+      });
+    } else {
+      const track = emu.canvas.captureStream(60).getVideoTracks()[0];
+      stops.push(() => track.stop());
+      if (window.MediaStreamTrackProcessor) {
+        const readable = new window.MediaStreamTrackProcessor({ track }).readable;
+        worker.postMessage({ cmd: "track", readable, w: 240, h: 160 }, [readable]);
+      } else {
+        const c = document.createElement("canvas");
+        c.width = 240;
+        c.height = 160;
+        const g = c.getContext("2d", { alpha: false, willReadFrequently: true });
+        g.imageSmoothingEnabled = false;
+        let on = true;
+        const loop = () => {
+          if (!on) return;
+          requestAnimationFrame(loop);
+          try {
+            g.drawImage(emu.canvas, 0, 0, 240, 160);
+          } catch (e) {
+            return;
+          }
+          const data = g.getImageData(0, 0, 240, 160).data;
+          if (onSent) onSent();
+          worker.postMessage({ cmd: "frame", f: { w: 240, h: 160, layout: 3, data } }, [data.buffer]);
+        };
+        loop();
+        stops.push(() => {
+          on = false;
+        });
+      }
+    }
+    const tap = (window.__audioTaps || [])[0];
+    if (tap && tap.ctx.audioWorklet && snd) {
+      try {
+        await addWorklet(tap.ctx, TAP_WORKLET);
+        const node = new AudioWorkletNode(tap.ctx, "pix-tap", { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2] });
+        const sink = tap.ctx.createGain();
+        sink.gain.value = 0;
+        tap.connect(tap.mix, node);
+        tap.connect(node, sink);
+        tap.connect(sink, tap.ctx.destination);
+        const rate = tap.ctx.sampleRate;
+        node.port.onmessage = (e) => {
+          if (snd.readyState !== "open" || snd.bufferedAmount > 65536) return;
+          const pkt = new Uint8Array(4 + e.data.byteLength);
+          new DataView(pkt.buffer).setUint32(0, rate, true);
+          pkt.set(new Uint8Array(e.data), 4);
+          try {
+            snd.send(pkt.buffer);
+          } catch (x) {
+          }
+        };
+        stops.push(() => {
+          try {
+            node.disconnect();
+            sink.disconnect();
+            tap.mix.disconnect(node);
+          } catch (e) {
+          }
+        });
+      } catch (e) {
+        console.warn("[pixels] som", e);
+      }
+    }
+    return {
+      stat,
+      key: () => worker.postMessage({ cmd: "key" }),
+      stop: () => {
+        for (const s of stops) {
+          try {
+            s();
+          } catch (e) {
+          }
+        }
+      }
+    };
+  }
+  function receivePixels(channel, tv, askKey) {
+    const canvas = (
+      /** @type {HTMLCanvasElement} */
+      document.querySelector("#scrCanvas")
+    );
+    const g = canvas.getContext("2d", { alpha: false });
+    canvas.hidden = false;
+    document.querySelector("#scrVideo").hidden = true;
+    channel.binaryType = "arraybuffer";
+    let w = 0, h = 0, cur = null, img = null, last = 0, waitKey = true, askedAt = 0, queued = 0, chain = Promise.resolve();
+    const ask = () => {
+      const now = performance.now();
+      if (now - askedAt > 250) {
+        askedAt = now;
+        askKey();
+      }
+    };
+    async function inflate(u8) {
+      const ds2 = new DecompressionStream("deflate-raw");
+      const wr = ds2.writable.getWriter();
+      wr.write(u8);
+      wr.close();
+      return new Uint8Array(await new Response(ds2.readable).arrayBuffer());
+    }
+    const X = new Uint8Array(32).map((_, i) => i << 3 | i >> 2);
+    function paint(idx, c) {
+      const o = idx * 4, d = img.data;
+      d[o] = X[c >> 10 & 31];
+      d[o + 1] = X[c >> 5 & 31];
+      d[o + 2] = X[c & 31];
+      d[o + 3] = 255;
+    }
+    async function handle(buf) {
+      const b = new Uint8Array(buf), dv = new DataView(buf);
+      const type = b[0], layout = b[1], seq = dv.getUint32(2, true), fw = dv.getUint16(6, true), fh = dv.getUint16(8, true);
+      if (type === 2 && (waitKey || seq !== last + 1 || fw !== w || fh !== h)) {
+        waitKey = true;
+        ask();
+        return;
+      }
+      const body = await inflate(b.subarray(10));
+      const u16 = new Uint16Array(body.buffer, body.byteOffset, body.byteLength >> 1);
+      if (type === 1) {
+        if (fw !== w || fh !== h || !img) {
+          w = fw;
+          h = fh;
+          cur = new Uint16Array(w * h);
+          img = new ImageData(w, h);
+        }
+        cur.set(u16.subarray(0, w * h));
+        for (let i = 0; i < w * h; i++) paint(i, cur[i]);
+        waitKey = false;
+      } else {
+        const n = u16[0], tx = w / 8;
+        let p = 1 + n;
+        for (let k = 0; k < n; k++) {
+          const t = u16[1 + k], bx = t % tx, by = t / tx | 0;
+          for (let y = 0; y < 8; y++) {
+            const o = (by * 8 + y) * w + bx * 8;
+            for (let x = 0; x < 8; x++) {
+              const c = u16[p++];
+              cur[o + x] = c;
+              paint(o + x, c);
+            }
+          }
+        }
+      }
+      last = seq;
+      const [cw, ch] = layout === 0 ? [256, 192] : layout === 2 ? [512, 192] : [w, h];
+      if (canvas.width !== cw || canvas.height !== ch) {
+        canvas.width = cw;
+        canvas.height = ch;
+      }
+      if (layout === 0) g.putImageData(img, 0, 0, 0, 0, 256, 192);
+      else if (layout === 2) {
+        g.putImageData(img, 0, 0, 0, 0, 256, 192);
+        g.putImageData(img, 256, -192, 0, 192, 256, 192);
+      } else g.putImageData(img, 0, 0);
+      tv.drawn++;
+    }
+    channel.onmessage = (m) => {
+      if (queued > 6) {
+        waitKey = true;
+        ask();
+        return;
+      }
+      queued++;
+      chain = chain.then(() => handle(m.data)).catch(() => {
+        waitKey = true;
+        ask();
+      }).then(() => {
+        queued--;
+      });
+    };
+  }
+  async function receiveSound(channel, ctx, tv) {
+    channel.binaryType = "arraybuffer";
+    if (!ctx || !ctx.audioWorklet) return;
+    try {
+      await addWorklet(ctx, PLAY_WORKLET);
+      const node = new AudioWorkletNode(ctx, "pix-play", { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2] });
+      node.connect(ctx.destination);
+      channel.onmessage = (m) => {
+        const rate = new DataView(m.data).getUint32(0, true);
+        node.port.postMessage({ d: m.data.slice(4), rate });
+        if (tv) tv.sndPk = (tv.sndPk || 0) + 1;
+      };
+      channel.addEventListener("close", () => {
+        try {
+          node.disconnect();
+        } catch (e) {
+        }
+      });
+    } catch (e) {
+      console.warn("[pixels] som na TV", e);
+    }
   }
 
   // src/cast/tv.js
@@ -947,6 +1406,28 @@
       pc.ondatachannel = (e) => {
         if (e.channel.label === "quadros") {
           receiveFrames(e.channel);
+          return;
+        }
+        if (e.channel.label === "pixels") {
+          tvScreen.framesMode = true;
+          tvScreen.sharp = false;
+          receivePixels(e.channel, tvScreen, () => {
+            if (tvScreen.dc && tvScreen.dc.readyState === "open") {
+              try {
+                tvScreen.dc.send(JSON.stringify({ key: 1 }));
+              } catch (x) {
+              }
+            }
+          });
+          return;
+        }
+        if (e.channel.label === "som") {
+          if (tvScreen.ac && tvScreen.ac.state !== "running") tvScreen.ac.resume().catch(() => {
+          });
+          receiveSound(e.channel, tvScreen.ac, tvScreen);
+          setTimeout(() => {
+            if (tvScreen.ac && tvScreen.ac.state !== "running") $("#scrTap").hidden = false;
+          }, 1500);
           return;
         }
         tvScreen.dc = e.channel;
@@ -1578,15 +2059,22 @@ void main() {
         const ctx = dest.context;
         let t = taps.get(ctx);
         if (!t) {
-          const local = ctx.createGain();
+          const mix = ctx.createGain(), local = ctx.createGain();
+          connect2.call(mix, local);
           connect2.call(local, dest);
-          const out = ctx.createMediaStreamDestination ? ctx.createMediaStreamDestination() : null;
-          t = { ctx, local, out };
+          t = { ctx, mix, local, out: null, connect: (a, b) => connect2.call(a, b) };
+          t.ensureOut = () => {
+            if (!t.out && ctx.createMediaStreamDestination) {
+              t.out = ctx.createMediaStreamDestination();
+              connect2.call(mix, t.out);
+            }
+            return t.out;
+          };
           taps.set(ctx, t);
           window.__audioTaps.push(t);
         }
-        if (t.out) connect2.call(this, t.out);
-        return connect2.call(this, t.local);
+        connect2.call(this, t.mix);
+        return dest;
       }
       return connect2.call(this, dest, ...rest);
     };
@@ -2005,6 +2493,8 @@ void main() {
     if (msg) toast(msg, 3500);
   }
   var CAST_MODES = [
+    // pixels crus (só o que mudou) e som PCM pelo canal de dados: sem codificador de vídeo
+    { name: "pixels", pixels: true },
     { name: "VP8", red: true },
     { name: "H.264", plain: true, codecs: [/h264/i, /vp9/i] },
     // TVs decode H.264 in hardware
@@ -2027,7 +2517,7 @@ void main() {
     stopCast();
     setCastUi("wait");
     if (attempt === 0) {
-      let saved = Number(ls.get("cartucho.castMode")) || 0;
+      let saved = Number(ls.get("cartucho.castMode2")) || 0;
       if (!CAST_MODES[saved]) saved = 0;
       cast.order = [saved, ...CAST_MODES.map((m, i) => i).filter((i) => i !== saved)];
     }
@@ -2043,9 +2533,9 @@ void main() {
       window.__castCap = 1;
       window.dispatchEvent(new Event("resize"));
       await sleep(150);
-      const stream = emu.canvas.captureStream(60);
+      const stream = mode2.pixels ? null : emu.canvas.captureStream(60);
       cast.stream = stream;
-      const vtrack = stream.getVideoTracks()[0];
+      const vtrack = stream ? stream.getVideoTracks()[0] : null;
       try {
         vtrack.contentHint = "motion";
       } catch (e) {
@@ -2053,7 +2543,11 @@ void main() {
       const isDs = !!player.isDs;
       const opt = { red: !!mode2.red, kbps: isDs ? 4e3 : 2500, layers: "", ...window.__castOpts || {} };
       let vt = null;
-      if (mode2.frames) {
+      let pixCh = null, sndCh = null;
+      if (mode2.pixels) {
+        pixCh = pc.createDataChannel("pixels", { ordered: false, maxRetransmits: 0 });
+        sndCh = pc.createDataChannel("som", { ordered: false, maxRetransmits: 0 });
+      } else if (mode2.frames) {
         cast.frameChannel = pc.createDataChannel("quadros", { ordered: false, maxRetransmits: 0 });
         cast.frameChannel.binaryType = "arraybuffer";
       } else {
@@ -2086,8 +2580,9 @@ void main() {
       else if (vt && !mode2.plain) prefer(vt, "video", [/vp8/i]);
       if (vt && mode2.plain) trimExt(vt);
       const tap = (window.__audioTaps || [])[0];
-      if (tap && tap.out) {
-        const at = tap.out.stream.getAudioTracks()[0];
+      const tapOut = tap && !mode2.pixels && tap.ensureOut ? tap.ensureOut() : null;
+      if (tapOut) {
+        const at = tapOut.stream.getAudioTracks()[0];
         const as = at ? new MediaStream([at]) : null;
         if (at && mode2.plain) pc.addTrack(at, as);
         else if (at) prefer(pc.addTransceiver(at, { direction: "sendonly", streams: [as] }), "audio", opt.red ? [/audio\/red/i, /opus/i] : [/opus/i]);
@@ -2131,6 +2626,23 @@ void main() {
             p.degradationPreference = isDs ? "maintain-resolution" : "maintain-framerate";
             send.setParameters(p).catch((e) => {
               cast.paramErr = String(e);
+            });
+          } else if (mode2.pixels) {
+            cast.pumped = 0;
+            startPixels({ pix: pixCh, snd: sndCh, emu, isDs, layout: () => window.__ds && window.__ds.cast || "top", onSent: () => {
+              cast.pumped++;
+            } }).then((px) => {
+              if (cast.pc !== pc) {
+                px.stop();
+                return;
+              }
+              cast.pixels = px;
+              cast.requestKey = px.key;
+              cast.pumpStop = () => {
+                px.stop();
+                cast.pixels = null;
+                cast.requestKey = null;
+              };
             });
           } else startFramePump(vtrack, cast.frameChannel);
           watchCast(pc, vt ? vt.sender : null, dc, emu);
@@ -2301,7 +2813,7 @@ void main() {
       const tv = cast.tvStats;
       if (tv && tv.dec > 0 && !worked) {
         worked = true;
-        ls.set("cartucho.castMode", String(cast.mode));
+        ls.set("cartucho.castMode2", String(cast.mode));
       }
       if (!worked && tv && checks >= 4 && st.sent > 60 && tv.dec === 0) {
         clearInterval(cast.watch);
@@ -3243,6 +3755,7 @@ registerProcessor("ds-out", DSOut);
         emu.volume = v;
         if (audio.gain) audio.gain.gain.value = v;
       },
+      audioStats: () => ({ ready: audio.ready, fill: Math.round(audio.fill), target: audio.target, underruns: audio.underruns, state: audio.ctx && audio.ctx.state }),
       destroy
     };
     const gm = emu.gameManager = {
@@ -3505,11 +4018,13 @@ registerProcessor("ds-out", DSOut);
         fctx.putImageData(im, 0, 0);
       }
       blit(vctx, shownLocal);
-      if (casting()) {
+      if (emu.onFrame) emu.onFrame(S > 1 && perScreen ? null : img);
+      else if (casting()) {
         if (castGl) castGl.draw(fb, ds.cast, false, S);
         else blit(cctx, ds.cast);
       }
     }
+    emu.fbCanvas = fb;
     let touchId = null;
     function touchAt(e) {
       const b = view.getBoundingClientRect();
@@ -4219,8 +4734,9 @@ void main() {
     const stream = emu.canvas.captureStream(60);
     a.addTrack(stream.getVideoTracks()[0], stream);
     const tap = (window.__audioTaps || [])[0];
-    if (tap && tap.out) {
-      const at = tap.out.stream.getAudioTracks()[0];
+    const tapOut = tap && tap.ensureOut ? tap.ensureOut() : null;
+    if (tapOut) {
+      const at = tapOut.stream.getAudioTracks()[0];
       if (at) a.addTrack(at, stream);
     }
     const v = document.createElement("video");
@@ -5192,6 +5708,10 @@ void main() {
   }
   async function pullSave(report) {
     if (!player.key || !player.emu || !player.emu.started) return;
+    if (cast.console) {
+      report("O jogo está rodando na outra tela. Saia da segunda tela para carregar um save.");
+      return;
+    }
     if (!cloud.db) {
       report(isGoogle() ? "Reconecte ao Google primeiro (botão no topo da biblioteca)." : "Este aparelho não está conectado à nuvem.");
       return;

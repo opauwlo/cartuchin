@@ -81,15 +81,22 @@ document.addEventListener("visibilitychange", () => { if (document.visibilitySta
       const ctx = dest.context;
       let t = taps.get(ctx);
       if (!t) {
-        const local = ctx.createGain();
+        // tudo soma em "mix"; dele sai para o alto-falante (local, que a transmissão silencia),
+        // para a trilha do WebRTC (out) e, no modo "pixels", para o leitor de PCM
+        const mix = ctx.createGain(), local = ctx.createGain();
+        connect.call(mix, local);
         connect.call(local, dest);
-        const out = ctx.createMediaStreamDestination ? ctx.createMediaStreamDestination() : null;
-        t = { ctx, local, out };
+        t = { ctx, mix, local, out: null, connect: (a, b) => connect.call(a, b) };
+        // a trilha do WebRTC só existe durante uma transmissão (fora dela é trabalho à toa no áudio)
+        t.ensureOut = () => {
+          if (!t.out && ctx.createMediaStreamDestination) { t.out = ctx.createMediaStreamDestination(); connect.call(mix, t.out); }
+          return t.out;
+        };
         taps.set(ctx, t);
         window.__audioTaps.push(t);
       }
-      if (t.out) connect.call(this, t.out);
-      return connect.call(this, t.local);
+      connect.call(this, t.mix);
+      return dest;
     }
     return connect.call(this, dest, ...rest);
   };

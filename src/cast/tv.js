@@ -3,6 +3,7 @@ import { KEYCODES, KEYMAP, RTC_CONFIG, keysDown } from "./constants.js";
 import { chromeVer } from "./phone.js";
 import { newPairCode } from "../connect.js";
 import { tvConsole } from "./console.js";
+import { receivePixels, receiveSound } from "./pixels.js";
 import { $, appUrl } from "../util.js";
 
 /* ---------- TV side ---------- */
@@ -95,6 +96,17 @@ async function startScreen() {
     pc.ondatachannel = (e) => {
       if (e.channel.label === "quadros") {
         receiveFrames(e.channel);
+        return;
+      }
+      if (e.channel.label === "pixels") {
+        tvScreen.framesMode = true; tvScreen.sharp = false;
+        receivePixels(e.channel, tvScreen, () => { if (tvScreen.dc && tvScreen.dc.readyState === "open") { try { tvScreen.dc.send(JSON.stringify({ key: 1 })); } catch (x) {} } });
+        return;
+      }
+      if (e.channel.label === "som") {
+        if (tvScreen.ac && tvScreen.ac.state !== "running") tvScreen.ac.resume().catch(() => {});
+        receiveSound(e.channel, tvScreen.ac, tvScreen);
+        setTimeout(() => { if (tvScreen.ac && tvScreen.ac.state !== "running") $("#scrTap").hidden = false; }, 1500);
         return;
       }
       tvScreen.dc = e.channel;

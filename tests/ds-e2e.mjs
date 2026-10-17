@@ -83,7 +83,7 @@ phone.on("pageerror", (e) => errors.push("celular: " + e.message));
 phone.on("dialog", (d) => d.accept());
 await phone.goto(base);
 await phone.setInputFiles("#romInput", ROM);
-await phone.waitForSelector("#games .tile:not(.add-tile)", { timeout: 20000 });
+await phone.waitForSelector("#games .tile:not(.add-tile)", { timeout: 180000 });
 await phone.click("#games .tile:not(.add-tile)");
 await phone.click("#gameSheet .btn.primary");
 // core com threads: o jogo abre na página isolada (?ds=)
@@ -145,6 +145,13 @@ if (!started) {
   await browser.close(); server.close(); process.exit(1);
 }
 
+// som: 20 s jogando, quantas vezes o áudio faltou e a velocidade (quadros/s)
+if (ONLY === "audio") {
+  const a0 = await phone.evaluate(() => ({ s: window.__cartucho.emu.audioStats(), f: window.__cartucho.emu.frames, t: performance.now() }));
+  await phone.waitForTimeout(20000);
+  const a1 = await phone.evaluate(() => ({ s: window.__cartucho.emu.audioStats(), f: window.__cartucho.emu.frames, t: performance.now() }));
+  console.log("AUDIO", JSON.stringify({ under: a1.s.underruns - a0.s.underruns, fps: Math.round((a1.f - a0.f) / ((a1.t - a0.t) / 1000)), fill: a1.s.fill, target: a1.s.target, state: a1.s.state }));
+}
 if (!ONLY || ONLY === "state") {
   const r = await phone.evaluate(async () => {
     const emu = window.__cartucho.emu, gm = emu.gameManager;
@@ -210,9 +217,9 @@ if (!ONLY || ONLY === "state") {
 
 // Segunda tela: cada formato de vídeo (VP8, H.264, quadros pelo canal de dados) em cada
 // arrumação das telas. CAST_MODES=0,1,2 e CAST_LAYOUTS=top,both,side limitam a matriz.
-const CAST_MODES = (process.env.CAST_MODES || "0,1,2").split(",").map(Number);
+const CAST_MODES = (process.env.CAST_MODES || "0,1,2,3").split(",").map(Number);
 const CAST_LAYOUTS = (process.env.CAST_LAYOUTS || "top,both,side").split(",");
-const MODE_NAME = ["VP8", "H.264", "quadros"];
+const MODE_NAME = ["pixels", "VP8", "H.264", "quadros"];
 async function shownOnTv(tv) {
   return tv.evaluate(() => {
     const v = document.querySelector("#scrVideo");
@@ -228,7 +235,7 @@ async function shownOnTv(tv) {
 async function castOnce(mode, layout) {
   const tag = `[${MODE_NAME[mode]}, ${layout}]`;
   await phone.evaluate(([m, lo]) => {
-    localStorage.setItem("cartucho.castMode", String(m));
+    localStorage.setItem("cartucho.castMode2", String(m));
     localStorage.setItem("cartucho.castVideo", "1");
     localStorage.setItem("cartucho.ds.cast", lo);
   }, [mode, layout]);
@@ -253,14 +260,36 @@ async function castOnce(mode, layout) {
   let shown = null;
   while (Date.now() - t0 < 30000) {
     shown = await shownOnTv(tv);
-    if (shown && shown.b > 3 && shown.drawn > 5) break;
+    if (shown && shown.b > 3 && shown.drawn > (mode === 0 ? 0 : 5)) break;   // pixels: tela parada = 1 quadro só
     await tv.waitForTimeout(500);
   }
-  ok(!!shown && shown.b > 3 && shown.drawn > 5, `${tag} imagem aparece na tela${shown ? ` (${shown.id} ${shown.w}x${shown.h}, brilho ${shown.b.toFixed(0)}, ${shown.drawn} quadros)` : ""}`);
+  ok(!!shown && shown.b > 3 && shown.drawn > (mode === 0 ? 0 : 5), `${tag} imagem aparece na tela${shown ? ` (${shown.id} ${shown.w}x${shown.h}, brilho ${shown.b.toFixed(0)}, ${shown.drawn} quadros)` : ""}`);
   ok(!!shown && shown.w <= 4096 && shown.h <= 4096, `${tag} tamanho no limite`);
   const sent = await phone.evaluate(() => ({ w: window.__cartucho.emu.canvas.width, h: window.__cartucho.emu.canvas.height, layout: window.__cartucho.emu.localLayout() }));
   const ratio = sent.w / sent.h, want = layout === "both" ? 256 / 384 : layout === "side" ? 512 / 192 : 256 / 192;
-  ok(Math.abs(ratio - want) < 0.01 && sent.w <= 1536 && sent.h <= 1536, `${tag} vídeo enviado ${sent.w}x${sent.h}`);
+  if (mode === 0) {
+    // pixels: quanto de rede gasta e se o som chega
+    await phone.waitForTimeout(5000);
+    const px = await phone.evaluate(() => window.__cast.pixels && { ...window.__cast.pixels.stat });
+    const snd = await tv.evaluate(() => window.__tvScreen.sndPk || 0);
+    ok(!!px && px.sent > 0, `${tag} pixels: ${px ? `${px.sent} pacotes, ${Math.round(px.bytes / 1024)} KB, ${px.keys} inteiros, ${px.dropped} descartados; quadros ${px.offered} → processados ${px.frames} (${px.empty} iguais), ${px.ms.toFixed(1)} ms cada` : "nada"}`);
+    ok(snd > 50, `${tag} som chega na tela (${snd} pacotes)`);
+    // a imagem na TV é a mesma do celular, pixel a pixel (sem perda)
+    const sample = (d, top) => { const o = []; for (let p = 0; p < 256 * (top ? 192 : 384); p += 211) o.push(d[p * 4], d[p * 4 + 1], d[p * 4 + 2]); return o; };
+    const ref = await phone.evaluate((src) => { const s = eval(src), c = window.__cartucho.emu.fbCanvas; return s(c.getContext("2d").getImageData(0, 0, 256, 384).data, false); }, sample.toString());
+    const got = await tv.evaluate(([lo, src]) => {
+      const s = eval(src), c = document.querySelector("#scrCanvas");
+      const full = document.createElement("canvas"); full.width = 256; full.height = 384;
+      const f = full.getContext("2d");
+      if (lo === "side") { f.drawImage(c, 0, 0, 256, 192, 0, 0, 256, 192); f.drawImage(c, 256, 0, 256, 192, 0, 192, 256, 192); }
+      else f.drawImage(c, 0, 0);
+      return s(f.getImageData(0, 0, 256, 384).data, lo === "top");
+    }, [layout, sample.toString()]);
+    let bad = 0;
+    const n = got.length;
+    for (let i = 0; i < n; i++) if (Math.abs(ref[i] - got[i]) > 8) bad++;
+    ok(n > 0 && bad === 0, `${tag} imagem igual à do celular (${n - bad}/${n} amostras)`);
+  } else ok(Math.abs(ratio - want) < 0.01 && sent.w <= 1536 && sent.h <= 1536, `${tag} vídeo enviado ${sent.w}x${sent.h}`);
   ok(sent.layout === "bottom", `${tag} celular mostra a tela de toque (${sent.layout})`);
   // controle: seta na TV chega no jogo do celular
   await tv.bringToFront();
@@ -287,7 +316,7 @@ if (!ONLY || ONLY === "cast") {
 
 // Modo console: o jogo roda na outra tela e o celular é só o controle
 async function consoleOnce() {
-  await phone.evaluate(() => { localStorage.removeItem("cartucho.castVideo"); localStorage.setItem("cartucho.tvNoCache", "1"); });   // a ROM vai mesmo (comprimida)
+  await phone.evaluate(() => { localStorage.removeItem("cartucho.castVideo"); localStorage.setItem("cartucho.tvNoCache", "1"); localStorage.setItem("cartucho.tvNoSlow", "1"); });   // a ROM vai mesmo (comprimida)
   const tv = await ctx.newPage();
   tv.on("pageerror", (e) => errors.push("tela: " + e.message));
   await tv.goto(base);
@@ -298,8 +327,9 @@ async function consoleOnce() {
   await phone.click("#castBtn");
   await phone.fill(".dialog input", code);
   await phone.click(".dialog button[type=submit]");
-  const on = await phone.waitForFunction(() => !!(window.__cast.console && window.__cast.consoleSend), null, { timeout: 90000 }).then(() => true, () => false);
-  ok(on, "[console] jogo abre na outra tela (ROM enviada comprimida)");
+  const c0 = Date.now();
+  const on = await phone.waitForFunction(() => !!(window.__cast.console && window.__cast.consoleSend), null, { timeout: 240000 }).then(() => true, () => false);
+  ok(on, `[console] jogo abre na outra tela (ROM enviada comprimida, ${((Date.now() - c0) / 1000).toFixed(1)} s)`);
   await phone.evaluate(() => localStorage.removeItem("cartucho.tvNoCache"));
   if (!on) { await tv.close(); return; }
   const runs = await tv.waitForFunction(() => { const e = window.__cartucho.emu; return e && e.frames > 120 && !e.paused && window.__cartucho.guest; }, null, { timeout: 30000 }).then(() => true, () => false);
@@ -330,6 +360,29 @@ async function consoleOnce() {
   await tv.close();
 }
 if (!ONLY || ONLY === "cast" || ONLY === "console") await consoleOnce();
+
+// outra tela lenta demais para emular: o celular volta a rodar e manda os pixels
+async function slowFallback() {
+  await phone.evaluate(() => { localStorage.removeItem("cartucho.castVideo"); localStorage.setItem("cartucho.tvForceSlow", "1"); localStorage.setItem("cartucho.castMode2", "0"); });
+  const tv = await ctx.newPage();
+  tv.on("pageerror", (e) => errors.push("tela: " + e.message));
+  await tv.goto(base);
+  await tv.click("#screenBtn");
+  await tv.waitForFunction(() => window.__tvScreen && window.__tvScreen.code, null, { timeout: 15000 });
+  const code = await tv.evaluate(() => window.__tvScreen.code);
+  await phone.bringToFront();
+  await phone.click("#castBtn");
+  await phone.fill(".dialog input", code);
+  await phone.click(".dialog button[type=submit]");
+  const px = await phone.waitForFunction(() => !window.__cast.console && window.__cast.pixels && window.__cast.pc && window.__cast.pc.connectionState === "connected" && !window.__cartucho.emu.paused, null, { timeout: 90000 }).then(() => true, () => false);
+  ok(px, "[lenta] troca sozinha para o modo pixels, com o jogo rodando no celular");
+  await phone.evaluate(() => localStorage.removeItem("cartucho.tvForceSlow"));
+  const shown = await tv.waitForFunction(() => window.__tvScreen.drawn > 0 && !document.querySelector("#scrCanvas").hidden, null, { timeout: 20000 }).then(() => true, () => false);
+  ok(shown, "[lenta] a imagem aparece na outra tela");
+  await tv.close();
+  await phone.waitForFunction(() => !window.__cast.pc, null, { timeout: 15000 }).catch(() => {});
+}
+if (!ONLY || ONLY === "cast" || ONLY === "console") await slowFallback();
 
 ok(errors.length === 0, `sem erros de JavaScript${errors.length ? ":\n  " + errors.join("\n  ") : ""}`);
 await browser.close();

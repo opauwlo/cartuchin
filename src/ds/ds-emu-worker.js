@@ -467,8 +467,10 @@ async function createDsEmulator(romBytes, gameName, startSav, skip = []) {
   function draw() {
     syncSizes();
     blit(vctx, shownLocal);
-    if (casting()) blit(cctx, ds.cast);
+    if (emu.onFrame) emu.onFrame(null);
+    else if (casting()) blit(cctx, ds.cast);
   }
+  emu.fbCanvas = fb;
   emu.relayout = () => { shownLocal = ""; shownCast = ""; draw(); };
 
   // ---- toque na tela de baixo ----

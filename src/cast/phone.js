@@ -2,6 +2,7 @@ import { iceDone, keepAwake, signal, wakeAudio } from "./common.js";
 import { PAD, PAD_BITS, RTC_CONFIG, STREAM_H, STREAM_W } from "./constants.js";
 import { showPad } from "./pad.js";
 import { frameWorkerSource } from "./frame-worker.js";
+import { startPixels } from "./pixels.js";
 import { brightness } from "./tv.js";
 import { busy } from "../cloud.js";
 import { device } from "../device.js";
@@ -143,6 +144,8 @@ function stopCast(msg) {
    brand has its quirks: if the TV gets nothing it can show after a few seconds, the
    phone reconnects with the next format, and remembers the one that worked. */
 const CAST_MODES = [
+  // pixels crus (só o que mudou) e som PCM pelo canal de dados: sem codificador de vídeo
+  { name: "pixels", pixels: true },
   { name: "VP8", red: true },
   { name: "H.264", plain: true, codecs: [/h264/i, /vp9/i] }, // TVs decode H.264 in hardware
   // no WebRTC video at all: each frame of the canvas is compressed by the phone and sent
@@ -164,7 +167,7 @@ async function castTo(code, attempt = 0) {
   stopCast();
   setCastUi("wait");
   if (attempt === 0) {
-    let saved = Number(ls.get("cartucho.castMode")) || 0;
+    let saved = Number(ls.get("cartucho.castMode2")) || 0;
     if (!CAST_MODES[saved]) saved = 0;   // modo salvo que não existe mais (ex.: "Tempo real", removido)
     cast.order = [saved, ...CAST_MODES.map((m, i) => i).filter((i) => i !== saved)];
   }
@@ -181,9 +184,10 @@ async function castTo(code, attempt = 0) {
     window.dispatchEvent(new Event("resize"));
     await sleep(150);
     // capture the emulator's own canvas: no copy, no readback from the GPU
-    const stream = emu.canvas.captureStream(60);
+    // modo pixels no DS lê o quadro direto da memória: sem captura do canvas
+    const stream = mode.pixels ? null : emu.canvas.captureStream(60);
     cast.stream = stream;
-    const vtrack = stream.getVideoTracks()[0];
+    const vtrack = stream ? stream.getVideoTracks()[0] : null;
     try { vtrack.contentHint = "motion"; } catch (e) {}
     // tuned for a so-so Wi-Fi (see test/net.js, which measures them under loss and jitter)
     // DS: imagem crua em blocos 2x2 (a TV amplia): mais bits e resolução sempre fixa,
@@ -191,7 +195,11 @@ async function castTo(code, attempt = 0) {
     const isDs = !!player.isDs;
     const opt = { red: !!mode.red, kbps: isDs ? 4000 : 2500, layers: "", ...(window.__castOpts || {}) };
     let vt = null;
-    if (mode.frames) {
+    let pixCh = null, sndCh = null;
+    if (mode.pixels) {
+      pixCh = pc.createDataChannel("pixels", { ordered: false, maxRetransmits: 0 });
+      sndCh = pc.createDataChannel("som", { ordered: false, maxRetransmits: 0 });
+    } else if (mode.frames) {
       cast.frameChannel = pc.createDataChannel("quadros", { ordered: false, maxRetransmits: 0 });
       cast.frameChannel.binaryType = "arraybuffer";
     } else {
@@ -218,8 +226,9 @@ async function castTo(code, attempt = 0) {
     else if (vt && !mode.plain) prefer(vt, "video", [/vp8/i]);
     if (vt && mode.plain) trimExt(vt);
     const tap = (window.__audioTaps || [])[0];
-    if (tap && tap.out) {
-      const at = tap.out.stream.getAudioTracks()[0];
+    const tapOut = tap && !mode.pixels && tap.ensureOut ? tap.ensureOut() : null;
+    if (tapOut) {
+      const at = tapOut.stream.getAudioTracks()[0];
       // RED: every audio packet also carries the previous one, so a lost packet is
       // rebuilt from the next instead of becoming a crackle (what Google Meet does)
       // som num stream separado do vídeo: no mesmo stream a TV sincroniza os dois e segura a
@@ -261,6 +270,14 @@ async function castTo(code, attempt = 0) {
           p.encodings = (p.encodings && p.encodings.length ? p.encodings : [{}]).map((e) => ({ ...e, maxBitrate: opt.kbps * 1000, maxFramerate: 60, scaleResolutionDownBy: 1, priority: "high", networkPriority: "high" }));
           p.degradationPreference = isDs ? "maintain-resolution" : "maintain-framerate";
           send.setParameters(p).catch((e) => { cast.paramErr = String(e); });
+        } else if (mode.pixels) {
+          cast.pumped = 0;
+          startPixels({ pix: pixCh, snd: sndCh, emu, isDs, layout: () => (window.__ds && window.__ds.cast) || "top", onSent: () => { cast.pumped++; } }).then((px) => {
+            if (cast.pc !== pc) { px.stop(); return; }
+            cast.pixels = px;
+            cast.requestKey = px.key;
+            cast.pumpStop = () => { px.stop(); cast.pixels = null; cast.requestKey = null; };
+          });
         } else startFramePump(vtrack, cast.frameChannel);
         watchCast(pc, vt ? vt.sender : null, dc, emu);
       } else if (pc.connectionState === "failed") stopCast("Não deu para conectar com a segunda tela. Os dois aparelhos estão na mesma rede Wi-Fi?");
@@ -395,7 +412,7 @@ function watchCast(pc, sender, dc, emu) {
     const tv = cast.tvStats;
     if (tv && tv.dec > 0 && !worked) {
       worked = true;
-      ls.set("cartucho.castMode", String(cast.mode));
+      ls.set("cartucho.castMode2", String(cast.mode));
     }
     if (!worked && tv && checks >= 4 && st.sent > 60 && tv.dec === 0) {
       clearInterval(cast.watch);
