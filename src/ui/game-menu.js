@@ -1,5 +1,6 @@
 import { player } from "../player/player.js";
-import { gov } from "../player/perf.js";
+import { PROFILES, gov, perfProfile, startSpeedGovernor } from "../player/perf.js";
+import { gameCfg, setGameCfg } from "../gamecfg.js";
 import { openAchievements, ra, raSummary } from "../ra.js";
 import { dsMenuItems } from "../ds/ds-emu.js";
 import { dialog } from "./dialogs.js";
@@ -80,6 +81,7 @@ function fillGameMenu() {
         fillGameMenu();
       })),
       ...padItems().map(sub),
+      ...(player.isDs || player.remote ? [] : gbaItems()).map(sub),
       ...(player.isDs ? dsMenuItems(emu, fillGameMenu).map((it) => { const b = sheetAction(it.icon, it.label, it.fn); b.classList.add(it.sub ? "sub2" : "sub"); return b; }) : []),
       player.isDs ? null : sub(sheetAction("sliders", $("#player").classList.contains("show-ejs") ? "Esconder opções do emulador" : "Opções avançadas do emulador", () => {
         const on = !$("#player").classList.contains("show-ejs");
@@ -96,6 +98,33 @@ function fillGameMenu() {
     ] : []),
   ].filter(Boolean));
   setSpeed(ffState.ratio);
+}
+/* GBA: desempenho deste jogo (fica neste aparelho; os outros jogos seguem o padrão) */
+function gbaItems() {
+  const key = player.key, c = gameCfg(key);
+  const perfLabel = c.perf === "light" ? "Leve" : c.perf === "auto" ? "Automático" : `padrão do aparelho (${perfProfile() === "light" ? "leve" : "automático"})`;
+  const reopen = () => toast("Vale quando abrir o jogo de novo.", 3000);
+  return [
+    sheetAction("sliders", `Desempenho deste jogo: ${perfLabel}`, () => {
+      const next = !c.perf ? "light" : c.perf === "light" ? "auto" : null;
+      setGameCfg(key, { perf: next });
+      // pular quadros muda na hora; o resto quando abrir de novo
+      try { player.emu.gameManager.setVariable("mgba_frameskip_threshold", PROFILES[perfProfile()].threshold); } catch (e) {}
+      reopen();
+      fillGameMenu();
+    }),
+    sheetAction("sliders", `Compensar lentidão: ${c.gov === "on" ? "Sim (pode mexer no som)" : "Não"}`, () => {
+      setGameCfg(key, { gov: c.gov === "on" ? null : "on" });
+      if (c.gov === "on") { try { player.emu.gameManager.toggleFastForward(0); } catch (e) {} gov.ratio = 0; }
+      startSpeedGovernor();
+      fillGameMenu();
+    }),
+    sheetAction("sliders", `Folga do som: ${c.latency ? "Maior (menos estalos, um pouco de atraso)" : "Normal"}`, () => {
+      setGameCfg(key, { latency: c.latency ? null : 224 });
+      reopen();
+      fillGameMenu();
+    }),
+  ];
 }
 /* controle na tela: tamanho, transparência, lado (por sistema) */
 const ZOOMS = [0.85, 1, 1.15, 1.3], ALPHAS = [1, 0.75, 0.5];

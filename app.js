@@ -1294,13 +1294,14 @@ registerProcessor("pix-play", PixPlay);`;
       }
     }
     const tap = (window.__audioTaps || [])[0];
-    if (tap && tap.ctx.audioWorklet && snd) {
+    if (tap && tap.out && tap.ctx.audioWorklet && snd) {
       try {
         await addWorklet(tap.ctx, TAP_WORKLET);
         const node = new AudioWorkletNode(tap.ctx, "pix-tap", { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2] });
         const sink = tap.ctx.createGain();
         sink.gain.value = 0;
-        tap.connect(tap.mix, node);
+        const src = tap.ctx.createMediaStreamSource(tap.out.stream);
+        tap.connect(src, node);
         tap.connect(node, sink);
         tap.connect(sink, tap.ctx.destination);
         const rate = tap.ctx.sampleRate;
@@ -1318,7 +1319,7 @@ registerProcessor("pix-play", PixPlay);`;
           try {
             node.disconnect();
             sink.disconnect();
-            tap.mix.disconnect(node);
+            src.disconnect();
           } catch (e) {
           }
         });
@@ -2249,22 +2250,15 @@ void main() {
         const ctx = dest.context;
         let t = taps.get(ctx);
         if (!t) {
-          const mix = ctx.createGain(), local2 = ctx.createGain();
-          connect2.call(mix, local2);
+          const local2 = ctx.createGain();
           connect2.call(local2, dest);
-          t = { ctx, mix, local: local2, out: null, connect: (a, b) => connect2.call(a, b) };
-          t.ensureOut = () => {
-            if (!t.out && ctx.createMediaStreamDestination) {
-              t.out = ctx.createMediaStreamDestination();
-              connect2.call(mix, t.out);
-            }
-            return t.out;
-          };
+          const out = ctx.createMediaStreamDestination ? ctx.createMediaStreamDestination() : null;
+          t = { ctx, local: local2, out, connect: (a, b) => connect2.call(a, b), ensureOut: () => out };
           taps.set(ctx, t);
           window.__audioTaps.push(t);
         }
-        connect2.call(this, t.mix);
-        return dest;
+        if (t.out) connect2.call(this, t.out);
+        return connect2.call(this, t.local);
       }
       return connect2.call(this, dest, ...rest);
     };
@@ -2410,6 +2404,23 @@ void main() {
     };
   };
 
+  // src/gamecfg.js
+  var KEY = (k) => "cartucho.cfg." + k;
+  function gameCfg(key) {
+    if (!key) return {};
+    try {
+      return JSON.parse(ls.get(KEY(key)) || "{}") || {};
+    } catch (e) {
+      return {};
+    }
+  }
+  function setGameCfg(key, patch) {
+    const c = { ...gameCfg(key), ...patch };
+    for (const k of Object.keys(c)) if (c[k] == null) delete c[k];
+    ls.set(KEY(key), JSON.stringify(c));
+    return c;
+  }
+
   // src/player/perf.js
   var PERF_KEY = "cartucho.perf";
   var perf = {
@@ -2420,7 +2431,10 @@ void main() {
   };
   if (!ls.get(PERF_KEY + ".mode") && guessDevice() === "TV") perf.learned = true;
   var perfLight = () => perf.mode === "light" || perf.mode === "auto" && perf.learned;
-  var perfProfile = () => perfLight() ? "light" : "auto";
+  var perfProfile = () => {
+    const g = gameCfg(player.key).perf;
+    return g === "light" || g === "auto" ? g : perfLight() ? "light" : "auto";
+  };
   var PROFILES = {
     auto: { frameskip: "auto", threshold: "33", latency: 128, gameMax: 240 },
     light: { frameskip: "auto", threshold: "50", latency: 160, gameMax: 240 }
@@ -2513,7 +2527,7 @@ void main() {
     clearInterval(gov.timer);
     gov.ratio = 0;
     gov.last = null;
-    if (player.isDs || ls.get("cartucho.gbaGov") === "off") return;
+    if (player.isDs || gameCfg(player.key).gov !== "on") return;
     gov.timer = setInterval(() => {
       const emu = player.emu, gm = emu && emu.gameManager;
       if (!gm || player.isDs) {
@@ -3092,7 +3106,7 @@ void main() {
   }
 
   // src/meta.js
-  var KEY = "cartucho.meta";
+  var KEY2 = "cartucho.meta";
   var devId = (() => {
     let v = ls.get("cartucho.devid");
     if (!v) {
@@ -3103,13 +3117,13 @@ void main() {
   })();
   function load() {
     try {
-      return JSON.parse(ls.get(KEY) || "{}") || {};
+      return JSON.parse(ls.get(KEY2) || "{}") || {};
     } catch (e) {
       return {};
     }
   }
   var local = load();
-  var saveLocal = () => ls.set(KEY, JSON.stringify(local));
+  var saveLocal = () => ls.set(KEY2, JSON.stringify(local));
   var entry = (key) => local[key] = local[key] || {};
   function gameMeta(key) {
     const l = local[key] || {}, ix = cloud.index && cloud.index.games && cloud.index.games[key] || {};
@@ -4039,7 +4053,15 @@ registerProcessor("ds-out", DSOut);
   }
   window.addEventListener("error", onPageError);
   window.addEventListener("unhandledrejection", onPageError);
+  var cfgGame = null;
+  function saveDs(k, v) {
+    if (cfgGame) setGameCfg(cfgGame, { ["ds_" + k]: v });
+    else ls.set("cartucho.ds." + k, k === "lag" ? v ? "on" : "off" : String(v));
+  }
   async function createDsEmulator(romBytes, gameName, startSav) {
+    cfgGame = gameName;
+    const gc = gameCfg(gameName);
+    for (const k of ["perf", "scale", "gpu", "lag"]) if (gc["ds_" + k] != null) ds[k] = gc["ds_" + k];
     let M;
     $("#game").replaceChildren();
     stage("Carregando o emulador de DS…");
@@ -4709,10 +4731,10 @@ void main() {
       },
       {
         icon: "sliders",
-        label: "Desempenho: " + PERF_LABEL[ds.perf] + (ds.perf === "auto" ? ` (${LEVELS[ds.level].name})` : ""),
+        label: "Desempenho deste jogo: " + PERF_LABEL[ds.perf] + (ds.perf === "auto" ? ` (${LEVELS[ds.level].name})` : ""),
         fn: () => {
           ds.perf = nextOf(PERF_MODES, ds.perf);
-          ls.set("cartucho.ds.perf", ds.perf);
+          saveDs("perf", ds.perf);
           emu.applyCfg();
           refresh();
         }
@@ -4743,7 +4765,7 @@ void main() {
         label: `Resolução: ${ds.scale}x` + (ds.scale > 3 ? " (muito pesado)" : ds.scale > 1 ? " (pesado)" : ""),
         fn: () => {
           ds.scale = ds.scale >= MAX_SCALE ? 1 : ds.scale + 1;
-          ls.set("cartucho.ds.scale", String(ds.scale));
+          saveDs("scale", ds.scale);
           if (!emu.setScale(ds.scale)) toast("Não deu para mudar a resolução.");
           refresh();
         }
@@ -4753,7 +4775,7 @@ void main() {
         label: "3D: " + GPU_LABEL[ds.gpu] + " (agora: " + (emu.gpu3d ? "GPU" : "software") + ")",
         fn: () => {
           ds.gpu = nextOf(["auto", "on", "off"], ds.gpu);
-          ls.set("cartucho.ds.gpu", ds.gpu);
+          saveDs("gpu", ds.gpu);
           if (!emu.applyRenderer()) toast("3D na GPU indisponível neste aparelho.", 4e3);
           refresh();
         }
@@ -4772,7 +4794,7 @@ void main() {
         label: "GPU sem espera: " + (ds.lag ? "Sim (3D 1 quadro atrás)" : "Não"),
         fn: () => {
           ds.lag = !ds.lag;
-          ls.set("cartucho.ds.lag", ds.lag ? "on" : "off");
+          saveDs("lag", ds.lag);
           emu.setLag(ds.lag);
           refresh();
         }
@@ -5885,7 +5907,7 @@ void main() {
       const orig = GM.prototype.getRetroArchCfg;
       GM.prototype.getRetroArchCfg = function() {
         let cfg = orig.call(this);
-        cfg = cfg.replace(/audio_latency = \d+/, "audio_latency = " + PROFILES[perfProfile()].latency);
+        cfg = cfg.replace(/audio_latency = \d+/, "audio_latency = " + (gameCfg(player.key).latency || PROFILES[perfProfile()].latency));
         cfg = cfg.replace(/autosave_interval = \d+/, "autosave_interval = 0");
         return cfg + "audio_rate_control = true\naudio_rate_control_delta = 0.010\nvideo_threaded = false\nvideo_font_enable = false\nnotification_show_fast_forward = false\n";
       };
@@ -7845,6 +7867,7 @@ Content-Type: ${type}\r
           fillGameMenu();
         })),
         ...padItems().map(sub),
+        ...(player.isDs || player.remote ? [] : gbaItems()).map(sub),
         ...player.isDs ? dsMenuItems(emu, fillGameMenu).map((it) => {
           const b = sheetAction(it.icon, it.label, it.fn);
           b.classList.add(it.sub ? "sub2" : "sub");
@@ -7871,6 +7894,40 @@ Content-Type: ${type}\r
       ] : []
     ].filter(Boolean));
     setSpeed(ffState.ratio);
+  }
+  function gbaItems() {
+    const key = player.key, c = gameCfg(key);
+    const perfLabel = c.perf === "light" ? "Leve" : c.perf === "auto" ? "Automático" : `padrão do aparelho (${perfProfile() === "light" ? "leve" : "automático"})`;
+    const reopen = () => toast("Vale quando abrir o jogo de novo.", 3e3);
+    return [
+      sheetAction("sliders", `Desempenho deste jogo: ${perfLabel}`, () => {
+        const next = !c.perf ? "light" : c.perf === "light" ? "auto" : null;
+        setGameCfg(key, { perf: next });
+        try {
+          player.emu.gameManager.setVariable("mgba_frameskip_threshold", PROFILES[perfProfile()].threshold);
+        } catch (e) {
+        }
+        reopen();
+        fillGameMenu();
+      }),
+      sheetAction("sliders", `Compensar lentidão: ${c.gov === "on" ? "Sim (pode mexer no som)" : "Não"}`, () => {
+        setGameCfg(key, { gov: c.gov === "on" ? null : "on" });
+        if (c.gov === "on") {
+          try {
+            player.emu.gameManager.toggleFastForward(0);
+          } catch (e) {
+          }
+          gov.ratio = 0;
+        }
+        startSpeedGovernor();
+        fillGameMenu();
+      }),
+      sheetAction("sliders", `Folga do som: ${c.latency ? "Maior (menos estalos, um pouco de atraso)" : "Normal"}`, () => {
+        setGameCfg(key, { latency: c.latency ? null : 224 });
+        reopen();
+        fillGameMenu();
+      })
+    ];
   }
   var ZOOMS = [0.85, 1, 1.15, 1.3];
   var ALPHAS = [1, 0.75, 0.5];

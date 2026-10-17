@@ -1,4 +1,5 @@
 import { $, ago, el, ls, toast } from "../util.js";
+import { gameCfg, setGameCfg } from "../gamecfg.js";
 
 /* ---------------- Nintendo DS ----------------
    O DS roda no DeSmuME-wasm melhorado (ds/nds.js + ds/nds.wasm, compilados pelo
@@ -254,7 +255,16 @@ function onPageError(e) {
 window.addEventListener("error", onPageError);
 window.addEventListener("unhandledrejection", onPageError);
 
+/* ajustes do menu do DS valem para o jogo aberto (gamecfg); fora de jogo, para o aparelho */
+let cfgGame = null;
+function saveDs(k, v) {
+  if (cfgGame) setGameCfg(cfgGame, { ["ds_" + k]: v });
+  else ls.set("cartucho.ds." + k, k === "lag" ? (v ? "on" : "off") : String(v));
+}
 async function createDsEmulator(romBytes, gameName, startSav) {
+  cfgGame = gameName;
+  const gc = gameCfg(gameName);
+  for (const k of ["perf", "scale", "gpu", "lag"]) if (gc["ds_" + k] != null) ds[k] = gc["ds_" + k];
   let M;
   $("#game").replaceChildren();
   stage("Carregando o emulador de DS…");
@@ -851,8 +861,8 @@ function dsMenuItems(emu, refresh) {
       fn: () => { ds.tvq = nextOf(TVQ_MODES, ds.tvq); ls.set("cartucho.ds.tvq", ds.tvq); emu.relayout(); sendTvView(); refresh(); },
     },
     {
-      icon: "sliders", label: "Desempenho: " + PERF_LABEL[ds.perf] + (ds.perf === "auto" ? ` (${LEVELS[ds.level].name})` : ""),
-      fn: () => { ds.perf = nextOf(PERF_MODES, ds.perf); ls.set("cartucho.ds.perf", ds.perf); emu.applyCfg(); refresh(); },
+      icon: "sliders", label: "Desempenho deste jogo: " + PERF_LABEL[ds.perf] + (ds.perf === "auto" ? ` (${LEVELS[ds.level].name})` : ""),
+      fn: () => { ds.perf = nextOf(PERF_MODES, ds.perf); saveDs("perf", ds.perf); emu.applyCfg(); refresh(); },
     },
     { icon: "sliders", label: (expOpen ? "▾ " : "▸ ") + "Experimental", fn: () => { expOpen = !expOpen; refresh(); } },
     ...(expOpen ? expItems(emu, refresh) : []),
@@ -875,7 +885,7 @@ function expItems(emu, refresh) {
       sub: true, icon: "sliders", label: `Resolução: ${ds.scale}x` + (ds.scale > 3 ? " (muito pesado)" : ds.scale > 1 ? " (pesado)" : ""),
       fn: () => {
         ds.scale = ds.scale >= MAX_SCALE ? 1 : ds.scale + 1;
-        ls.set("cartucho.ds.scale", String(ds.scale));
+        saveDs("scale", ds.scale);
         if (!emu.setScale(ds.scale)) toast("Não deu para mudar a resolução.");
         refresh();
       },
@@ -883,7 +893,7 @@ function expItems(emu, refresh) {
       sub: true, icon: "sliders", label: "3D: " + GPU_LABEL[ds.gpu] + " (agora: " + (emu.gpu3d ? "GPU" : "software") + ")",
       fn: () => {
         ds.gpu = nextOf(["auto", "on", "off"], ds.gpu);
-        ls.set("cartucho.ds.gpu", ds.gpu);
+        saveDs("gpu", ds.gpu);
         if (!emu.applyRenderer()) toast("3D na GPU indisponível neste aparelho.", 4000);
         refresh();
       },
@@ -898,7 +908,7 @@ function expItems(emu, refresh) {
       sub: true, icon: "sliders", label: "GPU sem espera: " + (ds.lag ? "Sim (3D 1 quadro atrás)" : "Não"),
       fn: () => {
         ds.lag = !ds.lag;
-        ls.set("cartucho.ds.lag", ds.lag ? "on" : "off");
+        saveDs("lag", ds.lag);
         emu.setLag(ds.lag);
         refresh();
       },

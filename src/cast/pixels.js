@@ -211,13 +211,14 @@ async function startPixels({ pix, snd, emu, isDs, layout, onSent }) {
   }
   // som: um leitor na mistura de áudio do jogo (cast/common.js), em blocos de 10 ms
   const tap = (window.__audioTaps || [])[0];
-  if (tap && tap.ctx.audioWorklet && snd) {
+  if (tap && tap.out && tap.ctx.audioWorklet && snd) {
     try {
       await addWorklet(tap.ctx, TAP_WORKLET);
       const node = new AudioWorkletNode(tap.ctx, "pix-tap", { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2] });
       const sink = tap.ctx.createGain();
       sink.gain.value = 0;
-      tap.connect(tap.mix, node);
+      const src = tap.ctx.createMediaStreamSource(tap.out.stream);   // a mistura do jogo, pela trilha do WebRTC
+      tap.connect(src, node);
       tap.connect(node, sink);
       tap.connect(sink, tap.ctx.destination);   // um caminho até a saída para o worklet rodar sempre
       const rate = tap.ctx.sampleRate;
@@ -228,7 +229,7 @@ async function startPixels({ pix, snd, emu, isDs, layout, onSent }) {
         pkt.set(new Uint8Array(e.data), 4);
         try { snd.send(pkt.buffer); } catch (x) {}
       };
-      stops.push(() => { try { node.disconnect(); sink.disconnect(); tap.mix.disconnect(node); } catch (e) {} });
+      stops.push(() => { try { node.disconnect(); sink.disconnect(); src.disconnect(); } catch (e) {} });
     } catch (e) { console.warn("[pixels] som", e); }
   }
   return {

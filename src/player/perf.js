@@ -1,6 +1,7 @@
 import { device, guessDevice } from "../device.js";
 import { player } from "./player.js";
 import { $, $$, ls, toast } from "../util.js";
+import { gameCfg } from "../gamecfg.js";
 
 /* ---------------- performance ----------------
    "auto" starts with the normal profile and switches this device to the light one
@@ -21,7 +22,8 @@ const perfLight = () => perf.mode === "light" || (perf.mode === "auto" && perf.l
    that picture is what decides the speed.
    - auto (default): skips drawing a frame only when sound is about to run dry
    - light: skips earlier and gives sound the longest buffer */
-const perfProfile = () => perfLight() ? "light" : "auto";
+// o jogo pode ter o seu (Menu → Ajustes → Desempenho deste jogo)
+const perfProfile = () => { const g = gameCfg(player.key).perf; return g === "light" || g === "auto" ? g : perfLight() ? "light" : "auto"; };
 const PROFILES = {
   auto: { frameskip: "auto", threshold: "33", latency: 128, gameMax: 240 },
   light: { frameskip: "auto", threshold: "50", latency: 160, gameMax: 240 },
@@ -119,7 +121,8 @@ window.__gov = gov;
 function startSpeedGovernor() {
   clearInterval(gov.timer);
   gov.ratio = 0; gov.last = null;
-  if (player.isDs || ls.get("cartucho.gbaGov") === "off") return;
+  // desligado por padrão: o avanço rápido do core mexe no som (fica estranho em alguns jogos)
+  if (player.isDs || gameCfg(player.key).gov !== "on") return;
   gov.timer = setInterval(() => {
     const emu = player.emu, gm = emu && emu.gameManager;
     if (!gm || player.isDs) { clearInterval(gov.timer); return; }

@@ -10,6 +10,7 @@ import { roms } from "../library.js";
 import { PROFILES, coreOptions, perfProfile, startSpeedMeter, startSpeedGovernor } from "./perf.js";
 import { fixSaveChip } from "../rom.js";
 import { createDsEmulator, ds, dsLastError, dsStatesOk } from "../ds/ds-emu.js";
+import { gameCfg } from "../gamecfg.js";
 import { dialog } from "../ui/dialogs.js";
 import { render } from "../ui/screens.js";
 import { $, actionToast, ago, el, sleep, toast } from "../util.js";
@@ -278,7 +279,7 @@ function patchEmulator() {
     const orig = GM.prototype.getRetroArchCfg;
     GM.prototype.getRetroArchCfg = function () {
       let cfg = orig.call(this);
-      cfg = cfg.replace(/audio_latency = \d+/, "audio_latency = " + PROFILES[perfProfile()].latency);
+      cfg = cfg.replace(/audio_latency = \d+/, "audio_latency = " + (gameCfg(player.key).latency || PROFILES[perfProfile()].latency));
       cfg = cfg.replace(/autosave_interval = \d+/, "autosave_interval = 0");  // the page saves on its own schedule
       // sem mensagens do RetroArch por cima do jogo ("Fast-Forward" aparecia com o ajuste automático de velocidade)
       return cfg + "audio_rate_control = true\naudio_rate_control_delta = 0.010\nvideo_threaded = false\nvideo_font_enable = false\nnotification_show_fast_forward = false\n";
