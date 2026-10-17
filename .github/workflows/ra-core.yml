@@ -37,7 +37,7 @@ jobs:
           version: ${{ env.EMSDK_VERSION }}
           actions-cache-folder: emsdk-cache-ra
       - name: Compilar
-        run: ra/build.sh "$PWD/rcheevos"
+        run: ra/build.sh "$PWD/rcheevos" > build.log 2>&1 || { grep -iE "error|undefined" build.log | head -20 | sed 's/^/::error::/'; tail -5 build.log | sed 's/^/::error::/'; exit 1; }
       - name: Gravar no repositório
         run: |
           set -euo pipefail
