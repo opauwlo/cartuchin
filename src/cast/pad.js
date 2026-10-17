@@ -1,5 +1,6 @@
 import { PAD_BITS } from "./constants.js";
-import { applyInput, cast, castTo, stopCast } from "./phone.js";
+import { applyInput, cast, stopCast } from "./phone.js";
+import { connectScreen, endConsole } from "./console.js";
 import { cloud, gh } from "../cloud.js";
 import { normCode } from "../connect.js";
 import { guessDevice } from "../device.js";
@@ -238,7 +239,7 @@ if (window.ResizeObserver) new ResizeObserver(() => { if (padState.mode === "loc
   pad.addEventListener("pointerup", up);
   pad.addEventListener("pointercancel", up);
   pad.addEventListener("contextmenu", (e) => e.preventDefault());
-  $("#padStop").addEventListener("click", () => stopCast("Transmissão encerrada."));
+  $("#padStop").addEventListener("click", async () => { if (!(await endConsole())) stopCast("Transmissão encerrada."); });
   $("#padSave").addEventListener("click", async () => {
     await tokenFromTap();
     padMsg("Enviando o save…");
@@ -282,7 +283,7 @@ function showPad(on) {
 
 function askCastCode() {
   if (cast.pc) {
-    stopCast("Transmissão encerrada.");
+    endConsole().then((was) => { if (!was) stopCast("Transmissão encerrada."); });
     return;
   }
   const root = $("#dialogRoot");
@@ -296,7 +297,7 @@ function askCastCode() {
         return;
       }
       close();
-      castTo(c);
+      connectScreen(c);
     } },
     el("h2", {}, "Jogar numa segunda tela"),
     el("p", {}, "Na TV, tablet ou notebook, abra o Cartuchin e escolha \"Usar como tela\". Digite aqui o código que aparecer. Os dois precisam estar no mesmo Wi-Fi."),

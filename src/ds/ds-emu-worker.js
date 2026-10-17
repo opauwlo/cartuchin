@@ -489,6 +489,7 @@ async function createDsEmulator(romBytes, gameName, startSav, skip = []) {
     if (touchId === null && (x < 0 || x > 1 || y < 0 || y > 1)) return false;
     emu.tx = Math.max(0, Math.min(255, Math.floor(x * W)));
     emu.ty = Math.max(0, Math.min(191, Math.floor(y * H)));
+    if (emu.onTouch) emu.onTouch();
     return true;
   }
   view.addEventListener("pointerdown", (e) => {
@@ -496,10 +497,14 @@ async function createDsEmulator(romBytes, gameName, startSav, skip = []) {
     touchId = e.pointerId;
     try { view.setPointerCapture(e.pointerId); } catch (x) {}
     emu.touch = true;
+    if (emu.onTouch) emu.onTouch();
     e.preventDefault();
   });
   view.addEventListener("pointermove", (e) => { if (e.pointerId === touchId) touchAt(e); });
-  const touchUp = (e) => { if (e.pointerId !== touchId) return; touchId = null; emu.touch = false; };
+  const touchUp = (e) => { if (e.pointerId !== touchId) return; touchId = null; emu.touch = false; if (emu.onTouch) emu.onTouch(); };
+  // modo console: a outra tela roda o jogo e manda a tela de baixo de volta para este celular
+  emu.drawBottom = (ctx, w, h) => ctx.drawImage(fb, 0, fb.height / 2, fb.width, fb.height / 2, 0, 0, w, h);
+  emu.view = view;
   view.addEventListener("pointerup", touchUp);
   view.addEventListener("pointercancel", touchUp);
   view.addEventListener("contextmenu", (e) => e.preventDefault());

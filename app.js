@@ -325,6 +325,443 @@
   }
   var device = { name: ls.get("cartucho.device") || guessDevice() };
 
+  // src/cast/console.js
+  var CHUNK = 64 * 1024;
+  async function sendFile(dc, name, data, onProgress) {
+    const size = data.size != null ? data.size : data.length;
+    dc.bufferedAmountLowThreshold = 1 << 20;
+    dc.send(JSON.stringify({ file: name, size }));
+    const STEP = 4 << 20;
+    for (let o = 0; o < size; o += STEP) {
+      const piece = data.size != null ? new Uint8Array(await data.slice(o, o + STEP).arrayBuffer()) : data.subarray(o, o + STEP);
+      for (let i = 0; i < piece.length; i += CHUNK) {
+        if (dc.readyState !== "open") throw new Error("canal fechado");
+        if (dc.bufferedAmount > 8 << 20) await new Promise((r) => {
+          dc.onbufferedamountlow = () => {
+            dc.onbufferedamountlow = null;
+            r();
+          };
+        });
+        dc.send(piece.subarray(i, i + CHUNK));
+      }
+      if (onProgress) onProgress(Math.min(1, (o + STEP) / size));
+    }
+  }
+  function receiver(onJson, onFile, onProgress) {
+    let cur = null, chain = Promise.resolve();
+    const handle = async (data) => {
+      if (typeof data === "string") {
+        const j = JSON.parse(data);
+        if (j.file) {
+          cur = { name: j.file, size: j.size, parts: [], got: 0, shown: 0 };
+          if (!j.size) {
+            cur = null;
+            await onFile(j.file, new Uint8Array(0));
+          }
+        } else await onJson(j);
+        return;
+      }
+      if (!cur) return;
+      cur.parts.push(data);
+      cur.got += data.byteLength;
+      if (onProgress && cur.got - cur.shown > 2 << 20) {
+        cur.shown = cur.got;
+        onProgress(cur.name, cur.got / cur.size);
+      }
+      if (cur.got >= cur.size) {
+        const c = cur;
+        cur = null;
+        await onFile(c.name, new Uint8Array(await new Blob(c.parts).arrayBuffer()));
+      }
+    };
+    return (e) => {
+      const d = e.data;
+      chain = chain.then(() => handle(d)).catch((x) => console.warn("[console]", x));
+    };
+  }
+  function repeater(dc) {
+    let last = null;
+    const send = () => {
+      if (last != null && dc.readyState === "open") {
+        try {
+          dc.send(last);
+        } catch (e) {
+        }
+      }
+    };
+    const beat = setInterval(send, 100);
+    const fn = (v) => {
+      if (v === last) return;
+      last = v;
+      send();
+      setTimeout(send, 15);
+      setTimeout(send, 40);
+    };
+    fn.stop = () => clearInterval(beat);
+    return fn;
+  }
+  var waitOpen = (dc, ms) => new Promise((ok, no) => {
+    if (dc.readyState === "open") return ok();
+    dc.addEventListener("open", () => ok(), { once: true });
+    setTimeout(() => no(new Error("canal não abriu")), ms);
+  });
+  async function connectScreen(code) {
+    const emu = player.emu;
+    if (!emu || !emu.started) {
+      cast.pending = code;
+      return;
+    }
+    let video = false;
+    try {
+      video = localStorage.getItem("cartucho.castVideo") === "1";
+    } catch (e) {
+    }
+    const r = video ? "video" : await consoleTo(code);
+    if (r === "video") castTo(code);
+  }
+  async function consoleTo(code) {
+    const emu = player.emu, gm = emu.gameManager, rom = player.rom;
+    if (!rom || !rom.blob) return "video";
+    stopCast();
+    setCastUi("wait");
+    const btn = $("#castBtn");
+    const wasPaused = emu.paused;
+    try {
+      emu.pause();
+    } catch (e) {
+    }
+    const resumeHere = () => {
+      if (!wasPaused) {
+        try {
+          emu.play();
+        } catch (e) {
+        }
+      }
+    };
+    let state, sav;
+    try {
+      state = new Uint8Array(await gm.getState());
+      sav = new Uint8Array(gm.getSaveFile() || []);
+    } catch (e) {
+      resumeHere();
+      setCastUi("off");
+      return "video";
+    }
+    const pc = new RTCPeerConnection(RTC_CONFIG);
+    const ctl = pc.createDataChannel("controle", { ordered: false, maxRetransmits: 0 });
+    const files = pc.createDataChannel("arquivo");
+    const scr = pc.createDataChannel("tela", { ordered: false, maxRetransmits: 0 });
+    files.binaryType = scr.binaryType = "arraybuffer";
+    cast.pc = pc;
+    cast.dc = ctl;
+    cast.code = code;
+    const c = cast.console = { pc, ctl, files, scr, ending: false, onEnd: null, started: null, need: null };
+    const fail = (msg, video) => {
+      if (cast.console === c) cast.console = null;
+      stopCast(video ? void 0 : msg);
+      resumeHere();
+      return video ? "video" : "erro";
+    };
+    try {
+      const sig = await signal(code);
+      await pc.setLocalDescription(await pc.createOffer());
+      await iceDone(pc);
+      const id = rid();
+      const answer = await new Promise((resolve) => {
+        const stop = sig.listen("resposta", (m) => {
+          if (m.re === id && m.sdp) {
+            stop();
+            resolve(m);
+          }
+        });
+        setTimeout(() => {
+          stop();
+          resolve(null);
+        }, 2e4);
+        sig.send("oferta", { id, sdp: pc.localDescription.toJSON(), from: device.name, console: { key: player.key, title: rom.title } });
+      });
+      if (!answer) return fail("A segunda tela não respondeu. Confira o código e se ela está na tela de espera.");
+      if (!answer.console) return fail(null, true);
+      await pc.setRemoteDescription(answer.sdp);
+      await waitOpen(files, 15e3);
+    } catch (e) {
+      return fail("Não deu para conectar com a segunda tela. Os dois aparelhos estão na mesma rede Wi-Fi?");
+    }
+    const got = new Promise((resolve) => {
+      c.need = resolve;
+    });
+    const started = new Promise((resolve) => {
+      c.started = resolve;
+    });
+    files.onmessage = receiver(async (j) => {
+      if ("need" in j && c.need) c.need(j.need);
+      if (j.started && c.started) c.started(true);
+      if (j.failed && c.started) c.started(false);
+    }, async (name, u8) => {
+      if (name === "sav" && u8.length) {
+        player.remoteSav = u8;
+        flush({ quiet: true });
+      }
+      if (name === "state" && c.onEnd) c.onEnd(u8);
+    });
+    scr.onmessage = async (e) => {
+      const v = player.emu && player.emu.view;
+      if (!v || cast.console !== c) return;
+      try {
+        const bmp = await createImageBitmap(new Blob([e.data], { type: "image/webp" }));
+        v.getContext("2d").drawImage(bmp, 0, 0, v.width, v.height);
+        bmp.close();
+        cast.consolePics = (cast.consolePics || 0) + 1;
+      } catch (x) {
+      }
+    };
+    pc.onconnectionstatechange = () => {
+      if (cast.console === c && !c.ending && ["failed", "disconnected", "closed"].includes(pc.connectionState)) backToPhone(c, null, "A segunda tela desconectou. O jogo voltou para o celular pelo último save.");
+    };
+    try {
+      const meta = { title: rom.title, system: rom.system, code: rom.code || "", ext: rom.ext || "" };
+      files.send(JSON.stringify({ hello: { key: player.key, romId: player.key + ":" + rom.blob.size, rom: meta } }));
+      const need = await Promise.race([got, sleep(1e4).then(() => {
+        throw new Error("sem resposta");
+      })]);
+      if (need) {
+        toast("Mandando o jogo para a outra tela (só na primeira vez)…", 3e3);
+        await sendFile(files, "rom", rom.blob, (f) => {
+          btn.textContent = `Enviando ${Math.round(f * 100)}%`;
+        });
+      }
+      btn.textContent = "Abrindo lá…";
+      await sendFile(files, "sav", sav);
+      await sendFile(files, "state", state);
+      files.send(JSON.stringify({ go: 1 }));
+      const ok = await Promise.race([started, sleep(12e4).then(() => false)]);
+      if (!ok) return fail("A segunda tela não conseguiu abrir o jogo. Ele continua aqui.");
+    } catch (e) {
+      return fail("A transferência para a segunda tela parou no meio. O jogo continua aqui.");
+    }
+    const keys = repeater(ctl), touch = repeater(ctl);
+    c.stop = () => {
+      keys.stop();
+      touch.stop();
+    };
+    cast.consoleSend = (mask) => keys(String(mask));
+    if (emu.isDs) emu.onTouch = () => touch(JSON.stringify({ t: [emu.touch ? 1 : 0, emu.tx, emu.ty] }));
+    window.__castCap = 1;
+    window.dispatchEvent(new Event("resize"));
+    if (emu.relayout) emu.relayout();
+    setCastUi("on");
+    showPad(true);
+    keepAwake();
+    toast("O jogo está rodando na outra tela. Este celular é o controle.", 3500);
+    return "ok";
+  }
+  async function endConsole() {
+    const c = cast.console;
+    if (!c) return false;
+    c.ending = true;
+    const state = await new Promise((resolve) => {
+      c.onEnd = resolve;
+      try {
+        c.files.send(JSON.stringify({ end: 1 }));
+      } catch (e) {
+        resolve(null);
+      }
+      setTimeout(() => resolve(null), 12e3);
+    });
+    await backToPhone(c, state, state ? "O jogo voltou para o celular." : "A outra tela não respondeu. O jogo voltou pelo último save.");
+    return true;
+  }
+  async function backToPhone(c, state, msg) {
+    if (cast.console !== c) return;
+    cast.console = null;
+    cast.consoleSend = null;
+    if (c.stop) c.stop();
+    const emu = player.emu, gm = emu.gameManager;
+    emu.onTouch = null;
+    emu.touch = false;
+    stopCast();
+    if (emu.relayout) emu.relayout();
+    const rs = player.remoteSav;
+    try {
+      if (rs) {
+        writeSav(gm, rs);
+        try {
+          gm.loadSaveFiles();
+        } catch (e) {
+        }
+        gm.restart();
+        await sleep(500);
+      }
+      if (state) await gm.loadState(state);
+    } catch (e) {
+      console.warn("[console] voltar", e);
+    }
+    try {
+      emu.play();
+    } catch (e) {
+    }
+    if (rs) {
+      await flush({ quiet: true });
+      player.remoteSav = null;
+    }
+    if (msg) toast(msg, 4e3);
+  }
+  async function tvConsole(msg, sig) {
+    const pc = new RTCPeerConnection(RTC_CONFIG);
+    tvScreen.pc = pc;
+    const status = (t) => {
+      $("#scrStatus").textContent = t;
+    };
+    status(`Conectando com ${msg.from || "o celular"}…`);
+    const ch = {};
+    let info = null, rom = null, sav = null, state = null, live = false;
+    const reply = (j) => {
+      try {
+        ch.arquivo.send(JSON.stringify(j));
+      } catch (e) {
+      }
+    };
+    const onFiles = receiver(async (j) => {
+      if (j.hello) {
+        info = j.hello;
+        const cached = await idb.get("pend", "tvrom");
+        if (cached && cached.id === info.romId) rom = cached.blob;
+        reply({ need: !rom });
+        status(rom ? `Abrindo ${info.rom.title}…` : `Recebendo ${info.rom.title}…`);
+      } else if (j.go) start();
+      else if (j.end) finish();
+    }, async (name, u8) => {
+      if (name === "rom") {
+        rom = new Blob([u8]);
+        await idb.put("pend", "tvrom", { id: info.romId, blob: rom }).catch(() => {
+        });
+      } else if (name === "sav") sav = u8;
+      else if (name === "state") state = u8;
+    }, (name, f) => {
+      if (name === "rom") status(`Recebendo ${info ? info.rom.title : "o jogo"}… ${Math.round(f * 100)}%`);
+    });
+    const onCtl = (e) => {
+      const emu = player.emu, d = String(e.data);
+      if (!emu || !live) return;
+      if (d[0] === "{") {
+        try {
+          const t = JSON.parse(d).t;
+          if (t) {
+            emu.touch = !!t[0];
+            emu.tx = t[1];
+            emu.ty = t[2];
+          }
+        } catch (x) {
+        }
+      } else applyRemote(Number(d) >>> 0);
+    };
+    pc.ondatachannel = (e) => {
+      const dc = e.channel;
+      dc.binaryType = "arraybuffer";
+      ch[dc.label] = dc;
+      if (dc.label === "arquivo") dc.onmessage = onFiles;
+      if (dc.label === "controle") dc.onmessage = onCtl;
+    };
+    pc.onconnectionstatechange = () => {
+      if (pc !== tvScreen.pc) return;
+      if (["failed", "disconnected", "closed"].includes(pc.connectionState)) {
+        if (live) {
+          try {
+            player.emu.pause();
+          } catch (x) {
+          }
+          again("O celular desconectou.");
+        } else status("O celular desconectou. Esperando de novo…");
+      }
+    };
+    let savTimer = null, picTimer = null;
+    async function start() {
+      status(`Abrindo ${info.rom.title}…`);
+      $("#screen").hidden = true;
+      let ready = false;
+      window.addEventListener("cartucho-guest-start", () => {
+        ready = true;
+      }, { once: true });
+      await play(info.key, { rom: { ...info.rom, blob: rom }, sav: sav && sav.length ? sav : null, state });
+      for (let i = 0; i < 1200 && !ready && player.emu; i++) await sleep(100);
+      if (!ready || !player.emu) {
+        reply({ failed: 1 });
+        again("Não deu para abrir o jogo aqui.");
+        return;
+      }
+      live = true;
+      reply({ started: 1 });
+      keepAwake();
+      const emu = player.emu, gm = emu.gameManager;
+      let lastSav = sav && sav.length ? await sha(sav) : null;
+      savTimer = setInterval(async () => {
+        try {
+          const s = new Uint8Array(gm.getSaveFile() || []);
+          if (!s.length) return;
+          const h = await sha(s);
+          if (h !== lastSav) {
+            lastSav = h;
+            await sendFile(ch.arquivo, "sav", s);
+          }
+        } catch (e) {
+        }
+      }, 5e3);
+      if (emu.isDs && emu.drawBottom && ch.tela) {
+        const c = document.createElement("canvas");
+        c.width = 256;
+        c.height = 192;
+        const g = c.getContext("2d", { alpha: false });
+        let busy2 = false;
+        picTimer = setInterval(() => {
+          if (busy2 || ch.tela.readyState !== "open" || ch.tela.bufferedAmount > 65536) return;
+          busy2 = true;
+          try {
+            emu.drawBottom(g, 256, 192);
+          } catch (e) {
+          }
+          c.toBlob(async (b) => {
+            try {
+              if (b && ch.tela.readyState === "open") ch.tela.send(await b.arrayBuffer());
+            } catch (e) {
+            }
+            busy2 = false;
+          }, "image/webp", 0.7);
+        }, 50);
+      }
+    }
+    async function finish() {
+      live = false;
+      clearInterval(savTimer);
+      clearInterval(picTimer);
+      const gm = player.emu && player.emu.gameManager;
+      try {
+        player.emu.pause();
+        await sendFile(ch.arquivo, "sav", new Uint8Array(gm.getSaveFile() || []));
+        await sendFile(ch.arquivo, "state", new Uint8Array(await gm.getState()));
+      } catch (e) {
+      }
+      await sleep(1500);
+      again("O jogo voltou para o celular.");
+    }
+    try {
+      await pc.setRemoteDescription(msg.sdp);
+      await pc.setLocalDescription(await pc.createAnswer());
+      await iceDone(pc);
+      await sig.send("resposta", { re: msg.id, sdp: pc.localDescription.toJSON(), console: true });
+    } catch (e) {
+      status("Não deu para conectar. Tente de novo no celular.");
+    }
+  }
+  function again(text) {
+    clearInterval(tvScreen.padTimer);
+    try {
+      sessionStorage.setItem("cartucho.tvAuto", text || "1");
+    } catch (e) {
+    }
+    player.leaving = true;
+    setTimeout(() => location.reload(), 300);
+  }
+
   // src/cast/tv.js
   var tvScreen = window.__tvScreen = {
     active: false,
@@ -386,7 +823,16 @@
       await document.documentElement.requestFullscreen();
     } catch (e) {
     }
-    tvScreen.code = newPairCode();
+    let keep = null;
+    try {
+      keep = sessionStorage.getItem("cartucho.tvCode");
+    } catch (e) {
+    }
+    tvScreen.code = keep || newPairCode();
+    try {
+      sessionStorage.setItem("cartucho.tvCode", tvScreen.code);
+    } catch (e) {
+    }
     const link = appUrl() + "#tela-" + tvScreen.code;
     $("#scrCode").textContent = tvScreen.code.slice(0, 4) + " " + tvScreen.code.slice(4);
     try {
@@ -403,6 +849,10 @@
       if (!msg.sdp || !msg.id || handled.has(msg.id)) return;
       handled.add(msg.id);
       closeScreenConnection();
+      if (msg.console) {
+        tvConsole(msg, sig);
+        return;
+      }
       const pc = new RTCPeerConnection(RTC_CONFIG);
       tvScreen.pc = pc;
       $("#scrStatus").textContent = `Conectando com ${msg.from || "o celular"}…`;
@@ -952,6 +1402,17 @@ void main() {
     location.reload();
   }
   $("#screenBtn").addEventListener("click", startScreen);
+  try {
+    const back = sessionStorage.getItem("cartucho.tvAuto");
+    if (back) {
+      sessionStorage.removeItem("cartucho.tvAuto");
+      setTimeout(async () => {
+        await startScreen();
+        if (back.length > 1) $("#scrStatus").textContent = back;
+      }, 200);
+    }
+  } catch (e) {
+  }
   $("#scrExit").addEventListener("click", stopScreen);
   $("#scrTap").addEventListener("click", () => {
     if (tvScreen.ac) tvScreen.ac.resume().catch(() => {
@@ -1376,6 +1837,10 @@ void main() {
   var pressedAt = new Array(PAD_BITS.length).fill(0);
   var releaseTimer = null;
   function applyInput() {
+    if (cast.consoleSend) {
+      cast.consoleSend(cast.localMask >>> 0);
+      return;
+    }
     const gm = player.emu && player.emu.gameManager;
     if (!gm) return;
     const want = (cast.localMask | cast.remoteMask) >>> 0;
@@ -3015,6 +3480,7 @@ registerProcessor("ds-out", DSOut);
       if (touchId === null && (x < 0 || x > 1 || y < 0 || y > 1)) return false;
       emu.tx = Math.max(0, Math.min(255, Math.floor(x * W)));
       emu.ty = Math.max(0, Math.min(191, Math.floor(y * H)));
+      if (emu.onTouch) emu.onTouch();
       return true;
     }
     view.addEventListener("pointerdown", (e) => {
@@ -3025,6 +3491,7 @@ registerProcessor("ds-out", DSOut);
       } catch (x) {
       }
       emu.touch = true;
+      if (emu.onTouch) emu.onTouch();
       e.preventDefault();
     });
     view.addEventListener("pointermove", (e) => {
@@ -3034,7 +3501,10 @@ registerProcessor("ds-out", DSOut);
       if (e.pointerId !== touchId) return;
       touchId = null;
       emu.touch = false;
+      if (emu.onTouch) emu.onTouch();
     };
+    emu.drawBottom = (ctx, w, h) => ctx.drawImage(fb, 0, fb.height / 2, fb.width, fb.height / 2, 0, 0, w, h);
+    emu.view = view;
     view.addEventListener("pointerup", touchUp);
     view.addEventListener("pointercancel", touchUp);
     view.addEventListener("contextmenu", (e) => e.preventDefault());
@@ -4108,7 +4578,9 @@ void main() {
     pad.addEventListener("pointerup", up);
     pad.addEventListener("pointercancel", up);
     pad.addEventListener("contextmenu", (e) => e.preventDefault());
-    $("#padStop").addEventListener("click", () => stopCast("Transmissão encerrada."));
+    $("#padStop").addEventListener("click", async () => {
+      if (!await endConsole()) stopCast("Transmissão encerrada.");
+    });
     $("#padSave").addEventListener("click", async () => {
       await tokenFromTap();
       padMsg("Enviando o save…");
@@ -4146,7 +4618,9 @@ void main() {
   }
   function askCastCode() {
     if (cast.pc) {
-      stopCast("Transmissão encerrada.");
+      endConsole().then((was) => {
+        if (!was) stopCast("Transmissão encerrada.");
+      });
       return;
     }
     const root = $("#dialogRoot");
@@ -4162,7 +4636,7 @@ void main() {
           return;
         }
         close();
-        castTo(c);
+        connectScreen(c);
       } },
       el("h2", {}, "Jogar numa segunda tela"),
       el("p", {}, 'Na TV, tablet ou notebook, abra o Cartuchin e escolha "Usar como tela". Digite aqui o código que aparecer. Os dois precisam estar no mesmo Wi-Fi.'),
@@ -4249,7 +4723,7 @@ void main() {
   }
   async function flush(opts = {}) {
     const emu = player.emu;
-    if (!emu || !emu.started || !emu.gameManager || !player.key) return;
+    if (!emu || !emu.started || !emu.gameManager || !player.key || player.guest) return;
     if (player.busy) {
       player.again = true;
       return;
@@ -4258,7 +4732,7 @@ void main() {
     try {
       let sav = null;
       try {
-        sav = emu.gameManager.getSaveFile();
+        sav = player.remoteSav || emu.gameManager.getSaveFile();
       } catch (e) {
       }
       if (!sav || !sav.length) {
@@ -4314,6 +4788,7 @@ void main() {
     return r.data;
   }
   async function uploadState(opts = {}) {
+    if (cast.console) return false;
     const emu = player.emu;
     if (!emu || !emu.started || !emu.gameManager || !player.key || player.stateBusy) return false;
     const gm = emu.gameManager;
@@ -4555,21 +5030,23 @@ void main() {
   }
   var dsPage = new URLSearchParams(location.search).get("ds");
   var DS_ISOLATED_PAGE = () => ds.core === "mt";
-  async function play(key) {
-    if (!dsPage && DS_ISOLATED_PAGE()) {
+  async function play(key, given = null) {
+    if (!given && !dsPage && DS_ISOLATED_PAGE()) {
       const r = roms.get(key) || cloud.roms.get(key) || cloud.docs.get(key);
       if (r && r.system === "nds") {
         location.href = location.pathname + "?ds=" + encodeURIComponent(key) + (cast.pending ? "#tela-" + cast.pending : "");
         return;
       }
     }
-    let rom = roms.get(key);
+    let rom = given ? given.rom : roms.get(key);
     if (!rom) rom = await fetchRom(key);
     if (!rom) return;
-    const start = await chooseStartSave(key);
+    const start = given ? { sav: given.sav, sha: null, baseRev: null } : await chooseStartSave(key);
     if (start === null) return;
     const isDs = rom.system === "nds";
-    const resume = isDs && !dsStatesOk ? null : await findResumeState(key, start);
+    const resume = given || isDs && !dsStatesOk ? null : await findResumeState(key, start);
+    player.guest = !!given;
+    player.rom = rom;
     player.key = key;
     player.meta = { title: rom.title, system: rom.system, code: rom.code };
     player.lastSha = start.upload ? null : start.sha;
@@ -4611,6 +5088,18 @@ void main() {
           console.warn("save load", e);
         }
       }
+      if (given && given.state) {
+        await sleep(300);
+        try {
+          await gm.loadState(given.state);
+        } catch (e) {
+          console.warn("console state", e);
+        }
+      }
+      if (given) {
+        window.dispatchEvent(new Event("cartucho-guest-start"));
+        return;
+      }
       if (resume) {
         await sleep(300);
         try {
@@ -4647,7 +5136,7 @@ void main() {
       if (cast.pending) {
         const c = cast.pending;
         cast.pending = null;
-        setTimeout(() => castTo(c), 500);
+        setTimeout(() => connectScreen(c), 500);
       }
     });
   }
@@ -5483,8 +5972,8 @@ void main() {
       const q = new URLSearchParams({ spaces: "appDataFolder", q: `name = '${name.replace(/'/g, "\\'")}'`, fields: "files(id,name,modifiedTime)" });
       const j = await (await this.api(`${DRIVE}/files?${q}`)).json();
       for (const f of j.files || []) this.remember(f);
-      const again = this.files.get(name);
-      return again && again.id;
+      const again2 = this.files.get(name);
+      return again2 && again2.id;
     },
     async list(dir) {
       await this.refresh();

@@ -1,7 +1,8 @@
 import { b64, pack, sha, unpack } from "../bytes.js";
 import { STREAM_H, STREAM_W } from "../cast/constants.js";
 import { padMsg, showPad } from "../cast/pad.js";
-import { cast, castTo } from "../cast/phone.js";
+import { cast } from "../cast/phone.js";
+import { connectScreen } from "../cast/console.js";
 import { askGoogleToken, cloud, cloudName, fetchRom, gauth, getSaveDoc, googleNeedsTap, isGoogle, putFile, readJson, refreshLibrary, tokenFresh, utf8, writeCloud, hasServerSession, serverToken } from "../cloud.js";
 import { device } from "../device.js";
 import { idb } from "../idb.js";
@@ -65,7 +66,7 @@ function writeSav(gm, sav) {
 
 async function flush(opts = {}) {
   const emu = player.emu;
-  if (!emu || !emu.started || !emu.gameManager || !player.key) return;
+  if (!emu || !emu.started || !emu.gameManager || !player.key || player.guest) return;   // guest: jogo de outro aparelho (modo console), quem salva é ele
   if (player.busy) {
     player.again = true;
     return;
@@ -73,7 +74,8 @@ async function flush(opts = {}) {
   player.busy = true;
   try {
     let sav = null;
-    try { sav = emu.gameManager.getSaveFile(); } catch (e) {}
+    // modo console: o jogo roda na outra tela, que manda o save dela para cá
+    try { sav = player.remoteSav || emu.gameManager.getSaveFile(); } catch (e) {}
     if (!sav || !sav.length) {
       if (!player.lastSha) setChip("none");
       return;
@@ -130,6 +132,7 @@ async function getStateDoc(key) {
   return r.data;
 }
 async function uploadState(opts = {}) {
+  if (cast.console) return false;   // modo console: o estado de agora está na outra tela
   const emu = player.emu;
   if (!emu || !emu.started || !emu.gameManager || !player.key || player.stateBusy) return false;
   const gm = emu.gameManager;
@@ -338,22 +341,25 @@ async function createEmulator(file, gameName, options) {
 const dsPage = new URLSearchParams(location.search).get("ds");
 // só o core com threads usa a página isolada (?ds=, COOP/COEP); os outros rodam aqui mesmo
 const DS_ISOLATED_PAGE = () => ds.core === "mt";
-async function play(key) {
-  if (!dsPage && DS_ISOLATED_PAGE()) {
+/* given (modo console, na outra tela): { rom, sav, state } vindos do celular; nada de nuvem aqui */
+async function play(key, given = null) {
+  if (!given && !dsPage && DS_ISOLATED_PAGE()) {
     const r = roms.get(key) || cloud.roms.get(key) || cloud.docs.get(key);
     if (r && r.system === "nds") {
       location.href = location.pathname + "?ds=" + encodeURIComponent(key) + (cast.pending ? "#tela-" + cast.pending : "");
       return;
     }
   }
-  let rom = roms.get(key);
+  let rom = given ? given.rom : roms.get(key);
   if (!rom) rom = await fetchRom(key);
   if (!rom) return;
-  const start = await chooseStartSave(key);
+  const start = given ? { sav: given.sav, sha: null, baseRev: null } : await chooseStartSave(key);
   if (start === null) return;
   const isDs = rom.system === "nds";
   // DS: retomar do save state fica desligado enquanto o load state do core não está confiável
-  const resume = isDs && !dsStatesOk ? null : await findResumeState(key, start);
+  const resume = given || (isDs && !dsStatesOk) ? null : await findResumeState(key, start);
+  player.guest = !!given;
+  player.rom = rom;
   player.key = key;
   player.meta = { title: rom.title, system: rom.system, code: rom.code };
   player.lastSha = start.upload ? null : start.sha;
@@ -391,6 +397,11 @@ async function play(key) {
         gm.restart();
       } catch (e) { console.warn("save load", e); }
     }
+    if (given && given.state) {
+      await sleep(300);
+      try { await gm.loadState(given.state); } catch (e) { console.warn("console state", e); }
+    }
+    if (given) { window.dispatchEvent(new Event("cartucho-guest-start")); return; }
     if (resume) {
       await sleep(300);
       try {
@@ -421,7 +432,7 @@ async function play(key) {
     if (cast.pending) {
       const c = cast.pending;
       cast.pending = null;
-      setTimeout(() => castTo(c), 500);
+      setTimeout(() => connectScreen(c), 500);
     }
   });
 }
@@ -525,4 +536,4 @@ window.fetch = (input, init) => {
   return realFetch(input, init);
 };
 
-export { player, flush, uploadState, createEmulator, play, tokenFromTap, dsPage };
+export { player, writeSav, flush, uploadState, createEmulator, play, tokenFromTap, dsPage };

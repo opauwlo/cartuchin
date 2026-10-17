@@ -46,6 +46,8 @@ const DIR_MASK = ["UP", "DOWN", "LEFT", "RIGHT"].reduce((m, k) => m | (1 << PAD_
 const pressedAt = new Array(PAD_BITS.length).fill(0);
 let releaseTimer = null;
 function applyInput() {
+  // modo console: os botões vão para a outra tela, que roda o jogo
+  if (cast.consoleSend) { cast.consoleSend(cast.localMask >>> 0); return; }
   const gm = player.emu && player.emu.gameManager;
   if (!gm) return;
   const want = (cast.localMask | cast.remoteMask) >>> 0;
@@ -424,4 +426,4 @@ function watchCast(pc, sender, dc, emu) {
   }, 2000);
 }
 
-export { cast, applyInput, stopCast, chromeVer, castTo };
+export { cast, applyInput, applyRemote, setCastUi, stopCast, chromeVer, castTo };

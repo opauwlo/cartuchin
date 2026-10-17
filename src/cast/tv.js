@@ -2,6 +2,7 @@ import { iceDone, keepAwake, readPad, signal } from "./common.js";
 import { KEYCODES, KEYMAP, RTC_CONFIG, keysDown } from "./constants.js";
 import { chromeVer } from "./phone.js";
 import { newPairCode } from "../connect.js";
+import { tvConsole } from "./console.js";
 import { $, appUrl } from "../util.js";
 
 /* ---------- TV side ---------- */
@@ -41,7 +42,11 @@ async function startScreen() {
   $("#screen").hidden = false;
   keepAwake();
   try { await document.documentElement.requestFullscreen(); } catch (e) {}
-  tvScreen.code = newPairCode();
+  // depois de um jogo no modo console a página recarrega: mesmo código, para o celular reconectar
+  let keep = null;
+  try { keep = sessionStorage.getItem("cartucho.tvCode"); } catch (e) {}
+  tvScreen.code = keep || newPairCode();
+  try { sessionStorage.setItem("cartucho.tvCode", tvScreen.code); } catch (e) {}
   const link = appUrl() + "#tela-" + tvScreen.code;
   $("#scrCode").textContent = tvScreen.code.slice(0, 4) + " " + tvScreen.code.slice(4);
   try {
@@ -57,6 +62,7 @@ async function startScreen() {
     if (!msg.sdp || !msg.id || handled.has(msg.id)) return;
     handled.add(msg.id);
     closeScreenConnection();
+    if (msg.console) { tvConsole(msg, sig); return; }   // o jogo vai rodar aqui; o celular é o controle
     const pc = new RTCPeerConnection(RTC_CONFIG);
     tvScreen.pc = pc;
     $("#scrStatus").textContent = `Conectando com ${msg.from || "o celular"}…`;
@@ -528,6 +534,14 @@ function stopScreen() {
   location.reload();
 }
 $("#screenBtn").addEventListener("click", startScreen);
+// volta à espera depois de um jogo no modo console
+try {
+  const back = sessionStorage.getItem("cartucho.tvAuto");
+  if (back) {
+    sessionStorage.removeItem("cartucho.tvAuto");
+    setTimeout(async () => { await startScreen(); if (back.length > 1) $("#scrStatus").textContent = back; }, 200);
+  }
+} catch (e) {}
 $("#scrExit").addEventListener("click", stopScreen);
 $("#scrTap").addEventListener("click", () => {
   if (tvScreen.ac) tvScreen.ac.resume().catch(() => {});

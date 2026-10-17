@@ -229,6 +229,7 @@ async function castOnce(mode, layout) {
   const tag = `[${MODE_NAME[mode]}, ${layout}]`;
   await phone.evaluate(([m, lo]) => {
     localStorage.setItem("cartucho.castMode", String(m));
+    localStorage.setItem("cartucho.castVideo", "1");
     localStorage.setItem("cartucho.ds.cast", lo);
   }, [mode, layout]);
   await phone.evaluate((lo) => { window.__ds.cast = lo; window.__cartucho.emu.relayout(); }, layout);
@@ -283,6 +284,51 @@ async function castOnce(mode, layout) {
 if (!ONLY || ONLY === "cast") {
   for (const mode of CAST_MODES) for (const layout of CAST_LAYOUTS) await castOnce(mode, layout);
 }
+
+// Modo console: o jogo roda na outra tela e o celular é só o controle
+async function consoleOnce() {
+  await phone.evaluate(() => localStorage.removeItem("cartucho.castVideo"));
+  const tv = await ctx.newPage();
+  tv.on("pageerror", (e) => errors.push("tela: " + e.message));
+  await tv.goto(base);
+  await tv.click("#screenBtn");
+  await tv.waitForFunction(() => window.__tvScreen && window.__tvScreen.code, null, { timeout: 15000 });
+  const code = await tv.evaluate(() => window.__tvScreen.code);
+  await phone.bringToFront();
+  await phone.click("#castBtn");
+  await phone.fill(".dialog input", code);
+  await phone.click(".dialog button[type=submit]");
+  const on = await phone.waitForFunction(() => !!(window.__cast.console && window.__cast.consoleSend), null, { timeout: 90000 }).then(() => true, () => false);
+  ok(on, "[console] jogo abre na outra tela");
+  if (!on) { await tv.close(); return; }
+  const runs = await tv.waitForFunction(() => { const e = window.__cartucho.emu; return e && e.frames > 120 && !e.paused && window.__cartucho.guest; }, null, { timeout: 30000 }).then(() => true, () => false);
+  ok(runs, "[console] a outra tela roda o jogo");
+  const still = await phone.evaluate(() => window.__cartucho.emu.paused);
+  ok(still, "[console] o celular fica parado (só controle)");
+  const k0 = Date.now();
+  await phone.evaluate(() => window.__cast.consoleSend(1 << 6));
+  const got = await tv.waitForFunction(() => (window.__cast.remoteMask & (1 << 6)) !== 0, null, { timeout: 5000, polling: 10 }).then(() => Date.now() - k0, () => -1);
+  await phone.evaluate(() => window.__cast.consoleSend(0));
+  ok(got >= 0, `[console] botão do celular chega no jogo${got >= 0 ? ` (${got} ms)` : ""}`);
+  const box = await phone.locator("#game .ds-view").boundingBox();
+  await phone.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await phone.mouse.down();
+  const touched = await tv.waitForFunction(() => window.__cartucho.emu.touch, null, { timeout: 5000 }).then(() => true, () => false);
+  await phone.mouse.up();
+  ok(touched, "[console] toque no celular chega na outra tela");
+  const pics = await phone.waitForFunction(() => (window.__cast.consolePics || 0) > 5, null, { timeout: 10000 }).then(() => true, () => false);
+  ok(pics, "[console] a tela de baixo aparece no celular");
+  const f0 = await tv.evaluate(() => window.__cartucho.emu.frames);
+  await phone.evaluate(() => document.querySelector("#padStop").click());
+  const back = await phone.waitForFunction(() => !window.__cast.console && !window.__cartucho.emu.paused, null, { timeout: 20000 }).then(() => true, () => false);
+  ok(back, "[console] encerrar volta o jogo para o celular");
+  const f1 = await phone.evaluate(() => window.__cartucho.emu.frames);
+  ok(f1 > 0 && f0 > 0, `[console] estado veio da outra tela (quadros: tela ${f0}, celular ${f1})`);
+  const again = await tv.waitForFunction(() => window.__tvScreen && window.__tvScreen.active && !document.querySelector("#screen").hidden, null, { timeout: 20000 }).then(() => true, () => false);
+  ok(again, "[console] a outra tela volta para a espera");
+  await tv.close();
+}
+if (!ONLY || ONLY === "cast" || ONLY === "console") await consoleOnce();
 
 ok(errors.length === 0, `sem erros de JavaScript${errors.length ? ":\n  " + errors.join("\n  ") : ""}`);
 await browser.close();
