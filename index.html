@@ -303,7 +303,7 @@ button { cursor: pointer; }
 .scr-row { display: flex; gap: 24px; align-items: center; flex-wrap: wrap; }
 .scr-row .qr { width: 220px; }
 .scr-code-box { display: grid; gap: 6px; min-width: 0; }
-.scr-label { font-family: var(--font-pixel); font-size: 0.8rem; letter-spacing: 0.1em; color: var(--muted); text-transform: uppercase; }
+.scr-label { font-size: 0.95rem; color: var(--muted); }
 #scrCode { font-size: 2.8rem; font-size: clamp(2rem, 6vw, 3.4rem); text-align: left; }
 .scr-small { font-size: 0.9rem !important; }
 .scr-tap { position: absolute; bottom: 32px; left: 50%; transform: translateX(-50%); }
@@ -364,7 +364,7 @@ button { cursor: pointer; }
 .ds-abxy i { position: absolute; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
 .ds-abxy i:nth-child(1) { left: 5px; top: 0; } .ds-abxy i:nth-child(2) { left: 0; top: 5px; } .ds-abxy i:nth-child(3) { right: 0; top: 5px; } .ds-abxy i:nth-child(4) { left: 5px; bottom: 0; }
 @media (prefers-reduced-motion: no-preference) { .ds-art { animation: ds-in 0.8s 0.12s cubic-bezier(.2,.9,.25,1.15) both; } @keyframes ds-in { from { transform: translate(30px, -40%) rotate(14deg); opacity: 0; } } }
-.welcome-badge { margin: 0; color: var(--accent); font-size: 0.72rem; }
+.welcome-badge { margin: 0; color: var(--accent); font-size: 0.9rem; font-weight: 600; }
 .features { list-style: none; margin: 4px 0 0; padding: 0; width: 100%; display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; }
 .features li { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; display: grid; gap: 4px; }
 .features b { font-family: var(--font-display); font-weight: 800; font-size: 1rem; line-height: 1.15; }
@@ -596,7 +596,7 @@ body { margin: 0; }
         <div class="ds-half ds-down"><div class="ds-screen ds-screen-touch"><span class="ds-tap"></span></div><span class="ds-dpad"></span><span class="ds-abxy"><i></i><i></i><i></i><i></i></span></div>
       </div>
     </div>
-    <p class="welcome-badge pix">Novo · Nintendo DS</p>
+    <p class="welcome-badge">Agora também com jogos de Nintendo DS</p>
     <h1 class="welcome-title">Seus jogos de GBA e DS em qualquer tela</h1>
     <p class="welcome-lead">Jogue no celular e continue em outro aparelho, ou espelhe o jogo numa segunda tela. O save vai junto, guardado no seu Google Drive.</p>
     <div id="googleBox">
@@ -609,12 +609,12 @@ body { margin: 0; }
     <button class="btn ghost" id="localOnlyBtn" type="button">Jogar sem conta</button>
     <ul class="features">
       <li><b>Nintendo DS de verdade</b><span>As duas telas, toque na de baixo e X/Y no controle. Em pé fica uma sobre a outra; deitado, lado a lado.</span></li>
-      <li><b>Qualquer tela vira o console</b><span>TV, tablet, notebook: o jogo roda no celular e aparece na segunda tela. No DS, ela mostra a tela de cima e o celular fica com a de toque.</span></li>
+      <li><b>Qualquer tela vira o console</b><span>No notebook, tablet ou TV, o jogo abre lá e o celular vira o controle. No DS, a tela de toque fica no celular.</span></li>
       <li><b>Continue de onde parou</b><span>Salve o momento exato e retome em outro aparelho. No DS também dá para salvar e carregar estados.</span></li>
       <li><b>Som limpo, sem estalo</b><span>O desempenho se ajusta sozinho ao aparelho: menos atraso no som e 30 fps de vídeo quando precisa.</span></li>
     </ul>
     <div class="welcome-more">
-      <p class="small-note">Na TV, tablet ou notebook, toque em <b>Usar como tela</b> lá em cima. Ele mostra o jogo que roda no celular e não precisa de conta.</p>
+      <p class="small-note">Na TV, tablet ou notebook, toque em <b>Usar como tela</b> lá em cima. Não precisa de conta: o jogo vem do celular.</p>
       <details class="gh-adv" id="ghAdv">
       <summary>Usar um repositório do GitHub (avançado)</summary>
     <div class="split">
@@ -657,9 +657,8 @@ body { margin: 0; }
     <section id="dsPromo" class="promo" hidden>
       <div class="promo-art" aria-hidden="true"><span class="promo-scr"></span><span class="promo-scr touch"></span></div>
       <div class="promo-body">
-        <p class="promo-kicker pix">Novo</p>
         <h2 class="promo-title">Jogos de Nintendo DS</h2>
-        <p class="promo-text">Adicione um .nds como qualquer jogo: duas telas, toque, X/Y no controle, salvar estado e a tela de cima numa segunda tela.</p>
+        <p class="promo-text">Adicione um .nds como qualquer jogo: duas telas, toque na de baixo, X e Y no controle, estados salvos e conquistas.</p>
         <div class="promo-actions">
           <button class="btn primary small" id="dsPromoAdd" type="button">Adicionar jogo de DS</button>
           <button class="btn ghost small" id="dsPromoHide" type="button">Agora não</button>
@@ -747,7 +746,7 @@ body { margin: 0; }
   <div id="scrWait" class="scr-wait">
     <div class="scr-card">
       <h2>Esta tela está pronta</h2>
-      <p>No celular, abra o Cartuchin, entre num jogo e toque em <b>Segunda tela</b>. Ou escaneie o QR com a câmera do celular.</p>
+      <p>No celular, abra o Cartuchin, entre num jogo e toque no ícone de tela lá em cima. Ou escaneie o QR com a câmera do celular.</p>
       <div class="scr-row">
         <div id="scrQr" class="qr"></div>
         <div class="scr-code-box">
@@ -756,7 +755,7 @@ body { margin: 0; }
           <p id="scrStatus" role="status">Esperando o celular…</p>
         </div>
       </div>
-      <p class="scr-small">O jogo roda no celular, que também vira o controle. Um controle ligado neste aparelho ou as setas do controle remoto também funcionam. Os dois aparelhos precisam estar no mesmo Wi-Fi.</p>
+      <p class="scr-small">O jogo abre aqui e o celular vira o controle (se esta tela for lenta demais, o jogo fica no celular e a imagem vem para cá). Um controle ligado neste aparelho também funciona. Os dois aparelhos precisam estar no mesmo Wi-Fi.</p>
       <button class="btn small ghost" id="scrExit" type="button">Sair do modo tela</button>
     </div>
   </div>
@@ -821,9 +820,9 @@ body { margin: 0; }
 
 <div id="dialogRoot"></div>
 
-<script src="config.js?v=20261017193932"></script>
-<script src="vendor/lang-pt-BR.js?v=20261017193932"></script>
+<script src="config.js?v=20261017194120"></script>
+<script src="vendor/lang-pt-BR.js?v=20261017194120"></script>
 <script src="vendor/qrcode.js"></script>
-<script src="app.js?v=20261017193932"></script>
+<script src="app.js?v=20261017194120"></script>
 </body>
 </html>
