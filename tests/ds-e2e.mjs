@@ -287,7 +287,7 @@ if (!ONLY || ONLY === "cast") {
 
 // Modo console: o jogo roda na outra tela e o celular é só o controle
 async function consoleOnce() {
-  await phone.evaluate(() => localStorage.removeItem("cartucho.castVideo"));
+  await phone.evaluate(() => { localStorage.removeItem("cartucho.castVideo"); localStorage.setItem("cartucho.tvNoCache", "1"); });   // a ROM vai mesmo (comprimida)
   const tv = await ctx.newPage();
   tv.on("pageerror", (e) => errors.push("tela: " + e.message));
   await tv.goto(base);
@@ -299,7 +299,8 @@ async function consoleOnce() {
   await phone.fill(".dialog input", code);
   await phone.click(".dialog button[type=submit]");
   const on = await phone.waitForFunction(() => !!(window.__cast.console && window.__cast.consoleSend), null, { timeout: 90000 }).then(() => true, () => false);
-  ok(on, "[console] jogo abre na outra tela");
+  ok(on, "[console] jogo abre na outra tela (ROM enviada comprimida)");
+  await phone.evaluate(() => localStorage.removeItem("cartucho.tvNoCache"));
   if (!on) { await tv.close(); return; }
   const runs = await tv.waitForFunction(() => { const e = window.__cartucho.emu; return e && e.frames > 120 && !e.paused && window.__cartucho.guest; }, null, { timeout: 30000 }).then(() => true, () => false);
   ok(runs, "[console] a outra tela roda o jogo");

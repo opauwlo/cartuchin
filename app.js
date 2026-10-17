@@ -347,13 +347,50 @@
       if (onProgress) onProgress(Math.min(1, (o + STEP) / size));
     }
   }
+  async function sendGz(dc, name, blob, onProgress) {
+    dc.bufferedAmountLowThreshold = 1 << 20;
+    dc.send(JSON.stringify({ file: name, size: -1, gz: true }));
+    let read = 0;
+    const counted = blob.stream().pipeThrough(new TransformStream({ transform(ch, ctl) {
+      read += ch.length;
+      ctl.enqueue(ch);
+    } }));
+    const reader = counted.pipeThrough(new CompressionStream("gzip")).getReader();
+    let shown = 0;
+    for (; ; ) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      for (let i = 0; i < value.length; i += CHUNK) {
+        if (dc.readyState !== "open") throw new Error("canal fechado");
+        if (dc.bufferedAmount > 8 << 20) await new Promise((r) => {
+          dc.onbufferedamountlow = () => {
+            dc.onbufferedamountlow = null;
+            r();
+          };
+        });
+        dc.send(value.subarray(i, i + CHUNK));
+      }
+      if (onProgress && read - shown > 2 << 20) {
+        shown = read;
+        onProgress(read / blob.size);
+      }
+    }
+    dc.send(JSON.stringify({ fileEnd: 1 }));
+  }
   function receiver(onJson, onFile, onProgress) {
     let cur = null, chain = Promise.resolve();
     const handle = async (data) => {
       if (typeof data === "string") {
         const j = JSON.parse(data);
+        if (j.fileEnd && cur) {
+          const c = cur;
+          cur = null;
+          const raw = new Blob(c.parts).stream().pipeThrough(new DecompressionStream("gzip"));
+          await onFile(c.name, new Uint8Array(await new Response(raw).arrayBuffer()));
+          return;
+        }
         if (j.file) {
-          cur = { name: j.file, size: j.size, parts: [], got: 0, shown: 0 };
+          cur = { name: j.file, size: j.size, gz: !!j.gz, parts: [], got: 0, shown: 0 };
           if (!j.size) {
             cur = null;
             await onFile(j.file, new Uint8Array(0));
@@ -364,11 +401,15 @@
       if (!cur) return;
       cur.parts.push(data);
       cur.got += data.byteLength;
-      if (onProgress && cur.got - cur.shown > 2 << 20) {
+      if (onProgress && !cur.gz && cur.got - cur.shown > 2 << 20) {
         cur.shown = cur.got;
         onProgress(cur.name, cur.got / cur.size);
       }
-      if (cur.got >= cur.size) {
+      if (onProgress && cur.gz && cur.got - cur.shown > 2 << 20) {
+        cur.shown = cur.got;
+        onProgress(cur.name, -cur.got);
+      }
+      if (!cur.gz && cur.got >= cur.size) {
         const c = cur;
         cur = null;
         await onFile(c.name, new Uint8Array(await new Blob(c.parts).arrayBuffer()));
@@ -526,9 +567,11 @@
       })]);
       if (need) {
         toast("Mandando o jogo para a outra tela (só na primeira vez)…", 3e3);
-        await sendFile(files, "rom", rom.blob, (f) => {
+        const prog = (f) => {
           btn.textContent = `Enviando ${Math.round(f * 100)}%`;
-        });
+        };
+        if (window.CompressionStream) await sendGz(files, "rom", rom.blob, prog);
+        else await sendFile(files, "rom", rom.blob, prog);
       }
       btn.textContent = "Abrindo lá…";
       await sendFile(files, "sav", sav);
@@ -624,7 +667,14 @@
     const onFiles = receiver(async (j) => {
       if (j.hello) {
         info = j.hello;
-        const cached = await idb.get("pend", "tvrom");
+        let fresh = false;
+        try {
+          fresh = localStorage.getItem("cartucho.tvNoCache") === "1";
+        } catch (e) {
+        }
+        const mine = fresh ? null : roms.get(info.key);
+        if (mine && mine.blob && info.romId === info.key + ":" + mine.blob.size) rom = mine.blob;
+        const cached = rom || fresh ? null : await idb.get("pend", "tvrom");
         if (cached && cached.id === info.romId) rom = cached.blob;
         reply({ need: !rom });
         status(rom ? `Abrindo ${info.rom.title}…` : `Recebendo ${info.rom.title}…`);
@@ -638,7 +688,7 @@
       } else if (name === "sav") sav = u8;
       else if (name === "state") state = u8;
     }, (name, f) => {
-      if (name === "rom") status(`Recebendo ${info ? info.rom.title : "o jogo"}… ${Math.round(f * 100)}%`);
+      if (name === "rom") status(`Recebendo ${info ? info.rom.title : "o jogo"}… ${f < 0 ? Math.round(-f / 1e6) + " MB" : Math.round(f * 100) + "%"}`);
     });
     const onCtl = (e) => {
       const emu = player.emu, d = String(e.data);

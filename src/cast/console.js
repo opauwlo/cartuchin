@@ -6,6 +6,7 @@ import { tvScreen } from "./tv.js";
 import { sha } from "../bytes.js";
 import { device } from "../device.js";
 import { idb } from "../idb.js";
+import { roms } from "../library.js";
 import { flush, play, player, writeSav } from "../player/player.js";
 import { $, rid, sleep, toast } from "../util.js";
 
@@ -35,14 +36,42 @@ async function sendFile(dc, name, data, onProgress) {
     if (onProgress) onProgress(Math.min(1, (o + STEP) / size));
   }
 }
+/* a ROM vai comprimida (gzip) enquanto é lida: DS tem muito espaço vazio e tabela repetida
+   (Pokémon Black: 202 MB viram ~110 MB), e comprimir anda junto com o envio */
+async function sendGz(dc, name, blob, onProgress) {
+  dc.bufferedAmountLowThreshold = 1 << 20;
+  dc.send(JSON.stringify({ file: name, size: -1, gz: true }));
+  let read = 0;
+  const counted = blob.stream().pipeThrough(new TransformStream({ transform(ch, ctl) { read += ch.length; ctl.enqueue(ch); } }));
+  const reader = counted.pipeThrough(new CompressionStream("gzip")).getReader();
+  let shown = 0;
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    for (let i = 0; i < value.length; i += CHUNK) {
+      if (dc.readyState !== "open") throw new Error("canal fechado");
+      if (dc.bufferedAmount > 8 << 20) await new Promise((r) => { dc.onbufferedamountlow = () => { dc.onbufferedamountlow = null; r(); }; });
+      dc.send(value.subarray(i, i + CHUNK));
+    }
+    if (onProgress && read - shown > (2 << 20)) { shown = read; onProgress(read / blob.size); }
+  }
+  dc.send(JSON.stringify({ fileEnd: 1 }));
+}
 /* mensagens JSON e arquivos (cabeçalho JSON + pedaços binários), na ordem em que chegam */
 function receiver(onJson, onFile, onProgress) {
   let cur = null, chain = Promise.resolve();
   const handle = async (data) => {
     if (typeof data === "string") {
       const j = JSON.parse(data);
+      if (j.fileEnd && cur) {   // fim de um arquivo comprimido (tamanho só se sabe no fim)
+        const c = cur;
+        cur = null;
+        const raw = new Blob(c.parts).stream().pipeThrough(new DecompressionStream("gzip"));
+        await onFile(c.name, new Uint8Array(await new Response(raw).arrayBuffer()));
+        return;
+      }
       if (j.file) {
-        cur = { name: j.file, size: j.size, parts: [], got: 0, shown: 0 };
+        cur = { name: j.file, size: j.size, gz: !!j.gz, parts: [], got: 0, shown: 0 };
         if (!j.size) { cur = null; await onFile(j.file, new Uint8Array(0)); }
       } else await onJson(j);
       return;
@@ -50,8 +79,9 @@ function receiver(onJson, onFile, onProgress) {
     if (!cur) return;
     cur.parts.push(data);
     cur.got += data.byteLength;
-    if (onProgress && cur.got - cur.shown > (2 << 20)) { cur.shown = cur.got; onProgress(cur.name, cur.got / cur.size); }
-    if (cur.got >= cur.size) {
+    if (onProgress && !cur.gz && cur.got - cur.shown > (2 << 20)) { cur.shown = cur.got; onProgress(cur.name, cur.got / cur.size); }
+    if (onProgress && cur.gz && cur.got - cur.shown > (2 << 20)) { cur.shown = cur.got; onProgress(cur.name, -cur.got); }
+    if (!cur.gz && cur.got >= cur.size) {
       const c = cur;
       cur = null;
       await onFile(c.name, new Uint8Array(await new Blob(c.parts).arrayBuffer()));
@@ -162,7 +192,9 @@ async function consoleTo(code) {
     const need = await Promise.race([got, sleep(10000).then(() => { throw new Error("sem resposta"); })]);
     if (need) {
       toast("Mandando o jogo para a outra tela (só na primeira vez)…", 3000);
-      await sendFile(files, "rom", rom.blob, (f) => { btn.textContent = `Enviando ${Math.round(f * 100)}%`; });
+      const prog = (f) => { btn.textContent = `Enviando ${Math.round(f * 100)}%`; };
+      if (window.CompressionStream) await sendGz(files, "rom", rom.blob, prog);
+      else await sendFile(files, "rom", rom.blob, prog);
     }
     btn.textContent = "Abrindo lá…";
     await sendFile(files, "sav", sav);
@@ -237,7 +269,12 @@ async function tvConsole(msg, sig) {
   const onFiles = receiver(async (j) => {
     if (j.hello) {
       info = j.hello;
-      const cached = await idb.get("pend", "tvrom");
+      // já tem: na biblioteca deste aparelho (mesmo jogo, mesmo tamanho) ou da última vez
+      let fresh = false;   // teste automático: força mandar a ROM
+      try { fresh = localStorage.getItem("cartucho.tvNoCache") === "1"; } catch (e) {}
+      const mine = fresh ? null : roms.get(info.key);
+      if (mine && mine.blob && info.romId === info.key + ":" + mine.blob.size) rom = mine.blob;
+      const cached = rom || fresh ? null : await idb.get("pend", "tvrom");
       if (cached && cached.id === info.romId) rom = cached.blob;
       reply({ need: !rom });
       status(rom ? `Abrindo ${info.rom.title}…` : `Recebendo ${info.rom.title}…`);
@@ -249,7 +286,7 @@ async function tvConsole(msg, sig) {
       await idb.put("pend", "tvrom", { id: info.romId, blob: rom }).catch(() => {});   // próxima vez abre na hora
     } else if (name === "sav") sav = u8;
     else if (name === "state") state = u8;
-  }, (name, f) => { if (name === "rom") status(`Recebendo ${info ? info.rom.title : "o jogo"}… ${Math.round(f * 100)}%`); });
+  }, (name, f) => { if (name === "rom") status(`Recebendo ${info ? info.rom.title : "o jogo"}… ${f < 0 ? Math.round(-f / 1e6) + " MB" : Math.round(f * 100) + "%"}`); });
   const onCtl = (e) => {
     const emu = player.emu, d = String(e.data);
     if (!emu || !live) return;
