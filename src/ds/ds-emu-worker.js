@@ -83,7 +83,7 @@ class DSOut extends AudioWorkletProcessor {
     if (this.playing) {
       let dev = (fill - this.target) / this.target;
       if (dev > 1) dev = 1; else if (dev < -1) dev = -1;
-      const step = this.base * (1 + dev * 0.005);
+      const step = this.base * (dev < 0 ? Math.max(0.6, 1 + dev * 0.6) : 1 + dev * 0.005);   // abaixo da meta: mais devagar, sem picotar
       for (let i = 0; i < len; i++) {
         if (this.w - this.rp < 2) {
           this.lastL *= 0.995; this.lastR *= 0.995;

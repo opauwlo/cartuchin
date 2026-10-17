@@ -48,7 +48,7 @@ await ctx.route(/^https:\/\//, (r) => r.fulfill({ status: 404, body: "" }));   /
 // ntfy.sh trocado por um BroadcastChannel entre as páginas
 await ctx.addInitScript(([core, scale]) => {
   localStorage.setItem("cartucho.localOnly", "1");
-  localStorage.setItem("cartucho.ds.core", core);
+  localStorage.setItem("cartucho.ds.coreForce", core);
   localStorage.setItem("cartucho.ds.scale", scale);
   localStorage.setItem("cartucho.ds.gpuforce", "1");
   const NT = "https://ntfy.sh/";

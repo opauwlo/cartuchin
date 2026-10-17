@@ -193,7 +193,7 @@ async function consoleTo(code) {
     if (j.failed && c.started) c.started(false);
     if (j.cfg && c.onCfg) c.onCfg(j);
   }, async (name, u8) => {
-    if (name === "sav" && u8.length) { player.remoteSav = u8; flush({ quiet: true }); }
+    if (name === "sav" && u8.length) { player.remoteSav = u8; if (c.onSav) { const f = c.onSav; c.onSav = null; f(u8); } flush({ quiet: true }); }
     if (name === "state" && c.onEnd) c.onEnd(u8);
     if (name === "snap" && c.onSnap) { const f = c.onSnap; c.onSnap = null; f(u8); }
   });
@@ -294,6 +294,8 @@ function remoteEmu(c, local) {
       setFastForwardRatio(v) { send({ cmd: "ffr", args: [v] }); },
       getSaveFile: () => player.remoteSav || new Uint8Array(0),
       getFrameNum: () => local.frames || 0,
+      // o save mais novo de lá, agora (Salvar na nuvem com o jogo na outra tela)
+      fetchSave: () => new Promise((ok) => { const before = player.remoteSav; c.onSav = ok; send({ cmd: "sav" }); setTimeout(() => ok(before), 6000); }),
     },
   };
   // o que está valendo lá (a outra tela manda ao abrir e depois de cada ajuste)
@@ -401,6 +403,7 @@ async function tvConsole(msg, sig) {
         else if (j.cmd === "ffr") gm.setFastForwardRatio(a[0]);
         else if (j.cmd === "ff") gm.toggleFastForward(a[0]);
         else if (j.cmd === "snap") await sendFile(ch.arquivo, "snap", new Uint8Array(await gm.getState()));
+        else if (j.cmd === "sav") { const s = new Uint8Array((await freshSave(gm)) || []); if (s.length) await sendFile(ch.arquivo, "sav", s); }   // o celular pediu o save agora (Salvar)
       } catch (e) { console.warn("[console] comando", j.cmd, e); }
     } else if (j.cfg) {
       applyCfg(j.cfg, j.jit);

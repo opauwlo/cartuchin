@@ -240,7 +240,10 @@ async function connect(code) {
     await phone.evaluate(() => window.__cast.consoleSend((1 << 7) | 1));   // A + B (PAD_BITS): save = 3, diferente de tudo antes
     const green = await tv.waitForFunction(`(async () => { const c = await (${PIXEL})("#game canvas"); return !!c && c.g > 20; })()`, null, { timeout: 5000, polling: 20 }).then(() => Date.now() - k0, () => -1);
     // o save de lá chega aqui (a outra tela manda quando muda)
+    await tv.waitForTimeout(800);
+    await phone.evaluate(() => window.__cartucho.remote.gameManager.fetchSave());   // como o "Salvar" do menu faz
     const remoteSav = await phone.waitForFunction(() => window.__cartucho.remoteSav && window.__cartucho.remoteSav[0] === 3, null, { timeout: 25000 }).then(() => true, () => false);
+    if (!remoteSav) console.log("      dbg2", JSON.stringify(await tv.evaluate(async () => { const gm = window.__cartucho.emu.gameManager; gm.saveSaveFiles(); await new Promise((r) => setTimeout(r, 500)); const s = gm.getSaveFile(false); return { b0: s && s[0], rm: window.__cast.remoteMask, lm: window.__cast.lastMask }; })), JSON.stringify(await phone.evaluate(() => window.__cartucho.remoteSav && window.__cartucho.remoteSav[0])));
     if (!remoteSav) console.log("      dbg", JSON.stringify(await tv.evaluate(() => { const s = window.__cartucho.emu.gameManager.getSaveFile(); return [s && s.length, s && s[0], window.__cast.remoteMask, window.__cartucho.emu.gameManager.getFrameNum(), document.visibilityState, document.hasFocus()]; })), JSON.stringify(await phone.evaluate(() => { const r = window.__cartucho.remoteSav; return r ? [r.length, r[0]] : null; })));
     await phone.evaluate(() => window.__cast.consoleSend(0));
     ok(green >= 0, `[console] botão do celular chega no jogo de lá${green >= 0 ? ` (${green} ms até a imagem mudar)` : ""}`);

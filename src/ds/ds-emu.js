@@ -40,10 +40,6 @@ const LOCAL_LAYOUTS = ["auto", "small", "both", "side", "focus", "top", "bottom"
 const SMALL = 0.75;   // "small": tamanho da tela de baixo em relação à de cima
 const CAST_LAYOUTS = ["top", "both", "side"];
 const MAX_SCALE = 6;
-const CORE_LABEL = { estavel: "Estável", teste: "Teste", jit: "Teste + JIT (mais rápido)", mt: "Teste + threads (3D em outros núcleos)" };
-const CORES = ["estavel", "teste", "jit", "mt"];
-const GPU_LABEL = { auto: "Automático", on: "GPU sempre", off: "Software" };
-let expOpen = false;   // seção "Experimental" do menu aberta
 const ds = {
   local: ls.get("cartucho.ds.local") || "auto",
   cast: ls.get("cartucho.ds.cast") || "top",
@@ -52,7 +48,11 @@ const ds = {
   // canal do core: "estavel" (padrão) ou "teste" (ds/nds-test: resolução interna 2x-3x etc.)
   // "jit": core de teste + JIT de ARM para WebAssembly (ds/nds-jit)
   // "mt": core de teste com threads (ds/nds-test-mt); só na página isolada do DS (?ds=)
-  core: ["teste", "jit", "mt"].includes(ls.get("cartucho.ds.core")) ? ls.get("cartucho.ds.core") : "estavel",
+  // Medido com Pokémon Black (CPU 2x e 4x mais lenta, tests/ds-bench.mjs): o JIT é o único que
+  // ganha (+22% a 4x; a 2x fica em 100% sem baixar a imagem para 30 fps); "teste" e threads não
+  // ganham nada sobre o estável. Então: JIT sempre, e o estável como "modo compatível" por jogo.
+  // "cartucho.ds.coreForce" escolhe outro core (testes automáticos).
+  core: ["estavel", "teste", "jit", "mt"].includes(ls.get("cartucho.ds.coreForce")) ? ls.get("cartucho.ds.coreForce") : "jit",
   scale: Math.min(MAX_SCALE, Math.max(1, Number(ls.get("cartucho.ds.scale")) || 1)),
   // 3D na GPU (WebGL2), só no core de teste: "auto" = GPU só em 2x ou mais (em 1x o software
   // é mais leve: sem leitura de volta da GPU), "on" = sempre GPU, "off" = sempre software
@@ -60,7 +60,8 @@ const ds = {
   lag: ls.get("cartucho.ds.lag") !== "off",
   gpu: ["auto", "on", "off"].includes(ls.get("cartucho.ds.gpu")) ? ls.get("cartucho.ds.gpu") : "auto",
   perf: ls.get("cartucho.ds.perf") || "auto",
-  level: Math.min(LEVELS.length - 1, Number(ls.get("cartucho.ds.level") || 1)),
+  // cada sessão começa no "leve" (no máximo): o automático sobe só se precisar de novo
+  level: Math.min(1, Number(ls.get("cartucho.ds.level") || 1)),
 };
 
 window.__ds = ds;   // usado pelo teste automático
@@ -93,7 +94,9 @@ class DSOut extends AudioWorkletProcessor {
     if (this.playing) {
       let dev = (fill - this.target) / this.target;
       if (dev > 1) dev = 1; else if (dev < -1) dev = -1;
-      const ratio = 1 + dev * 0.005;
+      // acima da meta: acerto fino (±0,5%). Abaixo (o jogo não está dando conta de 100%): toca
+      // mais devagar em vez de esvaziar e picotar; o som fica um pouco mais grave, mas contínuo
+      const ratio = dev < 0 ? Math.max(0.6, 1 + dev * 0.6) : 1 + dev * 0.005;
       for (let i = 0; i < len; i++) {
         if (this.w - this.rp < 2) {
           this.lastL *= 0.995; this.lastR *= 0.995;
@@ -151,7 +154,7 @@ function loadCore() {
   corePromise.catch(() => {
     corePromise = null;
     // core de teste ausente ou quebrado: volta para o estável na próxima tentativa
-    if (ds.core !== "estavel") { ds.core = "estavel"; ls.set("cartucho.ds.core", "estavel"); toast("O core experimental não carregou; voltando ao estável.", 4000); }
+    if (ds.core !== "estavel") { ds.core = "estavel"; toast("O modo rápido não carregou neste aparelho; abrindo no compatível.", 4000); }
   });
   return corePromise;
 }
@@ -264,6 +267,7 @@ function saveDs(k, v) {
 async function createDsEmulator(romBytes, gameName, startSav) {
   cfgGame = gameName;
   const gc = gameCfg(gameName);
+  if (gc.ds_compat && !ls.get("cartucho.ds.coreForce")) ds.core = "estavel";   // jogo com defeito no modo rápido
   for (const k of ["perf", "scale", "gpu", "lag"]) if (gc["ds_" + k] != null) ds[k] = gc["ds_" + k];
   let M;
   $("#game").replaceChildren();
@@ -326,7 +330,7 @@ async function createDsEmulator(romBytes, gameName, startSav) {
       if (ev === "start" && emu.started) setTimeout(cb, 0);
       else (listeners[ev] = listeners[ev] || []).push(cb);
     },
-    play() { emu.paused = false; audio.reset(); acc = 0; },
+    play() { emu.paused = false; audio.reset(); acc = 0; if (emu.tuneReset) emu.tuneReset(); },
     pause() { emu.paused = true; },
     setVolume(v) { emu.volume = v; if (audio.gain) audio.gain.gain.value = v; },
     audioStats: () => ({ ready: audio.ready, fill: Math.round(audio.fill), target: audio.target, underruns: audio.underruns, state: audio.ctx && audio.ctx.state }),
@@ -386,7 +390,8 @@ async function createDsEmulator(romBytes, gameName, startSav) {
 
   // ---- desempenho ----
   const cfg = { latency: 4800, interp: 0, video30: false, skip: 3 };
-  const tune = { calm: 0, bad: 0, lastUnder: 0 };
+  const tune = { calm: 0, bad: 0, lastUnder: 0, since: performance.now() };
+  emu.tuneReset = () => { tune.since = performance.now(); tune.bad = 0; };
   function applyCfg() {
     if (ds.perf === "auto") Object.assign(cfg, LEVELS[ds.level]);
     else Object.assign(cfg, LEVELS[ds.perf === "30" ? 2 : 0], ds.perf === "30" ? {} : { latency: 3200 });
@@ -398,17 +403,21 @@ async function createDsEmulator(romBytes, gameName, startSav) {
     if (ds.perf !== "auto" || emu.turbo > 1 || emu.paused) return;
     const under = audio.underruns - tune.lastUnder;
     tune.lastUnder = audio.underruns;
-    const struggling = load > 80 || fps < 57 || under > 0;
+    // os primeiros segundos (carregando, voltando de pausa) sempre falham um pouco: não contam
+    if (performance.now() - tune.since < 6000) return;
+    const struggling = load > 85 || fps < 56 || under > 1;
     tune.bad = struggling ? tune.bad + 1 : 0;
-    if ((under > 0 || tune.bad >= 2) && ds.level < LEVELS.length - 1) {
+    // sobe um nível só com aperto que dura (3 s seguidos); um soluço não derruba a imagem para 30 fps
+    if (tune.bad >= 3 && ds.level < LEVELS.length - 1) {
       ds.level++;
       tune.calm = tune.bad = 0;
       ls.set("cartucho.ds.level", String(ds.level));
       applyCfg();
       return;
     }
-    tune.calm = !struggling && load < 45 ? tune.calm + 1 : 0;
-    if (tune.calm >= 15 && ds.level > 0) {
+    // folga de verdade por 8 s: volta um nível (melhor imagem e som)
+    tune.calm = !struggling && load < 60 ? tune.calm + 1 : 0;
+    if (tune.calm >= 8 && ds.level > 0) {
       ds.level--;
       tune.calm = 0;
       ls.set("cartucho.ds.level", String(ds.level));
@@ -864,55 +873,32 @@ function dsMenuItems(emu, refresh) {
       icon: "sliders", label: "Desempenho deste jogo: " + PERF_LABEL[ds.perf] + (ds.perf === "auto" ? ` (${LEVELS[ds.level].name})` : ""),
       fn: () => { ds.perf = nextOf(PERF_MODES, ds.perf); saveDs("perf", ds.perf); emu.applyCfg(); refresh(); },
     },
-    { icon: "sliders", label: (expOpen ? "▾ " : "▸ ") + "Experimental", fn: () => { expOpen = !expOpen; refresh(); } },
-    ...(expOpen ? expItems(emu, refresh) : []),
+    ...expItems(emu, refresh),
   ];
 }
 
-/* opções do canal de teste, numa seção separada do menu */
+/* poucas opções, todas por jogo: resolução do 3D e modo compatível (o resto é automático) */
 function expItems(emu, refresh) {
   return [
-    {
-      sub: true, icon: "sliders", label: "Core: " + CORE_LABEL[ds.core],
-      fn: () => {
-        ds.core = nextOf(CORES, ds.core);
-        ls.set("cartucho.ds.core", ds.core);
-        toast(ds.core === "estavel" ? "Core estável: vale quando abrir o jogo de novo." : `Core ${CORE_LABEL[ds.core]}: vale quando abrir o jogo de novo. Se algo der errado, volte para o estável aqui.`, 5000);
-        refresh();
-      },
-    },
     ...(emu.canScale ? [{
-      sub: true, icon: "sliders", label: `Resolução: ${ds.scale}x` + (ds.scale > 3 ? " (muito pesado)" : ds.scale > 1 ? " (pesado)" : ""),
+      sub: true, icon: "sliders", label: `Resolução do 3D: ${ds.scale}x` + (ds.scale > 1 ? " (mais pesado)" : ""),
       fn: () => {
-        ds.scale = ds.scale >= MAX_SCALE ? 1 : ds.scale + 1;
+        ds.scale = ds.scale >= 3 ? 1 : ds.scale + 1;
         saveDs("scale", ds.scale);
         if (!emu.setScale(ds.scale)) toast("Não deu para mudar a resolução.");
         refresh();
       },
-    }, {
-      sub: true, icon: "sliders", label: "3D: " + GPU_LABEL[ds.gpu] + " (agora: " + (emu.gpu3d ? "GPU" : "software") + ")",
+    }] : []),
+    {
+      sub: true, icon: "sliders", label: "Modo compatível: " + (ds.core === "estavel" ? "Sim (mais lento)" : "Não (modo rápido)"),
       fn: () => {
-        ds.gpu = nextOf(["auto", "on", "off"], ds.gpu);
-        saveDs("gpu", ds.gpu);
-        if (!emu.applyRenderer()) toast("3D na GPU indisponível neste aparelho.", 4000);
+        const on = ds.core !== "estavel";
+        if (cfgGame) setGameCfg(cfgGame, { ds_compat: on ? 1 : null });
+        toast(on ? "Modo compatível: use se este jogo tiver defeito no rápido. Vale quando abrir o jogo de novo." : "Modo rápido: vale quando abrir o jogo de novo.", 5000);
+        ds.core = on ? "estavel" : "jit";
         refresh();
       },
-    }, ...(ds.core === "jit" ? [{
-      sub: true, icon: "sliders", label: "CPU: " + (emu.jitOn ? "JIT (rápido)" : "Interpretador"),
-      fn: () => {
-        emu.jitOn = !emu.jitOn;
-        emu.setJit(emu.jitOn);
-        refresh();
-      },
-    }] : []), {
-      sub: true, icon: "sliders", label: "GPU sem espera: " + (ds.lag ? "Sim (3D 1 quadro atrás)" : "Não"),
-      fn: () => {
-        ds.lag = !ds.lag;
-        saveDs("lag", ds.lag);
-        emu.setLag(ds.lag);
-        refresh();
-      },
-    }] : [{ sub: true, icon: "sliders", label: "Resolução e 3D na GPU: só no core de teste", fn: () => {} }]),
+    },
   ];
 }
 

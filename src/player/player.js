@@ -510,6 +510,7 @@ function tokenFromTap() {
 }
 $("#saveNowBtn").addEventListener("click", async () => {
   await tokenFromTap();
+  if (player.remote) await player.remote.gameManager.fetchSave();   // jogo na outra tela: pega o save de lá primeiro
   await flush();
   const ok = await uploadState({ force: true });
   if (ok && cloud.db) toast("Progresso salvo: o jogo continua daqui em qualquer aparelho", 3500);
